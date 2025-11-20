@@ -14,7 +14,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 - **OWASP Top 10 2025** - Complete coverage of modern web security risks
 - **AI/ML Security** - Rules for machine learning systems using NIST AI RMF, MITRE ATLAS, and Google SAIF
 - **Agentic AI Security** - Specialized rules for autonomous AI systems with tool use
-- **36 Rule Sets** - Covering 12 languages, 5 backend frameworks, 11 AI/ML frameworks, and 5 frontend frameworks
+- **70+ Rule Sets** - Covering 12 languages, 5 backend frameworks, 11 AI/ML frameworks, 5 frontend frameworks, and 30+ RAG/Knowledge Infrastructure tools
 - **Enforcement Levels** - Strict, warning, and advisory modes for different risk levels
 
 ## Quick Start
@@ -39,6 +39,11 @@ cp rules/languages/python/CLAUDE.md /path/to/your/project/
 
 # Framework-specific (e.g., FastAPI)
 cp rules/backend/fastapi/CLAUDE.md /path/to/your/project/backend/
+
+# RAG-specific (e.g., LlamaIndex + Pinecone)
+cp -r rules/rag/_core /path/to/your/project/.claude/rag-core/
+cp rules/rag/orchestration/llamaindex/CLAUDE.md /path/to/your/project/rag/
+cp rules/rag/vector-managed/pinecone/CLAUDE.md /path/to/your/project/vectordb/
 ```
 
 **Option B: Copy entire rules directory**
@@ -62,7 +67,8 @@ claude-secure-coding-rules/
 │   ├── _core/                    # Foundation rules (apply to all projects)
 │   │   ├── owasp-2025.md        # OWASP Top 10 2025 security rules
 │   │   ├── ai-security.md       # AI/ML system security rules
-│   │   └── agent-security.md    # Agentic AI security rules
+│   │   ├── agent-security.md    # Agentic AI security rules
+│   │   └── rag-security.md      # RAG system security rules
 │   │
 │   ├── languages/               # Language-specific security rules
 │   │   ├── python/CLAUDE.md     # Python security (deserialization, subprocess, etc.)
@@ -95,6 +101,46 @@ claude-secure-coding-rules/
 │   │   ├── bentoml/CLAUDE.md    # BentoML (packaging, runners)
 │   │   ├── mlflow/CLAUDE.md     # MLflow (model registry, artifacts)
 │   │   └── modal/CLAUDE.md      # Modal (serverless, secrets)
+│   │
+│   ├── rag/                     # RAG & Knowledge Infrastructure rules
+│   │   ├── _core/               # Core RAG security patterns
+│   │   │   ├── embedding-security.md
+│   │   │   ├── vector-store-security.md
+│   │   │   ├── retrieval-security.md
+│   │   │   └── document-processing-security.md
+│   │   ├── orchestration/       # RAG orchestration frameworks
+│   │   │   ├── llamaindex/CLAUDE.md
+│   │   │   ├── langchain-loaders/CLAUDE.md
+│   │   │   ├── haystack/CLAUDE.md
+│   │   │   └── dspy-txtai-ragas/CLAUDE.md
+│   │   ├── vector-managed/      # Managed vector databases
+│   │   │   ├── pinecone/CLAUDE.md
+│   │   │   ├── weaviate-cloud/CLAUDE.md
+│   │   │   ├── mongodb-atlas/CLAUDE.md
+│   │   │   └── azure-ai-search/CLAUDE.md
+│   │   ├── vector-selfhosted/   # Self-hosted vector databases
+│   │   │   ├── milvus/CLAUDE.md
+│   │   │   ├── qdrant/CLAUDE.md
+│   │   │   ├── pgvector/CLAUDE.md
+│   │   │   ├── weaviate/CLAUDE.md
+│   │   │   └── chroma/CLAUDE.md
+│   │   ├── graph/               # Graph databases
+│   │   │   ├── neo4j/CLAUDE.md
+│   │   │   └── neptune/CLAUDE.md
+│   │   ├── embeddings/          # Embedding models
+│   │   │   ├── api-embeddings/CLAUDE.md
+│   │   │   └── local-embeddings/CLAUDE.md
+│   │   ├── document-processing/ # Document parsers
+│   │   │   ├── unstructured/CLAUDE.md
+│   │   │   ├── llamaparse/CLAUDE.md
+│   │   │   └── parsers-ocr/CLAUDE.md
+│   │   ├── chunking/CLAUDE.md   # Chunking strategies
+│   │   ├── search-rerank/       # Search and reranking
+│   │   │   └── neural-rerankers/CLAUDE.md
+│   │   └── observability/       # RAG observability
+│   │       ├── langsmith/CLAUDE.md
+│   │       ├── arize-phoenix/CLAUDE.md
+│   │       └── monitoring/CLAUDE.md
 │   │
 │   └── frontend/                # Frontend framework rules
 │       ├── react/CLAUDE.md      # React (XSS, state, forms)
@@ -344,6 +390,42 @@ cp rules/backend/vllm/CLAUDE.md myproject/inference/
 # - Implement token-based rate limiting
 ```
 
+### RAG Applications (LlamaIndex + Pinecone)
+
+```bash
+# Setup
+cp rules/_core/rag-security.md myproject/.claude/
+cp -r rules/rag/_core myproject/.claude/rag-core/
+cp rules/rag/orchestration/llamaindex/CLAUDE.md myproject/rag/
+cp rules/rag/vector-managed/pinecone/CLAUDE.md myproject/vectordb/
+cp rules/rag/embeddings/api-embeddings/CLAUDE.md myproject/embeddings/
+
+# Claude Code will now:
+# - Prevent query injection attacks in vector searches
+# - Enforce namespace isolation for multi-tenant RAG
+# - Validate document sources and sanitize metadata
+# - Detect PII in chunks before embedding
+# - Prevent context poisoning attacks
+# - Secure embedding API keys with rotation
+```
+
+### RAG with Graph Knowledge (Neo4j + LangChain)
+
+```bash
+# Setup
+cp rules/_core/rag-security.md myproject/.claude/
+cp rules/rag/graph/neo4j/CLAUDE.md myproject/knowledge-graph/
+cp rules/rag/orchestration/langchain-loaders/CLAUDE.md myproject/loaders/
+cp rules/rag/observability/langsmith/CLAUDE.md myproject/observability/
+
+# Claude Code will now:
+# - Prevent Cypher injection in graph queries
+# - Enforce RBAC on graph traversals
+# - Limit traversal depth to prevent DoS
+# - Protect trace data privacy in LangSmith
+# - Sanitize document loaders for various sources
+```
+
 ### Model Serving (TorchServe + MLflow)
 
 ```bash
@@ -398,6 +480,7 @@ We welcome contributions! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for:
 
 ## Roadmap
 
+- [x] RAG & Knowledge Infrastructure (51 tools across vector DBs, graph DBs, embeddings, chunking, observability)
 - [ ] Additional backend frameworks (Spring Boot, Rails, Laravel)
 - [ ] Mobile frameworks (React Native, Flutter)
 - [ ] Infrastructure as Code (Terraform, Pulumi)
