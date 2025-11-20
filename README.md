@@ -14,7 +14,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 - **OWASP Top 10 2025** - Complete coverage of modern web security risks
 - **AI/ML Security** - Rules for machine learning systems using NIST AI RMF, MITRE ATLAS, and Google SAIF
 - **Agentic AI Security** - Specialized rules for autonomous AI systems with tool use
-- **21 Rule Sets** - Covering 8 languages, 6 backend frameworks, and 7 frontend frameworks
+- **25 Rule Sets** - Covering 12 languages, 5 backend frameworks, and 5 frontend frameworks
 - **Enforcement Levels** - Strict, warning, and advisory modes for different risk levels
 
 ## Quick Start
@@ -72,7 +72,11 @@ claude-secure-coding-rules/
 │   │   ├── rust/CLAUDE.md       # Rust security (unsafe blocks, FFI)
 │   │   ├── java/CLAUDE.md       # Java security (serialization, JNDI)
 │   │   ├── csharp/CLAUDE.md     # C# security (.NET patterns)
-│   │   └── ruby/CLAUDE.md       # Ruby security (metaprogramming, Rails)
+│   │   ├── ruby/CLAUDE.md       # Ruby security (metaprogramming, Rails)
+│   │   ├── r/CLAUDE.md          # R security (Shiny, data science, packages)
+│   │   ├── cpp/CLAUDE.md        # C++ security (memory safety, buffer overflows)
+│   │   ├── julia/CLAUDE.md      # Julia security (metaprogramming, serialization)
+│   │   └── sql/CLAUDE.md        # SQL security (injection, permissions)
 │   │
 │   ├── backend/                 # Backend framework rules
 │   │   ├── fastapi/CLAUDE.md    # FastAPI (Pydantic, dependencies, auth)

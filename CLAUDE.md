@@ -10,7 +10,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 - OWASP Top 10 2025 (web application security)
 - AI/ML security (NIST AI RMF, MITRE ATLAS, Google SAIF)
 - Agentic AI security (tool use, autonomy, sandboxing)
-- Language-specific rules (Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby)
+- Language-specific rules (Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL)
 - Framework-specific rules (FastAPI, Express, Django, Flask, NestJS, React, Next.js, Vue, Angular, Svelte)
 
 ## Repository Structure
@@ -31,7 +31,11 @@ claude-secure-coding-rules/
 │   │   ├── rust/CLAUDE.md         # unsafe blocks, FFI, memory safety, crypto
 │   │   ├── java/CLAUDE.md         # Serialization, JNDI, reflection, streams
 │   │   ├── csharp/CLAUDE.md       # .NET patterns, LINQ injection, assemblies
-│   │   └── ruby/CLAUDE.md         # Metaprogramming, ERB, mass assignment
+│   │   ├── ruby/CLAUDE.md         # Metaprogramming, ERB, mass assignment
+│   │   ├── r/CLAUDE.md            # Shiny apps, data security, package verification
+│   │   ├── cpp/CLAUDE.md          # Memory safety, buffer overflows, smart pointers
+│   │   ├── julia/CLAUDE.md        # Metaprogramming, type safety, serialization
+│   │   └── sql/CLAUDE.md          # Injection, permissions, stored procedures
 │   │
 │   ├── backend/                    # Backend framework rules
 │   │   ├── fastapi/CLAUDE.md      # Pydantic validation, JWT, authorization, CORS
@@ -66,10 +70,10 @@ claude-secure-coding-rules/
 | Category | Count | Description |
 |----------|-------|-------------|
 | Core Rules | 3 | OWASP 2025, AI Security, Agent Security |
-| Languages | 8 | Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby |
+| Languages | 12 | Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL |
 | Backend Frameworks | 5 | FastAPI, Express, Django, Flask, NestJS |
 | Frontend Frameworks | 5 | React, Next.js, Vue, Angular, Svelte |
-| **Total Rule Sets** | **21** | Comprehensive security coverage |
+| **Total Rule Sets** | **25** | Comprehensive security coverage |
 
 ## Rule Format
 
