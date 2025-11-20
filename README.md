@@ -468,6 +468,192 @@ cp rules/backend/mlflow/CLAUDE.md myproject/mlops/
 # - Enforce artifact storage encryption
 ```
 
+## Testing Framework
+
+This repository includes a comprehensive testing framework to validate security rules. The framework uses pytest with Semgrep and Bandit integration for SAST analysis.
+
+### Prerequisites
+
+- Python 3.8+
+- Node.js (optional, for JavaScript validation)
+- shellcheck (optional, for shell script validation)
+
+### Installation
+
+```bash
+# Navigate to project root
+cd claude-secure-coding-rules
+
+# Install test dependencies
+pip install -r tests/requirements.txt
+
+# Optional: Install additional tools for full validation
+# macOS
+brew install shellcheck semgrep
+
+# Ubuntu/Debian
+apt-get install shellcheck
+pip install semgrep bandit
+```
+
+### Running Tests
+
+#### Quick Start
+
+```bash
+# Run all tests
+pytest tests/
+
+# Run with verbose output
+pytest tests/ -v
+
+# Run in parallel for speed
+pytest tests/ -n auto
+```
+
+#### Test Categories
+
+```bash
+# Structural validation - checks rule format compliance
+pytest tests/structural/ -v
+
+# Code validation - checks syntax of code examples
+pytest tests/code_validation/ -v
+
+# Security tests - runs SAST tools (requires semgrep, bandit)
+pytest tests/security/ -v
+
+# Coverage analysis - generates coverage reports
+pytest tests/coverage/ -v -s
+```
+
+#### Common Options
+
+```bash
+# Exclude slow tests (security scans)
+pytest tests/ -m "not slow"
+
+# Run specific test file
+pytest tests/structural/test_rule_format.py -v
+
+# Run specific test function
+pytest tests/structural/test_rule_format.py::TestRuleStructure::test_all_rules_have_required_sections -v
+
+# Generate HTML coverage report
+pytest tests/ --cov=tests --cov-report=html
+
+# Stop on first failure
+pytest tests/ -x
+
+# Show print statements
+pytest tests/ -s
+```
+
+### Understanding Test Results
+
+#### Structural Tests
+Validates that all rules follow the Do/Don't/Why/Refs format:
+- Required sections present (Level, When, Do, Don't, Why, Refs)
+- Valid enforcement levels (strict, warning, advisory)
+- Code blocks have language identifiers
+- Valid CWE/OWASP references
+
+#### Code Validation Tests
+Validates syntax of code examples:
+- Python: AST parsing validation
+- JavaScript/TypeScript: Node.js syntax check
+- YAML/JSON: Schema validation
+- HCL/Terraform: HCL2 parsing
+- Shell scripts: shellcheck validation
+
+#### Security Tests
+Uses SAST tools to validate security rules:
+- **Semgrep**: Pattern matching for vulnerabilities
+- **Bandit**: Python-specific security analysis
+- Validates "Don't" examples trigger warnings
+- Validates "Do" examples pass checks
+
+#### Coverage Tests
+Analyzes security standard coverage:
+- CWE Top 25 coverage percentage
+- OWASP Top 10 2021 coverage
+- OWASP LLM Top 10 coverage
+- Gap identification for languages/frameworks
+
+### CI/CD Integration
+
+#### GitHub Actions
+
+```yaml
+# .github/workflows/test-rules.yml
+name: Test Security Rules
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r tests/requirements.txt
+          pip install semgrep bandit
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Generate coverage report
+        run: pytest tests/coverage/ -v -s
+```
+
+#### Pre-commit Hook
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: test-security-rules
+        name: Test Security Rules
+        entry: pytest tests/structural/ tests/code_validation/ -q
+        language: system
+        pass_filenames: false
+        always_run: true
+```
+
+### Troubleshooting
+
+**Tests not finding rules:**
+```bash
+# Verify rules directory
+ls -la rules/
+find rules -name "CLAUDE.md" | head -10
+```
+
+**Semgrep/Bandit not installed:**
+```bash
+# Skip security tests
+pytest tests/ -m "not slow"
+
+# Or install tools
+pip install semgrep bandit
+```
+
+**Node.js validation fails:**
+```bash
+# Skip JavaScript validation
+pytest tests/code_validation/ -k "not javascript"
+```
+
+For detailed testing documentation, see [tests/README.md](tests/README.md).
+
 ## Verifying Rules Are Active
 
 To verify Claude Code is applying your rules:
