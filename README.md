@@ -159,6 +159,7 @@ claude-secure-coding-rules/
 │   │   ├── _core/iac-security.md  # Core IaC security principles
 │   │   ├── terraform/CLAUDE.md    # Terraform (state, modules, providers)
 │   │   └── pulumi/CLAUDE.md       # Pulumi (secrets, CrossGuard, ESC)
+│   │   └── bicep/CLAUDE.md        # Azure Bicep (secrets, authentication, network isolation)
 │   │
 │   ├── containers/              # Container security rules
 │   │   ├── _core/container-security.md  # Core container principles
