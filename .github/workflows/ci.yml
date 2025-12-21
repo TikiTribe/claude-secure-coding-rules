@@ -18,6 +18,7 @@ on:
       - 'templates/**'
       - 'docs/**'
       - '*.md'
+  workflow_dispatch:  # Allow manual trigger
 
 permissions:
   contents: read
