@@ -2,33 +2,33 @@
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 # Default owners for everything in the repo
-* @TikiTribe/maintainers
+* @rocklambros
 
 # Core security rules require security team review
-/rules/_core/ @TikiTribe/maintainers
+/rules/_core/ @rocklambros
 
 # AI/ML specific rules
-/rules/aiml/ @TikiTribe/maintainers
+/rules/aiml/ @rocklambros
 
 # Infrastructure as Code rules
-/rules/iac/ @TikiTribe/maintainers
+/rules/iac/ @rocklambros
 
 # Language-specific rules
-/rules/languages/ @TikiTribe/maintainers
+/rules/languages/ @rocklambros
 
 # Backend framework rules
-/rules/backend/ @TikiTribe/maintainers
+/rules/backend/ @rocklambros
 
 # Frontend framework rules
-/rules/frontend/ @TikiTribe/maintainers
+/rules/frontend/ @rocklambros
 
 # Test framework changes
-/tests/ @TikiTribe/maintainers
+/tests/ @rocklambros
 
 # CI/CD and GitHub configuration
-/.github/ @TikiTribe/maintainers
+/.github/ @rocklambros
 
 # Documentation
-/docs/ @TikiTribe/maintainers
-README.md @TikiTribe/maintainers
-CLAUDE.md @TikiTribe/maintainers
+/docs/ @rocklambros
+README.md @rocklambros
+CLAUDE.md @rocklambros
