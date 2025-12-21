@@ -2,6 +2,13 @@
 
 This document provides Azure Bicep-specific security rules for Claude Code. These rules ensure infrastructure code follows security best practices and compliance requirements for Azure deployments.
 
+## Prerequisites
+
+Before applying these rules, ensure familiarity with:
+
+- [Core IaC Security Principles](../_core/iac-security.md) - Foundation for all infrastructure code
+- [OWASP Top 10 2025](../../_core/owasp-2025.md) - Web application security fundamentals
+
 ---
 
 ## Rule 1: Secure Parameter Handling
@@ -2647,6 +2654,23 @@ resource defenderForSQL 'Microsoft.Security/pricings@2023-01-01' = {
 ```
 
 ---
+
+## Quick Reference
+
+| Rule | Level | CWE/Standard |
+|------|-------|--------------|
+| Secure Parameter Handling | strict | CWE-798, CWE-532 |
+| Key Vault Security Configuration | strict | CWE-311 |
+| Storage Account Security | strict | CWE-319, CWE-311 |
+| SQL Database Security | strict | CWE-306, CWE-284 |
+| Network Security Groups | strict | CWE-284, CWE-923 |
+| Managed Identity Usage | strict | CWE-798 |
+| Resource Locks | strict | NIST CP-9 |
+| Diagnostic Settings | strict | CWE-778 |
+| Azure Policy Compliance | strict | NIST CM-7 |
+| Module Security | strict | CWE-829 |
+| Private Endpoints | strict | CWE-923 |
+| Automated Security Validation | strict | NIST SA-11 |
 
 ## Summary
 
