@@ -198,40 +198,13 @@ def test_custom_vulnerability_pattern(code_blocks_by_language):
 
 ### GitHub Actions
 
-```yaml
-# .github/workflows/test.yml
-name: Test Security Rules
+The repository includes a CI workflow that runs on every PR:
 
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r tests/requirements.txt
-          pip install semgrep bandit
-
-      - name: Run structural tests
-        run: pytest tests/structural/ -v
-
-      - name: Run code validation
-        run: pytest tests/code_validation/ -v
-
-      - name: Run security tests
-        run: pytest tests/security/ -v -m "not slow"
-
-      - name: Generate coverage report
-        run: pytest tests/coverage/ -v -s
-```
+- Structural validation
+- Code example validation  
+- Security analysis
+- Markdown linting
+- Coverage reporting
 
 ### Pre-commit Hook
 
@@ -263,7 +236,7 @@ repos:
 
 The coverage tests generate detailed reports:
 
-```
+```text
 CWE Coverage Report:
 ==================================================
 
@@ -284,6 +257,7 @@ Overall CWE Coverage: 45/70 (64.3%)
 ### Common Issues
 
 **No rules found**
+
 ```bash
 # Check rules directory exists
 ls -la rules/
@@ -293,6 +267,7 @@ find rules -name "CLAUDE.md"
 ```
 
 **Semgrep not available**
+
 ```bash
 # Install semgrep
 pip install semgrep
@@ -302,6 +277,7 @@ pytest tests/ -m "not slow"
 ```
 
 **Node.js validation fails**
+
 ```bash
 # Install Node.js for JavaScript validation
 # macOS
@@ -312,6 +288,7 @@ pytest tests/code_validation/ -k "not javascript"
 ```
 
 **Test failures on PR**
+
 ```bash
 # Run tests locally first
 pytest tests/ -v --tb=short
@@ -339,4 +316,4 @@ pytest tests/structural/test_rule_format.py::TestRuleStructure::test_all_rules_h
 
 ## License
 
-Same as main project.
+Same as main project (MIT).
