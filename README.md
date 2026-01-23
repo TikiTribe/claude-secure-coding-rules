@@ -12,6 +12,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 ### Key Features
 
 - **OWASP Top 10 2025** - Complete coverage of modern web security risks
+- **OWASP MCP Top 10 2025** - Model Context Protocol security for AI assistants and tools
 - **AI/ML Security** - Rules for machine learning systems using NIST AI RMF, MITRE ATLAS, and Google SAIF
 - **Agentic AI Security** - Specialized rules for autonomous AI systems with tool use
 - **100+ Rule Sets** - Covering 12 languages, 5 backend frameworks, 11 AI/ML frameworks, 5 frontend frameworks, 51 RAG tools, IaC (Terraform/Pulumi), containers (Docker/K8s), and CI/CD (GitHub Actions/GitLab CI)
@@ -66,6 +67,7 @@ claude-secure-coding-rules/
 ├── rules/
 │   ├── _core/                    # Foundation rules (apply to all projects)
 │   │   ├── owasp-2025.md        # OWASP Top 10 2025 security rules
+│   │   ├── mcp-security.md      # Model Context Protocol (MCP) security rules
 │   │   ├── ai-security.md       # AI/ML system security rules
 │   │   ├── agent-security.md    # Agentic AI security rules
 │   │   └── rag-security.md      # RAG system security rules
@@ -322,6 +324,7 @@ cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")  # SQL Injection!
 | **NIST AI RMF** | Full | AI risk management framework |
 | **MITRE ATLAS** | Full | Adversarial ML attack taxonomy |
 | **OWASP LLM Top 10** | Full | LLM-specific security risks |
+| **OWASP MCP Top 10** | Full | Model Context Protocol security |
 | **Google SAIF** | Partial | Secure AI framework |
 | **ISO/IEC 23894** | Partial | AI risk management guidance |
 
@@ -389,6 +392,22 @@ cp rules/languages/go/CLAUDE.md myproject/
 # - Secure context handling
 # - Apply template auto-escaping
 # - Handle errors securely
+```
+
+### MCP Server Development
+
+```bash
+# Setup for Model Context Protocol servers
+cp rules/_core/mcp-security.md myproject/
+cp rules/languages/typescript/CLAUDE.md myproject/  # or Python
+
+# Claude Code will now:
+# - Prevent hardcoded credentials in MCP configurations
+# - Enforce short-lived, scoped tokens
+# - Verify tool manifest integrity with signatures
+# - Sanitize tool arguments against command injection
+# - Isolate context between sessions
+# - Require mutual authentication (mTLS)
 ```
 
 ### Rust Systems

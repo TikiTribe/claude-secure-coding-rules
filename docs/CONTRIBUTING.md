@@ -11,8 +11,8 @@ Thank you for your interest in contributing! This guide explains how to add, mod
 
 ## Project Overview
 
-This project provides **25 security rule sets** covering:
-- **3 Core rule sets**: OWASP 2025, AI/ML Security, Agent Security
+This project provides **26 security rule sets** covering:
+- **4 Core rule sets**: OWASP 2025, MCP Security, AI/ML Security, Agent Security
 - **12 Language rules**: Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL
 - **5 Backend frameworks**: FastAPI, Express, Django, Flask, NestJS
 - **5 Frontend frameworks**: React, Next.js, Vue, Angular, Svelte
@@ -60,6 +60,7 @@ claude-secure-coding-rules/
 ├── rules/
 │   ├── _core/                       # Foundation rules (apply to all projects)
 │   │   ├── owasp-2025.md           # OWASP Top 10 2025 web security
+│   │   ├── mcp-security.md         # Model Context Protocol (MCP) security
 │   │   ├── ai-security.md          # AI/ML security (NIST AI RMF, MITRE ATLAS)
 │   │   └── agent-security.md       # Agentic AI security (tool use, sandboxing)
 │   │
