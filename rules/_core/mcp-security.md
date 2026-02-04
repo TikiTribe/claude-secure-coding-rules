@@ -2006,11 +2006,11 @@ async def execute_tool(tool_name: str, args: dict):
 
 ## Standards & References
 
-- **OWASP MCP Top 10:2025** - https://owasp.org/www-project-mcp-top-10/
-- **Model Context Protocol** - https://modelcontextprotocol.io/
-- **CWE Top 25** - https://cwe.mitre.org/top25/
-- **NIST AI RMF** - https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf
-- **SLSA Framework** - https://slsa.dev/
+- **OWASP MCP Top 10:2025** - <https://owasp.org/www-project-mcp-top-10/>
+- **Model Context Protocol** - <https://modelcontextprotocol.io/>
+- **CWE Top 25** - <https://cwe.mitre.org/top25/>
+- **NIST AI RMF** - <https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf>
+- **SLSA Framework** - <https://slsa.dev/>
 - **NIST SP 800-204A** - Microservices Security
 - **ISO/IEC 27001** - Information Security Management
 
