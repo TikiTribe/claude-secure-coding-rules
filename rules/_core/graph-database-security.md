@@ -1172,6 +1172,27 @@ audit.log_security_event(
 )
 ```
 
+**Don't**:
+```python
+# VULNERABLE: No audit logging
+def find_entity(entity_id: str):
+    return neo4j_client.find_entity(entity_id)  # No visibility into who accessed what
+
+# VULNERABLE: Logging sensitive data
+def find_user_data(user_id: str):
+    result = neo4j_client.query(f"MATCH (u:User {{id: '{user_id}'}}) RETURN u")
+    logger.info(f"Query result: {result}")  # May contain PII or secrets
+
+# VULNERABLE: Insufficient detail
+def execute_query(query):
+    logger.info("Query executed")  # No user, query type, or timing information
+    return session.run(query)
+```
+
+**Why**: Graph databases in RAG systems contain sensitive knowledge relationships that require auditability for compliance (GDPR, SOC2), security incident response, and performance monitoring. Without audit logs, unauthorized access and data exfiltration go undetected.
+
+**Refs**: OWASP A09:2025 (Security Logging and Monitoring Failures), CWE-778 (Insufficient Logging), NIST 800-53 AU-2, GDPR Article 30
+
 ---
 
 ## Quick Reference

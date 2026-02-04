@@ -343,7 +343,7 @@ trainer.train()  # Could be poisoned
 # VULNERABLE: Auto-push to hub
 training_args = TrainingArguments(
     push_to_hub=True,
-    hub_token="hf_xxx"  # Exposed token
+    hub_token="hf_1234567890abcdef"  # Exposed token
 )
 
 # VULNERABLE: Pickle serialization
@@ -401,7 +401,7 @@ def upload_model(model, repo_id: str):
 login(token="hf_AbCdEfGhIjKlMnOp")
 
 # VULNERABLE: Token in code
-model.push_to_hub("my-model", token="hf_xxx")
+model.push_to_hub("my-model", token="hf_1234567890abcdef")
 
 # VULNERABLE: Add token to git credentials
 login(token=token, add_to_git_credential=True)  # Persists token
