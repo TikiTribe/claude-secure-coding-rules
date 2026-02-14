@@ -57,7 +57,7 @@ func createUser(username string) {
 
 ## SQL Security
 
-### Rule: Use Parameterized Queries
+### Rule: Use Parameterized Queries in Go database/sql
 
 **Level**: `strict`
 

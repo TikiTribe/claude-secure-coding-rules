@@ -8,6 +8,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 
 **Coverage**:
 - OWASP Top 10 2025 (web application security)
+- OWASP MCP Top 10 2025 (Model Context Protocol security)
 - AI/ML security (NIST AI RMF, MITRE ATLAS, Google SAIF)
 - Agentic AI security (tool use, autonomy, sandboxing)
 - Language-specific rules (Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL)
@@ -22,6 +23,7 @@ claude-secure-coding-rules/
 ├── rules/
 │   ├── _core/                      # Foundation rules (apply to all projects)
 │   │   ├── owasp-2025.md          # OWASP Top 10 2025 security rules
+│   │   ├── mcp-security.md        # Model Context Protocol (MCP) security rules
 │   │   ├── ai-security.md         # AI/ML system security rules
 │   │   └── agent-security.md      # Agentic AI security rules
 │   │
@@ -82,12 +84,12 @@ claude-secure-coding-rules/
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| Core Rules | 3 | OWASP 2025, AI Security, Agent Security |
+| Core Rules | 4 | OWASP 2025, MCP Security, AI Security, Agent Security |
 | Languages | 12 | Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL |
 | Backend Frameworks | 5 | FastAPI, Express, Django, Flask, NestJS |
 | AI/ML Frameworks | 11 | LangChain, CrewAI, AutoGen, Transformers, vLLM, Triton, TorchServe, Ray Serve, BentoML, MLflow, Modal |
 | Frontend Frameworks | 5 | React, Next.js, Vue, Angular, Svelte |
-| **Total Rule Sets** | **36** | Comprehensive security coverage |
+| **Total Rule Sets** | **37** | Comprehensive security coverage |
 
 ## Rule Format
 

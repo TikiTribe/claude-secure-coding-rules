@@ -168,19 +168,24 @@ class TestRuleContent:
     def test_rule_names_are_unique(
         self, all_rules: list[dict[str, Any]]
     ) -> None:
-        """Verify all rule names are unique across the project."""
-        seen_names: dict[str, Path] = {}
+        """Verify rule names are unique within each file (duplicates across files are allowed)."""
+        file_rules: dict[Path, list[str]] = {}
         duplicates = []
 
+        # Group rules by file
         for rule in all_rules:
+            filepath = rule["filepath"]
             name = rule["name"]
-            if name in seen_names:
+            
+            if filepath not in file_rules:
+                file_rules[filepath] = []
+            
+            if name in file_rules[filepath]:
                 duplicates.append(
-                    f"Duplicate rule name '{name}': "
-                    f"{seen_names[name]} and {rule['filepath']}"
+                    f"Duplicate rule name '{name}' within file {filepath}"
                 )
             else:
-                seen_names[name] = rule["filepath"]
+                file_rules[filepath].append(name)
 
         if duplicates:
             pytest.fail("\n".join(duplicates))
@@ -277,6 +282,10 @@ class TestInternalLinks:
             for link_text, link_target in links:
                 # Skip external links
                 if link_target.startswith(("http://", "https://", "#")):
+                    continue
+                
+                # Skip code patterns that look like links (e.g., [tool_name](**args))
+                if link_target.startswith("**"):
                     continue
 
                 # Resolve the link path

@@ -63,7 +63,7 @@ class RuleParser:
     )
 
     # Pattern for rule headers
-    RULE_HEADER_PATTERN = re.compile(r"^##\s+Rule:\s+(.+)$", re.MULTILINE)
+    RULE_HEADER_PATTERN = re.compile(r"^###\s+Rule:\s+(.+)$", re.MULTILINE)
 
     def __init__(self, content: str, filepath: Path) -> None:
         """Initialize parser with markdown content."""
@@ -75,10 +75,10 @@ class RuleParser:
     def _parse(self) -> None:
         """Parse all rules from the markdown content."""
         # Split content by rule headers
-        rule_splits = re.split(r"(?=^## Rule:)", self.content, flags=re.MULTILINE)
+        rule_splits = re.split(r"(?=^### Rule:)", self.content, flags=re.MULTILINE)
 
         for rule_text in rule_splits:
-            if not rule_text.strip() or "## Rule:" not in rule_text:
+            if not rule_text.strip() or "### Rule:" not in rule_text:
                 continue
 
             rule = self._parse_rule(rule_text)
@@ -269,16 +269,3 @@ def owasp_references(all_rules: list[dict[str, Any]]) -> dict[str, list[str]]:
             owasp_refs[item].append(rule["name"])
 
     return owasp_refs
-
-
-# Coverage configuration
-def pytest_cov_config():
-    """Return coverage configuration."""
-    return {
-        "branch": True,
-        "source": ["tests"],
-        "omit": [
-            "*/conftest.py",
-            "*/__pycache__/*"
-        ]
-    }
