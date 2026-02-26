@@ -66,12 +66,16 @@ $result = $pdo->query("SELECT * FROM products WHERE size = '$size'");
 
 **Do**:
 ```php
-// Safe: Validate with realpath() and confirm prefix
+// Safe: Validate with realpath() and confirm prefix (requires PHP 8.0+ for str_starts_with)
 function safeReadFile(string $filename, string $baseDir = '/app/data'): string {
-    $baseDir = realpath($baseDir);
-    $fullPath = realpath($baseDir . DIRECTORY_SEPARATOR . $filename);
+    $resolvedBase = realpath($baseDir);
+    if ($resolvedBase === false) {
+        throw new RuntimeException('Base directory does not exist.');
+    }
 
-    if ($fullPath === false || !str_starts_with($fullPath, $baseDir . DIRECTORY_SEPARATOR)) {
+    $fullPath = realpath($resolvedBase . DIRECTORY_SEPARATOR . $filename);
+
+    if ($fullPath === false || !str_starts_with($fullPath, $resolvedBase . DIRECTORY_SEPARATOR)) {
         throw new RuntimeException('Path traversal attempt detected.');
     }
 
@@ -158,7 +162,7 @@ ini_set('session.use_strict_mode', 1);       // Reject uninitialized session IDs
 ini_set('session.use_only_cookies', 1);      // No session ID in URL
 ini_set('session.use_trans_sid', 0);
 ini_set('session.cookie_httponly', 1);       // Block JavaScript access to cookie
-ini_set('session.cookie_secure', 1);         // HTTPS only
+ini_set('session.cookie_secure', isset($_SERVER['HTTPS']) ? 1 : 0); // HTTPS only when available
 ini_set('session.cookie_samesite', 'Strict');
 ini_set('session.sid_length', 32);           // Manual recommends 32 chars minimum
 ini_set('session.sid_bits_per_character', 5);
@@ -254,6 +258,13 @@ $result = $pdo->query($sql); // PDOException shown to user reveals table names
 
 **Do**:
 ```php
+<?php
+// declare(strict_types=1) must be the very first statement in a file, before any other code.
+// Place it at the top of every PHP file to prevent silent type coercions.
+declare(strict_types=1);
+```
+
+```php
 // Safe: Use filter_input with strict validation
 $email = filter_input(INPUT_POST, 'email', FILTER_VALIDATE_EMAIL);
 if ($email === false || $email === null) {
@@ -270,9 +281,6 @@ $sort = in_array($_GET['sort'] ?? '', $allowedSorts, true) ? $_GET['sort'] : 'na
 
 // Safe: Escape output for HTML context
 echo htmlspecialchars($userInput, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-
-// Safe: Enable strict types to prevent unintended coercions
-declare(strict_types=1);
 ```
 
 **Don't**:
@@ -318,10 +326,15 @@ $op = $_GET['op'] ?? '';
 if (!array_key_exists($op, $allowedOperations)) {
     throw new InvalidArgumentException('Unknown operation.');
 }
+
+// Validate the file path before passing it to the operation
+$safeFilePath = safeReadFile($_GET['file'] ?? '', '/app/data'); // uses the safeReadFile() above
+
 $fn = $allowedOperations[$op];
 $result = $fn($safeFilePath);
 
 // Safe: If a shell command is unavoidable, use escapeshellarg() on every argument
+$validatedFilename = basename($_GET['file'] ?? '');
 $safeArg = escapeshellarg($validatedFilename);
 $output = shell_exec("wc -l $safeArg");
 ```
@@ -368,8 +381,12 @@ if (password_verify($plaintext, $hash)) {
 $hash = password_hash($plaintext, PASSWORD_ARGON2ID);
 
 // Safe: Cryptographically secure random bytes for tokens
-$token = bin2hex(random_bytes(32));   // 64-char hex token
-$apiKey = base64_encode(random_bytes(32));
+try {
+    $token = bin2hex(random_bytes(32));   // 64-char hex token
+    $apiKey = base64_encode(random_bytes(32));
+} catch (\Random\RandomException $e) {
+    throw new \RuntimeException('Failed to generate secure random bytes.', 0, $e);
+}
 ```
 
 **Don't**:
