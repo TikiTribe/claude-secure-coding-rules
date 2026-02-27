@@ -52,7 +52,7 @@ $result = $pdo->query("SELECT * FROM products WHERE size = '$size'");
 
 **Why**: SQL injection allows attackers to read, modify, or delete database data, and on some servers can escalate to OS-level command execution.
 
-**Refs**: CWE-89, OWASP A03:2025
+**Refs**: CWE-89, OWASP A05:2025
 
 ---
 
@@ -66,23 +66,24 @@ $result = $pdo->query("SELECT * FROM products WHERE size = '$size'");
 
 **Do**:
 ```php
-// Safe: Validate with realpath() and confirm prefix (requires PHP 8.0+ for str_starts_with)
-function safeReadFile(string $filename, string $baseDir = '/app/data'): string {
+// Safe: Validate path and return it — does NOT read the file
+// (requires PHP 8.0+ for str_starts_with; use substr($fullPath, 0, strlen($resolvedBase)) === $resolvedBase for PHP 7.x)
+function safeValidatePath(string $filename, string $baseDir = '/app/data'): string {
     $resolvedBase = realpath($baseDir);
     if ($resolvedBase === false) {
-        throw new RuntimeException('Base directory does not exist.');
+        throw new \RuntimeException('Base directory does not exist.');
     }
 
     $fullPath = realpath($resolvedBase . DIRECTORY_SEPARATOR . $filename);
 
     if ($fullPath === false || !str_starts_with($fullPath, $resolvedBase . DIRECTORY_SEPARATOR)) {
-        throw new RuntimeException('Path traversal attempt detected.');
+        throw new \RuntimeException('Path traversal attempt detected.');
     }
 
-    return file_get_contents($fullPath);
+    return $fullPath; // return the validated path, not the file contents
 }
 
-// Safe: Whitelist with basename() and ctype checks
+// Safe: Whitelist with basename() and regex allowlist
 $filename = basename($_POST['filename']);
 if (!preg_match('/^[a-zA-Z0-9_-]+\.(csv|txt)$/', $filename)) {
     throw new InvalidArgumentException('Invalid filename.');
@@ -122,6 +123,7 @@ $data = file_get_contents($_GET['path']);
 **Do**:
 ```php
 // Safe: Reject strings containing null bytes before any file operation
+// (requires PHP 8.0+ for str_contains; use strpos($input, "\0") !== false for PHP 7.x)
 function sanitizeFilename(string $input): string {
     if (str_contains($input, "\0")) {
         throw new InvalidArgumentException('Null byte detected in filename.');
@@ -244,7 +246,7 @@ $result = $pdo->query($sql); // PDOException shown to user reveals table names
 
 **Why**: Error messages reveal server paths, database schemas, library versions, and variable names — all useful to an attacker profiling the system.
 
-**Refs**: CWE-209, OWASP A05:2025
+**Refs**: CWE-209, OWASP A02:2025
 
 ---
 
@@ -299,7 +301,7 @@ echo htmlentities($input); // charset defaults vary by PHP version
 
 **Why**: Every value from the browser — including cookies and hidden fields — is attacker-controlled. Unvalidated input is the root cause of injection, XSS, and filesystem attacks.
 
-**Refs**: CWE-20, CWE-79, OWASP A03:2025
+**Refs**: CWE-20, CWE-79, OWASP A05:2025
 
 ---
 
@@ -318,8 +320,8 @@ echo htmlentities($input); // charset defaults vary by PHP version
 
 // Safe: Use a fixed command map; never pass user input to the shell
 $allowedOperations = [
-    'count_lines' => fn(string $file) => substr_count(file_get_contents($file), "\n"),
-    'word_count'  => fn(string $file) => str_word_count(file_get_contents($file)),
+    'count_lines' => fn(string $path) => substr_count(file_get_contents($path), "\n"),
+    'word_count'  => fn(string $path) => str_word_count(file_get_contents($path)),
 ];
 
 $op = $_GET['op'] ?? '';
@@ -327,11 +329,11 @@ if (!array_key_exists($op, $allowedOperations)) {
     throw new InvalidArgumentException('Unknown operation.');
 }
 
-// Validate the file path before passing it to the operation
-$safeFilePath = safeReadFile($_GET['file'] ?? '', '/app/data'); // uses the safeReadFile() above
+// Validate the path — safeValidatePath() returns a safe path, not file contents
+$safePath = safeValidatePath($_GET['file'] ?? '', '/app/data');
 
 $fn = $allowedOperations[$op];
-$result = $fn($safeFilePath);
+$result = $fn($safePath);
 
 // Safe: If a shell command is unavoidable, use escapeshellarg() on every argument
 $validatedFilename = basename($_GET['file'] ?? '');
@@ -355,7 +357,7 @@ require($_POST['module']);
 
 **Why**: Functions like `eval()`, `exec()`, and `include` with user-controlled input enable arbitrary code and command execution, potentially resulting in full server compromise.
 
-**Refs**: CWE-94, CWE-78, CWE-98, OWASP A03:2025
+**Refs**: CWE-94, CWE-78, CWE-98, OWASP A05:2025
 
 ---
 
@@ -409,7 +411,7 @@ $user->password = $plaintext; // saved to DB
 
 **Why**: Weak hashing algorithms and predictable random number generators allow attackers to crack passwords and forge tokens offline.
 
-**Refs**: CWE-327, CWE-328, CWE-330, OWASP A02:2025
+**Refs**: CWE-327, CWE-328, CWE-330, OWASP A04:2025
 
 ---
 
@@ -457,7 +459,7 @@ include("pages/$page.php"); // Local file inclusion (LFI) or RFI if allow_url_in
 
 **Why**: Exposing the PHP version, server configuration, and include paths gives attackers a detailed map to exploit known vulnerabilities and craft targeted attacks.
 
-**Refs**: CWE-200, OWASP A05:2025
+**Refs**: CWE-200, OWASP A02:2025
 
 ---
 
