@@ -11,9 +11,9 @@ Thank you for your interest in contributing! This guide explains how to add, mod
 
 ## Project Overview
 
-This project provides **26 security rule sets** covering:
+This project provides **27 security rule sets** covering:
 - **4 Core rule sets**: OWASP 2025, MCP Security, AI/ML Security, Agent Security
-- **12 Language rules**: Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL
+- **13 Language rules**: Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL, PHP
 - **5 Backend frameworks**: FastAPI, Express, Django, Flask, NestJS
 - **5 Frontend frameworks**: React, Next.js, Vue, Angular, Svelte
 
@@ -76,7 +76,8 @@ claude-secure-coding-rules/
 │   │   ├── r/CLAUDE.md             # Shiny apps, data security, packages
 │   │   ├── cpp/CLAUDE.md           # Memory safety, buffer overflows, RAII
 │   │   ├── julia/CLAUDE.md         # Metaprogramming, serialization
-│   │   └── sql/CLAUDE.md           # Injection, permissions, procedures
+│   │   ├── sql/CLAUDE.md           # Injection, permissions, procedures
+│   │   └── php/CLAUDE.md           # SQL injection, path traversal, session security, code execution
 │   │
 │   ├── backend/                     # Backend framework rules
 │   │   ├── fastapi/CLAUDE.md       # Pydantic, JWT, authorization, CORS

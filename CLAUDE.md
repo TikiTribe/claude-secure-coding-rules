@@ -11,7 +11,7 @@ This repository provides comprehensive security rules for Claude Code, covering 
 - OWASP MCP Top 10 2025 (Model Context Protocol security)
 - AI/ML security (NIST AI RMF, MITRE ATLAS, Google SAIF)
 - Agentic AI security (tool use, autonomy, sandboxing)
-- Language-specific rules (Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL)
+- Language-specific rules (Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL, PHP)
 - Backend frameworks (FastAPI, Express, Django, Flask, NestJS)
 - AI/ML frameworks (LangChain, CrewAI, AutoGen, Transformers, vLLM, Triton, TorchServe, Ray Serve, BentoML, MLflow, Modal)
 - Frontend frameworks (React, Next.js, Vue, Angular, Svelte)
@@ -39,7 +39,8 @@ claude-secure-coding-rules/
 │   │   ├── r/CLAUDE.md            # Shiny apps, data security, package verification
 │   │   ├── cpp/CLAUDE.md          # Memory safety, buffer overflows, smart pointers
 │   │   ├── julia/CLAUDE.md        # Metaprogramming, type safety, serialization
-│   │   └── sql/CLAUDE.md          # Injection, permissions, stored procedures
+│   │   ├── sql/CLAUDE.md          # Injection, permissions, stored procedures
+│   │   └── php/CLAUDE.md          # SQL injection, path traversal, session security, code execution, crypto
 │   │
 │   ├── backend/                    # Backend framework rules
 │   │   ├── fastapi/CLAUDE.md      # Pydantic validation, JWT, authorization, CORS, AI APIs
@@ -85,11 +86,11 @@ claude-secure-coding-rules/
 | Category | Count | Description |
 |----------|-------|-------------|
 | Core Rules | 4 | OWASP 2025, MCP Security, AI Security, Agent Security |
-| Languages | 12 | Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL |
+| Languages | 13 | Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL, PHP |
 | Backend Frameworks | 5 | FastAPI, Express, Django, Flask, NestJS |
 | AI/ML Frameworks | 11 | LangChain, CrewAI, AutoGen, Transformers, vLLM, Triton, TorchServe, Ray Serve, BentoML, MLflow, Modal |
 | Frontend Frameworks | 5 | React, Next.js, Vue, Angular, Svelte |
-| **Total Rule Sets** | **37** | Comprehensive security coverage |
+| **Total Rule Sets** | **38** | Comprehensive security coverage |
 
 ## Rule Format
 

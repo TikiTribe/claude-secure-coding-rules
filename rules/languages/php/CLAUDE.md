@@ -62,11 +62,13 @@ $result = $pdo->query("SELECT * FROM products WHERE size = '$size'");
 
 **Level**: `strict`
 
-**When**: Reading, writing, or deleting files using any user-supplied input.
+**When**: Reading or deleting files using any user-supplied input. For writing new files, see `safeWritePath()` below.
 
 **Do**:
 ```php
-// Safe: Validate path and return it — does NOT read the file
+// Safe: Validate path to an *existing* file (read, delete).
+// realpath() returns false for non-existent paths, so this function
+// is unsuitable for validating write targets for new files.
 // (requires PHP 8.0+ for str_starts_with; use substr($fullPath, 0, strlen($resolvedBase)) === $resolvedBase for PHP 7.x)
 function safeValidatePath(string $filename, string $baseDir = '/app/data'): string {
     $resolvedBase = realpath($baseDir);
@@ -83,10 +85,31 @@ function safeValidatePath(string $filename, string $baseDir = '/app/data'): stri
     return $fullPath; // return the validated path, not the file contents
 }
 
+// Safe: Validate a path for *writing* a new file (target need not exist yet).
+// Resolve the parent directory with realpath(), then append the sanitized filename.
+function safeWritePath(string $filename, string $baseDir = '/app/data'): string {
+    $resolvedBase = realpath($baseDir);
+    if ($resolvedBase === false) {
+        throw new \RuntimeException('Base directory does not exist.');
+    }
+
+    $sanitized = basename($filename);
+    if (!preg_match('/^[a-zA-Z0-9_-]+\.(csv|txt)$/', $sanitized)) {
+        throw new \InvalidArgumentException('Invalid filename.');
+    }
+
+    $fullPath = $resolvedBase . DIRECTORY_SEPARATOR . $sanitized;
+    if (!str_starts_with($fullPath, $resolvedBase . DIRECTORY_SEPARATOR)) {
+        throw new \RuntimeException('Path traversal attempt detected.');
+    }
+
+    return $fullPath;
+}
+
 // Safe: Whitelist with basename() and regex allowlist
 $filename = basename($_POST['filename']);
 if (!preg_match('/^[a-zA-Z0-9_-]+\.(csv|txt)$/', $filename)) {
-    throw new InvalidArgumentException('Invalid filename.');
+    throw new \InvalidArgumentException('Invalid filename.');
 }
 $path = '/app/uploads/' . $filename;
 
@@ -126,7 +149,7 @@ $data = file_get_contents($_GET['path']);
 // (requires PHP 8.0+ for str_contains; use strpos($input, "\0") !== false for PHP 7.x)
 function sanitizeFilename(string $input): string {
     if (str_contains($input, "\0")) {
-        throw new InvalidArgumentException('Null byte detected in filename.');
+        throw new \InvalidArgumentException('Null byte detected in filename.');
     }
     return basename($input);
 }
@@ -165,7 +188,7 @@ ini_set('session.use_only_cookies', 1);      // No session ID in URL
 ini_set('session.use_trans_sid', 0);
 ini_set('session.cookie_httponly', 1);       // Block JavaScript access to cookie
 ini_set('session.cookie_secure', isset($_SERVER['HTTPS']) ? 1 : 0); // HTTPS only when available
-ini_set('session.cookie_samesite', 'Strict');
+ini_set('session.cookie_samesite', 'Strict'); // PHP 7.3+ required for this ini directive
 ini_set('session.sid_length', 32);           // Manual recommends 32 chars minimum
 ini_set('session.sid_bits_per_character', 5);
 session_start();
@@ -270,7 +293,7 @@ declare(strict_types=1);
 // Safe: Use filter_input with strict validation
 $email = filter_input(INPUT_POST, 'email', FILTER_VALIDATE_EMAIL);
 if ($email === false || $email === null) {
-    throw new InvalidArgumentException('Invalid email address.');
+    throw new \InvalidArgumentException('Invalid email address.');
 }
 
 $age = filter_input(INPUT_GET, 'age', FILTER_VALIDATE_INT, [
@@ -326,7 +349,7 @@ $allowedOperations = [
 
 $op = $_GET['op'] ?? '';
 if (!array_key_exists($op, $allowedOperations)) {
-    throw new InvalidArgumentException('Unknown operation.');
+    throw new \InvalidArgumentException('Unknown operation.');
 }
 
 // Validate the path — safeValidatePath() returns a safe path, not file contents
@@ -371,22 +394,29 @@ require($_POST['module']);
 
 **Do**:
 ```php
-// Safe: Password hashing with password_hash() (bcrypt by default)
-$hash = password_hash($plaintext, PASSWORD_BCRYPT, ['cost' => 12]);
+// Safe: Use PASSWORD_DEFAULT so PHP automatically selects and upgrades the algorithm
+$hash = password_hash($plaintext, PASSWORD_DEFAULT);
+
+// Safe: Re-hash on login if the algorithm or cost factor has been upgraded
+if (password_needs_rehash($hash, PASSWORD_DEFAULT)) {
+    $hash = password_hash($plaintext, PASSWORD_DEFAULT);
+    // Persist the new hash to the database
+}
 
 // Safe: Verification
 if (password_verify($plaintext, $hash)) {
     // authenticated
 }
 
-// Safe: Upgrade to Argon2id when available
+// Safe: Opt into Argon2id explicitly when server supports it (PHP 7.3+, requires libargon2)
 $hash = password_hash($plaintext, PASSWORD_ARGON2ID);
 
 // Safe: Cryptographically secure random bytes for tokens
+// \Random\RandomException is available in PHP 8.2+; catch \Exception for PHP 7.x/8.0/8.1 compatibility
 try {
     $token = bin2hex(random_bytes(32));   // 64-char hex token
     $apiKey = base64_encode(random_bytes(32));
-} catch (\Random\RandomException $e) {
+} catch (\Exception $e) {
     throw new \RuntimeException('Failed to generate secure random bytes.', 0, $e);
 }
 ```
