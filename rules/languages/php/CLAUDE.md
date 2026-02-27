@@ -87,6 +87,8 @@ function safeValidatePath(string $filename, string $baseDir = '/app/data'): stri
 
 // Safe: Validate a path for *writing* a new file (target need not exist yet).
 // Resolve the parent directory with realpath(), then append the sanitized filename.
+// Security comes from basename() (strips directory components) and the regex allowlist
+// (prevents path separators, stream wrappers, and unexpected characters).
 function safeWritePath(string $filename, string $baseDir = '/app/data'): string {
     $resolvedBase = realpath($baseDir);
     if ($resolvedBase === false) {
@@ -98,12 +100,7 @@ function safeWritePath(string $filename, string $baseDir = '/app/data'): string 
         throw new \InvalidArgumentException('Invalid filename.');
     }
 
-    $fullPath = $resolvedBase . DIRECTORY_SEPARATOR . $sanitized;
-    if (!str_starts_with($fullPath, $resolvedBase . DIRECTORY_SEPARATOR)) {
-        throw new \RuntimeException('Path traversal attempt detected.');
-    }
-
-    return $fullPath;
+    return $resolvedBase . DIRECTORY_SEPARATOR . $sanitized;
 }
 
 // Safe: Whitelist with basename() and regex allowlist
