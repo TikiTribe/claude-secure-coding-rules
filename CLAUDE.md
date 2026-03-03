@@ -90,7 +90,11 @@ claude-secure-coding-rules/
 | Backend Frameworks | 5 | FastAPI, Express, Django, Flask, NestJS |
 | AI/ML Frameworks | 11 | LangChain, CrewAI, AutoGen, Transformers, vLLM, Triton, TorchServe, Ray Serve, BentoML, MLflow, Modal |
 | Frontend Frameworks | 5 | React, Next.js, Vue, Angular, Svelte |
-| **Total Rule Sets** | **38** | Comprehensive security coverage |
+| RAG & Knowledge | 35 | LlamaIndex, Haystack, Pinecone, Weaviate, Neo4j, Milvus, and more |
+| Infrastructure as Code | 3 | Terraform, Pulumi (+ core IaC rules) |
+| Containers | 3 | Docker, Kubernetes (+ core container rules) |
+| CI/CD | 3 | GitHub Actions, GitLab CI (+ core CI/CD rules) |
+| **Total Rule Sets** | **82** | See README.md for the complete catalog |
 
 ## Rule Format
 

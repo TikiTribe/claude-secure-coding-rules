@@ -336,12 +336,108 @@ echo htmlentities($input); // charset defaults vary by PHP version
 **Do**:
 ```php
 // Safe: Use disable_functions in php.ini to block dangerous functions entirely
+// for applications that do not require shell access.
+// Remove shell_exec from this list only if your application genuinely needs it.
 // disable_functions = exec,passthru,shell_exec,system,proc_open,popen,eval
 
-// Safe: Use a fixed command map; never pass user input to the shell
+// Safe: Preferred approach — use pure PHP; never invoke the shell
+$baseDir = '/app/data';
+// MAX_FILE_SIZE is passed as the $maxBytes argument to readFileContents() in the
+// $allowedOperations closures below, enforcing the limit for every operation.
+define('MAX_FILE_SIZE', 10 * 1024 * 1024); // 10 MB limit to prevent memory exhaustion
+
+// Helper: canonicalize path, confirm it is within $baseDir, stream contents with size limit enforcement.
+// $baseDir is required so the function is safe regardless of how the caller obtained $path.
+function readFileContents(string $path, int $maxBytes, string $baseDir): string {
+    // Defense-in-depth: re-validate even when the caller has already used safeValidatePath()
+    $resolvedBase = realpath($baseDir);
+    if ($resolvedBase === false) {
+        throw new \RuntimeException('Base directory does not exist.');
+    }
+
+    $resolvedPath = realpath($path);
+    // Fail fast if the path cannot be resolved
+    if ($resolvedPath === false) {
+        throw new \RuntimeException('Path traversal attempt detected.');
+    }
+
+    // Ensure that the resolved path is either exactly the base directory or a child within it
+    $isSameAsBase     = ($resolvedPath === $resolvedBase);
+    $isChildOfBaseDir = str_starts_with($resolvedPath, $resolvedBase . DIRECTORY_SEPARATOR);
+    if (!$isSameAsBase && !$isChildOfBaseDir) {
+        throw new \RuntimeException('Path traversal attempt detected.');
+    }
+    if (!is_readable($resolvedPath)) {
+        throw new \RuntimeException('File is not readable.');
+    }
+
+    set_error_handler(static function (int $errno, string $errstr, string $errfile = '', int $errline = 0): void {
+        throw new \ErrorException($errstr, 0, $errno, $errfile, $errline);
+
+    });
+    try {
+        $handle = fopen($resolvedPath, 'rb');
+    } catch (\ErrorException $e) {
+        throw new \RuntimeException('Failed to open file for reading.', 0, $e);
+    } finally {
+        // PHP's finally block always executes after the try-catch, regardless of whether
+        // fopen() succeeded, threw an ErrorException, or caused the catch to re-throw.
+        // The error handler is therefore always restored before execution continues,
+        // and is never active beyond this try-catch-finally block.
+        restore_error_handler();
+    }
+    // Explicit false-check as a fallback: fopen() can return false without triggering
+    // a warning in some SAPI configurations, bypassing the error handler above.
+    if ($handle === false) {
+        throw new \RuntimeException('Failed to open file for reading.');
+    }
+    try {
+        $contents  = '';
+        // Use defined()/constant() instead of @constant() ?? 8192 to avoid relying on error suppression
+        // and to prevent a notice if PHP_SECURITY_FILE_CHUNK_SIZE is not defined.
+        $chunkSize = defined('PHP_SECURITY_FILE_CHUNK_SIZE') ? constant('PHP_SECURITY_FILE_CHUNK_SIZE') : 8192; // 8 KB default, configurable
+        $bytesRead = 0;
+
+        // The condition is evaluated in three steps on each iteration:
+        //   1) ($buffer = fread(...)) is evaluated first; fread() may return a string, '' (EOF),
+        //      or false (read error).
+        //   2) !== false : a false return from fread() fails this comparison; && is
+        //      short-circuited, so $buffer !== '' is never evaluated. The loop exits
+        //      and the error is thrown below.
+        //   3) $buffer !== '' : an empty-string return from fread() (EOF with a non-zero
+        //      chunk size) fails this comparison and the loop exits cleanly. ('' can also
+        //      occur if 0 bytes were requested, but $chunkSize is always positive here so ''
+        //      reliably means EOF.)
+        // feof() is intentionally avoided — it only becomes true *after* a read already
+        // hits EOF, causing one redundant extra iteration.
+        while (($buffer = fread($handle, $chunkSize)) !== false && $buffer !== '') {
+            // Check before appending: guards against files that grow between the
+            // initial filesize() check and the read, preventing memory exhaustion.
+            $bufferLen = strlen($buffer);
+            if ($bytesRead + $bufferLen > $maxBytes) {
+                throw new \RuntimeException('File too large to process safely.');
+            }
+            $bytesRead += $bufferLen;
+            $contents  .= $buffer;
+        }
+
+        if ($buffer === false) {
+            throw new \RuntimeException('Failed to read file contents.');
+        }
+    } finally {
+        fclose($handle);
+    }
+
+    return $contents;
+}
+
 $allowedOperations = [
-    'count_lines' => fn(string $path) => substr_count(file_get_contents($path), "\n"),
-    'word_count'  => fn(string $path) => str_word_count(file_get_contents($path)),
+    'count_lines' => function (string $path) use ($baseDir): int {
+        return substr_count(readFileContents($path, MAX_FILE_SIZE, $baseDir), "\n");
+    },
+    'word_count' => function (string $path) use ($baseDir): int {
+        return str_word_count(readFileContents($path, MAX_FILE_SIZE, $baseDir));
+    },
 ];
 
 $op = $_GET['op'] ?? '';
@@ -355,9 +451,9 @@ $safePath = safeValidatePath($_GET['file'] ?? '', '/app/data');
 $fn = $allowedOperations[$op];
 $result = $fn($safePath);
 
-// Safe: If a shell command is unavoidable, use escapeshellarg() on every argument
-$validatedFilename = basename($_GET['file'] ?? '');
-$safeArg = escapeshellarg($validatedFilename);
+// Safe: Only when shell access is unavoidable and shell_exec is intentionally enabled,
+// pass the already-validated $safePath through escapeshellarg() — never re-validate from raw input
+$safeArg = escapeshellarg($safePath);
 $output = shell_exec("wc -l $safeArg");
 ```
 

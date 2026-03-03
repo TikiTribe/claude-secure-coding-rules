@@ -11,11 +11,13 @@ Thank you for your interest in contributing! This guide explains how to add, mod
 
 ## Project Overview
 
-This project provides **27 security rule sets** covering:
+This guide covers the **27 foundational security rule sets**:
 - **4 Core rule sets**: OWASP 2025, MCP Security, AI/ML Security, Agent Security
 - **13 Language rules**: Python, JavaScript, TypeScript, Go, Rust, Java, C#, Ruby, R, C++, Julia, SQL, PHP
 - **5 Backend frameworks**: FastAPI, Express, Django, Flask, NestJS
 - **5 Frontend frameworks**: React, Next.js, Vue, Angular, Svelte
+
+The full repository also includes RAG, IaC, container, and CI/CD rule sets. See [README.md](../README.md) for the complete catalog.
 
 ## Rule Structure
 
