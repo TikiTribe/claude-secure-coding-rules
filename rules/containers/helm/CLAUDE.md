@@ -83,10 +83,13 @@ spec:
 
 ```bash
 # Install with secret pre-created (not stored in chart)
+tmpfile="$(mktemp)"
+vault kv get -field=password secret/prod/db > "$tmpfile"
 kubectl create secret generic myapp-db-credentials \
-  --from-literal=password="$(vault kv get -field=password secret/prod/db)" \
+  --from-file=password="$tmpfile" \
   --from-literal=username="myapp" \
   --namespace production
+rm -f "$tmpfile"
 
 helm install myapp ./myapp --namespace production
 ```
