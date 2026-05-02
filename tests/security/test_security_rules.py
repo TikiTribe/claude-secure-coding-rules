@@ -65,8 +65,12 @@ class TestSemgrepIntegration:
                 try:
                     fname.write_text(block["code"])
                     index_map[str(fname)] = (lang, block["rule_name"])
-                except OSError:
-                    pass
+                except OSError as exc:
+                    warnings.warn(
+                        f"Skipping Semgrep test block write for {fname}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
 
         if not index_map:
             return {}
