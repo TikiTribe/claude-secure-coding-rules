@@ -82,9 +82,10 @@ def update_profile(request):
         if form.is_valid():
             form.save()
     return render(request, 'profile.html')
+```
 
-# For AJAX, include token in headers
-# template.html
+```html
+<!-- template.html: Include CSRF token in AJAX headers -->
 <script>
 const csrftoken = document.querySelector('[name=csrfmiddlewaretoken]').value;
 fetch('/api/update', {

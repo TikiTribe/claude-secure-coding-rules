@@ -1149,7 +1149,8 @@ uv tree --outdated
 
 ### Node.js — `package.json` + lockfile
 
-```json
+```jsonc
+// package.json — use exact versions (no ^ or ~)
 {
   "name": "my-app",
   "version": "1.0.0",
@@ -1273,7 +1274,7 @@ pydantic
 # - No integrity verification
 ```
 
-```json
+```jsonc
 // Vulnerable package.json — floating ranges
 {
   "dependencies": {

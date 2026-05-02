@@ -269,15 +269,20 @@ class TestInternalLinks:
     """Tests for internal link validity."""
 
     def test_no_broken_internal_links(
-        self, rule_files: list[Path], project_root: Path
+        self, rule_files: list[Path], project_root: Path,
+        file_contents_cache: dict
     ) -> None:
         """Verify all internal markdown links point to existing files."""
         link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
         errors = []
 
+        code_block_pattern = re.compile(r"```.*?```", re.DOTALL)
+
         for filepath in rule_files:
-            content = filepath.read_text(encoding="utf-8")
-            links = link_pattern.findall(content)
+            content = file_contents_cache.get(filepath) or filepath.read_text(encoding="utf-8")
+            # Strip code blocks before scanning for links to avoid false positives
+            stripped = code_block_pattern.sub("", content)
+            links = link_pattern.findall(stripped)
 
             for link_text, link_target in links:
                 # Skip external links
@@ -308,14 +313,15 @@ class TestInternalLinks:
             pytest.fail("\n".join(errors))
 
     def test_no_broken_image_links(
-        self, rule_files: list[Path], project_root: Path
+        self, rule_files: list[Path], project_root: Path,
+        file_contents_cache: dict
     ) -> None:
         """Verify all image links point to existing files."""
         image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
         errors = []
 
         for filepath in rule_files:
-            content = filepath.read_text(encoding="utf-8")
+            content = file_contents_cache.get(filepath) or filepath.read_text(encoding="utf-8")
             images = image_pattern.findall(content)
 
             for alt_text, image_path in images:

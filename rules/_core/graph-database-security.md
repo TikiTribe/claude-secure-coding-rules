@@ -1062,7 +1062,7 @@ Resources:
 
 ### ArangoDB Security Configuration
 
-```yaml
+```ini
 # arangod.conf
 [server]
 authentication = true
@@ -1168,7 +1168,7 @@ def find_entity(entity_id: str):
 audit.log_security_event(
     "traversal_limit_exceeded",
     user_id="user_456",
-    {"requested_depth": 10, "max_allowed": 5}
+    **{"requested_depth": 10, "max_allowed": 5}
 )
 ```
 

@@ -70,7 +70,7 @@ terraform {
 **When**: Configuring backend storage permissions for IaC state
 
 **Do**:
-```json
+```jsonc
 // AWS S3 bucket policy - restrict to specific roles
 {
   "Version": "2012-10-17",
@@ -134,7 +134,7 @@ resource "google_storage_bucket" "terraform_state" {
 ```
 
 **Don't**:
-```json
+```jsonc
 // VULNERABLE: Public bucket policy
 {
   "Version": "2012-10-17",

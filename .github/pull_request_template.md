@@ -41,11 +41,18 @@
 
 ## Testing
 
-<!-- Describe any testing performed -->
+CI runs all tests automatically on every PR. The following checks must pass before merge:
 
-- [ ] Ran `pytest tests/structural/` - format validation
-- [ ] Ran `pytest tests/code_validation/` - code syntax
-- [ ] Verified code examples work as documented
+- ✅ `pytest tests/structural/` — format validation (CI: structural-validation job)
+- ✅ `pytest tests/code_validation/` — code syntax validation (CI: code-validation job)
+- ✅ `pytest tests/security/` — security pattern coverage (CI: security-analysis job)
+- ✅ `pytest tests/coverage/` — standards coverage ≥90% (CI: coverage-enforcement job)
+- ✅ Markdownlint — Markdown formatting (CI: markdown-lint job)
+
+To run tests locally before pushing:
+```bash
+pytest tests/ -v --tb=short
+```
 
 ## Related Issues
 

@@ -75,7 +75,7 @@ def train_model(user_uploaded_data):
 
 **Why**: Data poisoning attacks (MITRE ATLAS AML.T0020) corrupt training data to cause model misbehavior. Integrity verification ensures data hasn't been tampered with.
 
-**Refs**: MITRE ATLAS AML.T0020, NIST AI RMF MAP 1.5, ISO/IEC 23894 Annex B, Google SAIF Data Security
+**Refs**: MITRE ATLAS AML.T0020, NIST AI RMF MAP 1.5, ISO/IEC 23894 Annex B, Google SAIF Data Security, OWASP LLM03
 
 ---
 
@@ -602,7 +602,7 @@ def run_analysis():
 
 **Why**: LLMs can be manipulated to generate malicious content. Output validation prevents XSS, injection, and code execution attacks.
 
-**Refs**: OWASP LLM02, OWASP A03:2025, NIST AI 100-1 §3.2
+**Refs**: OWASP LLM02, OWASP LLM09, OWASP A03:2025, NIST AI 100-1 §3.2
 
 ---
 
@@ -670,8 +670,7 @@ def require_internal_auth():
 **Don't**:
 ```python
 # VULNERABLE: Running as root
-# Dockerfile
-USER root
+# Dockerfile command (not Python): USER root
 
 # VULNERABLE: No resource limits
 # Can be exploited for DoS
