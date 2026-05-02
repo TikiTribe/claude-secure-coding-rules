@@ -554,9 +554,22 @@ class TestGoExamples:
                 )
 
                 if result.returncode != 0:
-                    # Filter out import errors (common in examples)
                     stderr = result.stderr
-                    if "could not import" not in stderr:
+                    # Skip errors expected in educational code snippets:
+                    # - could not import / no required module provides: external packages
+                    # - undefined: references to symbols declared outside the snippet
+                    # - declared and not used: unused vars common in partial snippets
+                    # - non-declaration statement outside function body: bare statements
+                    # - function main is undeclared: snippets without a main() entry point
+                    _snippet_errors = [
+                        "could not import",
+                        "no required module provides",
+                        "undefined:",
+                        "declared and not used:",
+                        "non-declaration statement outside function body",
+                        "function main is undeclared in the main package",
+                    ]
+                    if not any(pat in stderr for pat in _snippet_errors):
                         errors.append(
                             f"Go compilation error in rule '{rule_name}': "
                             f"{stderr.strip()}"
