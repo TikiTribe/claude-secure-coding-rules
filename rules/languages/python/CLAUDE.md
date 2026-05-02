@@ -89,6 +89,66 @@ subprocess.run(f'grep {pattern} {filename}', shell=True)
 
 ---
 
+### Rule: Never Use eval() or exec() on Untrusted Input
+
+**Level**: `strict`
+
+**When**: Evaluating or executing dynamic expressions or code strings.
+
+**Do**:
+```python
+import ast
+import operator
+
+# Safe expression evaluation using AST literal parsing
+def safe_eval_literal(expression: str):
+    """Evaluate only Python literals - no code execution."""
+    return ast.literal_eval(expression)
+
+# Safe mathematical expressions with explicit operator whitelist
+SAFE_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+def safe_math_eval(node):
+    """Recursively evaluate only numeric AST nodes."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in SAFE_OPS:
+        return SAFE_OPS[type(node.op)](
+            safe_math_eval(node.left),
+            safe_math_eval(node.right)
+        )
+    raise ValueError(f"Unsupported expression: {ast.dump(node)}")
+```
+
+**Don't**:
+```python
+# VULNERABLE: eval() executes arbitrary Python code
+user_input = "__import__('os').system('rm -rf /')"
+result = eval(user_input)  # RCE
+
+# VULNERABLE: exec() runs arbitrary code blocks
+exec(user_provided_code)
+
+# VULNERABLE: compile() + exec is equally dangerous
+code_obj = compile(user_input, "<string>", "exec")
+exec(code_obj)
+
+# VULNERABLE: indirect eval via operator module
+import operator
+eval(f"operator.{user_input}()")
+```
+
+**Why**: `eval()` and `exec()` on attacker-controlled strings enable remote code execution (RCE), allowing full system compromise. MITRE ATT&CK T1059 (Command and Scripting Interpreter) is consistently exploited through dynamic code execution sinks.
+
+**Refs**: CWE-94 (Code Injection), CWE-95 (Improper Neutralization of Directives in Eval), OWASP A03:2025
+
+---
+
 ## File Operations
 
 ### Rule: Prevent Path Traversal

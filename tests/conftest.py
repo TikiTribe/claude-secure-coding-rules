@@ -269,3 +269,22 @@ def owasp_references(all_rules: list[dict[str, Any]]) -> dict[str, list[str]]:
             owasp_refs[item].append(rule["name"])
 
     return owasp_refs
+
+
+@pytest.fixture(scope="session")
+def file_contents_cache(rule_files: list[Path]) -> dict[Path, str]:
+    """Return cached file contents for all rule files (avoids repeated disk reads)."""
+    cache: dict[Path, str] = {}
+    for filepath in rule_files:
+        try:
+            cache[filepath] = filepath.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"Warning: Failed to read {filepath}: {e}")
+            cache[filepath] = ""
+    return cache
+
+
+@pytest.fixture(scope="session")
+def combined_rule_text(all_rules: list[dict[str, Any]]) -> str:
+    """Return a single lowercase string of all rule text for fast keyword scanning."""
+    return " ".join(rule["raw_text"].lower() for rule in all_rules)

@@ -87,9 +87,9 @@ class TestCWECoverage:
         print(f"\n{'=' * 50}")
         print(f"Overall CWE Coverage: {total_covered}/{total_cwes} ({overall}%)")
 
-        # Warn if coverage is below threshold
-        if overall < 50:
-            pytest.xfail(f"CWE coverage is {overall}%, below 50% threshold")
+        # Fail if coverage drops below 70% threshold
+        if overall < 70:
+            pytest.fail(f"CWE coverage is {overall}%, below 70% threshold")
 
     def test_high_priority_cwes_covered(
         self, cwe_references: dict[str, list[str]]
@@ -123,11 +123,14 @@ class TestCWECoverage:
         if missing:
             print(f"Missing: {', '.join(missing)}")
 
-        # Require at least 50% coverage of top 25
-        if len(covered) < 8:
+        # Require at least 90% coverage of top 25 CWEs
+        threshold = round(len(top_25) * 0.9)
+        if len(covered) < threshold:
             pytest.fail(
                 f"Insufficient CWE Top 25 coverage: "
-                f"{len(covered)}/15. Missing: {', '.join(missing)}"
+                f"{len(covered)}/{len(top_25)} ({coverage_pct}%). "
+                f"Minimum required: {threshold}/{len(top_25)} (90%). "
+                f"Missing: {', '.join(missing)}"
             )
 
 
@@ -162,7 +165,7 @@ class TestOWASPCoverage:
 
     def test_owasp_2021_coverage(
         self, owasp_references: dict[str, list[str]],
-        all_rules: list[dict[str, Any]]
+        combined_rule_text: str
     ) -> None:
         """Report OWASP Top 10 2021 coverage."""
         covered = set()
@@ -174,11 +177,9 @@ class TestOWASPCoverage:
                 covered.add(item)
 
         # Also check rule content for OWASP mentions
-        for rule in all_rules:
-            text = rule["raw_text"].lower()
-            for item, name in self.OWASP_2021.items():
-                if item.lower() in text or name.lower() in text:
-                    covered.add(item)
+        for item, name in self.OWASP_2021.items():
+            if item.lower() in combined_rule_text or name.lower() in combined_rule_text:
+                covered.add(item)
 
         missing = set(self.OWASP_2021.keys()) - covered
         coverage_pct = round(len(covered) / 10 * 100, 1)
@@ -203,16 +204,14 @@ class TestOWASPCoverage:
             )
 
     def test_owasp_llm_coverage(
-        self, all_rules: list[dict[str, Any]]
+        self, combined_rule_text: str
     ) -> None:
         """Report OWASP LLM Top 10 coverage."""
         covered = set()
 
-        for rule in all_rules:
-            text = rule["raw_text"].lower()
-            for item, name in self.OWASP_LLM.items():
-                if item.lower() in text or name.lower() in text:
-                    covered.add(item)
+        for item, name in self.OWASP_LLM.items():
+            if item.lower() in combined_rule_text or name.lower() in combined_rule_text:
+                covered.add(item)
 
         missing = set(self.OWASP_LLM.keys()) - covered
         coverage_pct = round(len(covered) / 10 * 100, 1)
@@ -222,10 +221,11 @@ class TestOWASPCoverage:
         if missing:
             print(f"Missing: {', '.join(sorted(missing))}")
 
-        # This is informational - LLM coverage may not be required
-        if len(covered) < 5:
-            pytest.xfail(
-                f"Low OWASP LLM coverage: {len(covered)}/10"
+        # Require 90% OWASP LLM Top 10 coverage
+        if len(covered) < 9:
+            pytest.fail(
+                f"Insufficient OWASP LLM Top 10 coverage: {len(covered)}/10 ({coverage_pct}%). "
+                f"Minimum required: 9/10 (90%). Missing: {', '.join(sorted(missing))}"
             )
 
 
@@ -233,7 +233,7 @@ class TestStandardsCoverage:
     """Tests for coverage of various security standards."""
 
     def test_standards_mentioned(
-        self, all_rules: list[dict[str, Any]]
+        self, all_rules: list[dict[str, Any]], combined_rule_text: str
     ) -> None:
         """Track which security standards are referenced."""
         standards = {
@@ -252,10 +252,10 @@ class TestStandardsCoverage:
         for rule in all_rules:
             refs = rule["sections"].get("Refs", "")
             text = rule["raw_text"]
-            combined = refs + " " + text
+            combined = (refs + " " + text).lower()
 
             for standard in standards:
-                if standard.lower() in combined.lower():
+                if standard.lower() in combined:
                     standards[standard] += 1
 
         print("\n\nStandards Coverage:")
@@ -277,7 +277,7 @@ class TestStandardsCoverage:
             )
 
     def test_nist_framework_coverage(
-        self, all_rules: list[dict[str, Any]]
+        self, combined_rule_text: str
     ) -> None:
         """Check coverage of NIST frameworks."""
         nist_items = {
@@ -289,11 +289,9 @@ class TestStandardsCoverage:
             "NIST CSF": 0
         }
 
-        for rule in all_rules:
-            text = rule["raw_text"]
-            for item in nist_items:
-                if item in text:
-                    nist_items[item] += 1
+        for item in nist_items:
+            if item in combined_rule_text:
+                nist_items[item] = 1
 
         referenced = {k: v for k, v in nist_items.items() if v > 0}
 
@@ -339,12 +337,12 @@ class TestCoverageGaps:
         ]
 
         if gaps:
-            pytest.xfail(
-                f"Languages with low coverage: {', '.join(gaps)}"
+            pytest.fail(
+                f"Languages with insufficient rule coverage (<5 rules): {', '.join(gaps)}"
             )
 
     def test_identify_attack_vector_gaps(
-        self, all_rules: list[dict[str, Any]]
+        self, combined_rule_text: str
     ) -> None:
         """Identify attack vectors not covered by rules."""
         attack_vectors = {
@@ -357,14 +355,10 @@ class TestCoverageGaps:
             "deserialization": ["pickle", "yaml", "json"],
         }
 
-        all_text = " ".join(
-            rule["raw_text"].lower() for rule in all_rules
-        )
-
         coverage: dict[str, list[str]] = {}
 
         for category, keywords in attack_vectors.items():
-            covered = [kw for kw in keywords if kw in all_text]
+            covered = [kw for kw in keywords if kw in combined_rule_text]
             coverage[category] = covered
 
         print("\n\nAttack Vector Coverage:")
@@ -385,8 +379,8 @@ class TestCoverageGaps:
                     gaps.append(category)
 
         if gaps:
-            pytest.xfail(
-                f"Attack categories with major gaps: {', '.join(gaps)}"
+            pytest.fail(
+                f"Attack categories with major coverage gaps: {', '.join(gaps)}"
             )
 
     def test_identify_framework_coverage_gaps(
@@ -422,7 +416,7 @@ class TestCoverageGaps:
                     gaps.append(framework)
 
         if gaps:
-            pytest.xfail(
+            pytest.fail(
                 f"Frameworks with no coverage: {', '.join(gaps)}"
             )
 
@@ -467,5 +461,8 @@ class TestCoverageReport:
 
         print(f"\nCompleteness Score: {completeness:.1f}/100")
 
-        if completeness < 50:
-            pytest.xfail(f"Low completeness score: {completeness:.1f}")
+        if completeness < 90:
+            pytest.fail(
+                f"Completeness score {completeness:.1f}/100 is below 90% threshold. "
+                f"Ensure all rules have code examples and sufficient CWE/OWASP references."
+            )

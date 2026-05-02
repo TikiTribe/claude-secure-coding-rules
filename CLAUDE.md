@@ -66,6 +66,22 @@ claude-secure-coding-rules/
 │       ├── angular/CLAUDE.md      # DomSanitizer, template injection, HTTP client
 │       └── svelte/CLAUDE.md       # {@html}, stores, SSR, form actions
 │
+│   ├── containers/                 # Container security rules
+│   │   ├── _core/container-security.md  # Core container principles
+│   │   ├── docker/CLAUDE.md       # Docker (images, runtime, scanning, dependencies)
+│   │   ├── kubernetes/CLAUDE.md   # Kubernetes (PSS, RBAC, NetworkPolicies, supply chain)
+│   │   └── helm/CLAUDE.md         # Helm (secrets, security context, schema, provenance)
+│   │
+│   ├── iac/                        # Infrastructure as Code rules
+│   │   ├── _core/iac-security.md  # Core IaC security principles
+│   │   ├── terraform/CLAUDE.md    # Terraform (state, modules, providers)
+│   │   └── pulumi/CLAUDE.md       # Pulumi (secrets, CrossGuard, ESC)
+│   │
+│   └── cicd/                       # CI/CD security rules
+│       ├── _core/cicd-security.md  # Core CI/CD principles
+│       ├── github-actions/CLAUDE.md  # GitHub Actions (SHA pinning, OIDC)
+│       └── gitlab-ci/CLAUDE.md      # GitLab CI (protected vars, scanning)
+│
 ├── templates/                      # Templates for adding new rules
 │   ├── rule-template.md           # Template for individual rules
 │   └── framework-template.md      # Template for framework rule sets
@@ -89,7 +105,10 @@ claude-secure-coding-rules/
 | Backend Frameworks | 5 | FastAPI, Express, Django, Flask, NestJS |
 | AI/ML Frameworks | 11 | LangChain, CrewAI, AutoGen, Transformers, vLLM, Triton, TorchServe, Ray Serve, BentoML, MLflow, Modal |
 | Frontend Frameworks | 5 | React, Next.js, Vue, Angular, Svelte |
-| **Total Rule Sets** | **37** | Comprehensive security coverage |
+| Containers | 3 | Docker, Kubernetes, Helm |
+| IaC | 2 | Terraform, Pulumi |
+| CI/CD | 2 | GitHub Actions, GitLab CI |
+| **Total Rule Sets** | **44** | Comprehensive security coverage |
 
 ## Rule Format
 

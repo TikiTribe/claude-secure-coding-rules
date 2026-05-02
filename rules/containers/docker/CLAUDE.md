@@ -20,20 +20,20 @@ USER 65534:65534
 ENTRYPOINT ["/binary"]
 
 # Best for most applications - Google's distroless
-FROM gcr.io/distroless/base-debian12:nonroot AS runtime
+FROM gcr.io/distroless/base-debian13:nonroot AS runtime
 COPY --from=builder /app /app
 USER nonroot:nonroot
 ENTRYPOINT ["/app/server"]
 
 # Good for interpreted languages requiring packages
-FROM python:3.12-alpine AS runtime
+FROM python:3.13-alpine AS runtime
 RUN apk add --no-cache ca-certificates tini && \
     rm -rf /var/cache/apk/* /tmp/*
 USER nobody:nobody
 ENTRYPOINT ["/sbin/tini", "--"]
 
 # For Java applications
-FROM gcr.io/distroless/java21-debian12:nonroot
+FROM gcr.io/distroless/java21-debian13:nonroot
 COPY --from=builder /app/app.jar /app/app.jar
 USER nonroot:nonroot
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -74,7 +74,7 @@ FROM node:latest
 
 **Do**: Create and switch to a non-root user
 ```dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Create non-root user with specific UID for consistency across containers
 RUN addgroup -g 10001 -S appgroup && \
@@ -97,7 +97,7 @@ CMD ["node", "server.js"]
 
 ```dockerfile
 # For Python applications
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 RUN addgroup -g 10001 -S appgroup && \
     adduser -u 10001 -S -G appgroup -h /app -s /sbin/nologin appuser
@@ -118,7 +118,7 @@ CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000
 
 ```dockerfile
 # Using numeric UID for scratch/distroless
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 WORKDIR /build
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /app
@@ -134,7 +134,7 @@ ENTRYPOINT ["/app"]
 **Don't**: Run containers as root
 ```dockerfile
 # Vulnerable: No USER directive (runs as root)
-FROM node:20
+FROM node:22
 WORKDIR /app
 COPY . .
 RUN npm install
@@ -164,7 +164,7 @@ CMD ["node", "server.js"]
 **Do**: Use multi-stage builds to separate build and runtime environments
 ```dockerfile
 # Stage 1: Build environment with all build tools
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /build
@@ -177,7 +177,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     -o /app/server ./cmd/server
 
 # Stage 2: Minimal runtime
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /app/server /server
@@ -187,7 +187,7 @@ ENTRYPOINT ["/server"]
 
 ```dockerfile
 # Node.js multi-stage build
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /build
 COPY package*.json ./
 RUN npm ci
@@ -195,7 +195,7 @@ COPY . .
 RUN npm run build && npm prune --production
 
 # Runtime stage
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 RUN apk add --no-cache tini && \
     addgroup -g 10001 -S appgroup && \
     adduser -u 10001 -S appuser -G appgroup
@@ -213,14 +213,14 @@ CMD ["node", "dist/server.js"]
 
 ```dockerfile
 # Python multi-stage with virtual environment
-FROM python:3.12-alpine AS builder
+FROM python:3.13-alpine AS builder
 RUN apk add --no-cache build-base libffi-dev
 WORKDIR /build
 COPY requirements.txt .
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-FROM python:3.12-alpine AS runtime
+FROM python:3.13-alpine AS runtime
 RUN addgroup -g 10001 -S appgroup && \
     adduser -u 10001 -S appuser -G appgroup
 COPY --from=builder /opt/venv /opt/venv
@@ -234,7 +234,7 @@ CMD ["python", "app.py"]
 **Don't**: Include build tools in runtime images
 ```dockerfile
 # Vulnerable: Build tools in runtime image
-FROM node:20
+FROM node:22
 WORKDIR /app
 COPY . .
 RUN npm install && npm run build
@@ -263,7 +263,7 @@ CMD ["node", "dist/server.js"]
 ```dockerfile
 # syntax=docker/dockerfile:1.4
 
-FROM python:3.12-alpine AS builder
+FROM python:3.13-alpine AS builder
 
 # Mount secrets during build (not stored in layers)
 RUN --mount=type=secret,id=pip_token \
@@ -271,8 +271,8 @@ RUN --mount=type=secret,id=pip_token \
     --extra-index-url https://$(cat /run/secrets/pip_token)@pypi.example.com/simple \
     -r requirements.txt
 
-FROM python:3.12-alpine AS runtime
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+FROM python:3.13-alpine AS runtime
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY . /app
 USER nobody:nobody
 CMD ["python", "/app/main.py"]
@@ -287,7 +287,7 @@ DOCKER_BUILDKIT=1 docker build \
 
 ```dockerfile
 # Runtime secret injection via environment (from orchestrator)
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 COPY . /app
 USER nobody:nobody
 # Secrets injected at runtime by Docker/Kubernetes
@@ -296,7 +296,6 @@ CMD ["python", "/app/main.py"]
 
 ```yaml
 # docker-compose.yml with secrets
-version: '3.8'
 services:
   app:
     build: .
@@ -411,7 +410,7 @@ docker scout cves myapp:latest --exit-code --only-severity critical,high
 ```dockerfile
 # Dockerfile best practices scanner
 # hadolint Dockerfile
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 # hadolint will flag issues like:
 # - Using :latest tag
 # - Missing USER directive
@@ -513,7 +512,6 @@ docker run --read-only \
   myapp:latest
 
 # Docker Compose
-version: '3.8'
 services:
   app:
     image: myapp:latest
@@ -528,7 +526,7 @@ services:
 
 ```dockerfile
 # Prepare application for read-only filesystem
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 WORKDIR /app
 COPY . .
@@ -584,7 +582,6 @@ docker run --cap-drop=ALL \
 
 ```yaml
 # Docker Compose
-version: '3.8'
 services:
   app:
     image: myapp:latest
@@ -652,7 +649,6 @@ docker run \
 
 ```yaml
 # Docker Compose with security options
-version: '3.8'
 services:
   app:
     image: myapp:latest
@@ -698,7 +694,7 @@ docker run -v /:/host myapp:latest
 
 **Do**: Implement comprehensive health checks
 ```dockerfile
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 WORKDIR /app
 COPY . .
@@ -716,7 +712,7 @@ CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000
 
 ```dockerfile
 # For containers without wget/curl
-FROM gcr.io/distroless/base-debian12:nonroot
+FROM gcr.io/distroless/base-debian13:nonroot
 
 COPY --from=builder /app/server /server
 COPY --from=builder /app/healthcheck /healthcheck
@@ -750,7 +746,7 @@ HEALTHCHECK CMD redis-cli ping || exit 1
 **Don't**: Skip health checks in production
 ```dockerfile
 # Vulnerable: No health check
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 COPY . /app
 CMD ["python", "/app/main.py"]
 # Problems:
@@ -788,7 +784,6 @@ docker run \
 
 ```yaml
 # Docker Compose resource limits
-version: '3.8'
 services:
   app:
     image: myapp:latest
@@ -1033,3 +1028,273 @@ profile docker-myapp flags=(attach_disconnected,mediate_deleted) {
 ```
 
 **Refs**: CIS Docker Benchmark Section 2, NIST 800-190 Section 4
+
+---
+
+## Rule: Secure Dependency Files
+
+**Level**: `strict`
+
+**When**: Creating or updating `requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, or any container dependency file
+
+**Do**: Pin all dependencies to exact versions with hash verification, and scan for known vulnerabilities
+
+### Python — `requirements.txt` (hash-pinned)
+
+```text
+# requirements.txt generated by pip-compile with --generate-hashes
+# pip-compile --generate-hashes --output-file=requirements.txt requirements.in
+
+fastapi==0.115.12 \
+    --hash=sha256:e5f9db7b9b01d4156cd7f7e6f8d3773a5b52bc21b1b7b8a8c72f34b2b2d1e8a1 \
+    --hash=sha256:b2f2a8e1c3d4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a
+uvicorn[standard]==0.34.2 \
+    --hash=sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2 \
+    --hash=sha256:c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4
+pydantic==2.11.4 \
+    --hash=sha256:d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5 \
+    --hash=sha256:f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7
+```
+
+```dockerfile
+# Dockerfile: install with hash verification
+FROM python:3.13-alpine AS builder
+RUN apk add --no-cache build-base libffi-dev
+
+WORKDIR /build
+COPY requirements.txt .
+# --require-hashes enforces all packages have hashes; fails on mismatch
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
+
+FROM python:3.13-alpine AS runtime
+RUN addgroup -g 10001 -S appgroup && \
+    adduser -u 10001 -S appuser -G appgroup -s /sbin/nologin
+
+COPY --from=builder /usr/local/lib/python3.13 /usr/local/lib/python3.13
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --chown=appuser:appgroup . /app
+WORKDIR /app
+USER appuser:appgroup
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+```bash
+# Generate locked requirements with hashes (use pip-tools)
+pip install pip-tools
+pip-compile --generate-hashes --strip-extras requirements.in
+
+# Audit for known CVEs
+pip install pip-audit
+pip-audit -r requirements.txt --desc
+
+# Upgrade and re-lock
+pip-compile --upgrade --generate-hashes requirements.in
+```
+
+### Python — `pyproject.toml` (uv / Poetry)
+
+```toml
+# pyproject.toml — managed by uv (fast, secure resolver)
+[project]
+name = "my-app"
+version = "1.0.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "pip-audit==2.8.0",
+    "ruff==0.9.0",
+    "pytest==8.3.0",
+]
+
+[tool.uv]
+# Pin the Python version used inside the container build
+python-version = "3.13"
+```
+
+```dockerfile
+# Dockerfile with uv for fast, reproducible installs
+FROM python:3.13-alpine AS builder
+RUN pip install --no-cache-dir uv==0.6.14
+
+WORKDIR /build
+COPY pyproject.toml uv.lock ./
+# --frozen ensures uv.lock is not regenerated (reproducible)
+RUN uv sync --frozen --no-dev --compile-bytecode
+
+FROM python:3.13-alpine AS runtime
+RUN addgroup -g 10001 -S appgroup && \
+    adduser -u 10001 -S appuser -G appgroup -s /sbin/nologin
+COPY --from=builder /build/.venv /app/.venv
+COPY --chown=appuser:appgroup . /app
+WORKDIR /app
+USER appuser:appgroup
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+```bash
+# Lock dependencies
+uv lock
+# Audit with pip-audit via uv
+uv run pip-audit
+# Check for outdated packages
+uv tree --outdated
+```
+
+### Node.js — `package.json` + lockfile
+
+```jsonc
+// package.json — use exact versions (no ^ or ~)
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "helmet": "8.0.0",
+    "express-rate-limit": "7.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "typescript": "5.8.3"
+  },
+  "scripts": {
+    "audit": "npm audit --audit-level=high",
+    "audit:fix": "npm audit fix"
+  }
+}
+```
+
+```dockerfile
+# Dockerfile: reproducible Node.js install
+FROM node:22-alpine AS builder
+WORKDIR /build
+COPY package.json package-lock.json ./
+# npm ci: clean install from lockfile only, fails on lockfile mismatch
+RUN npm ci --ignore-scripts && npm audit --audit-level=high
+COPY . .
+RUN npm run build && npm prune --omit=dev
+
+FROM node:22-alpine AS runtime
+RUN apk add --no-cache tini && \
+    addgroup -g 10001 -S appgroup && \
+    adduser -u 10001 -S appuser -G appgroup -s /sbin/nologin
+
+WORKDIR /app
+COPY --from=builder --chown=appuser:appgroup /build/dist ./dist
+COPY --from=builder --chown=appuser:appgroup /build/node_modules ./node_modules
+COPY --from=builder --chown=appuser:appgroup /build/package.json ./
+
+USER appuser:appgroup
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/server.js"]
+```
+
+```bash
+# Audit dependencies
+npm audit --audit-level=high
+
+# Continuous monitoring with socket.dev or snyk
+npx snyk test
+# Or use socket
+npx socket scan
+
+# Generate SBOM
+npm sbom --sbom-format cyclonedx
+```
+
+### Go — `go.mod` + `go.sum`
+
+```go
+// go.mod — module with explicit Go version
+module github.com/example/myapp
+
+go 1.24
+
+require (
+    github.com/gin-gonic/gin v1.10.0
+    github.com/golang-jwt/jwt/v5 v5.2.2
+)
+```
+
+```dockerfile
+# Dockerfile: Go build with module verification
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /build
+COPY go.mod go.sum ./
+# Verify module checksums against sum database (sum.golang.org)
+RUN go mod download && go mod verify
+
+COPY . .
+# -trimpath removes local path info; -ldflags strips debug symbols
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /app/server ./cmd/server
+
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /app/server /server
+USER nonroot:nonroot
+ENTRYPOINT ["/server"]
+```
+
+```bash
+# Scan for known vulnerabilities in Go modules
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
+
+# Check for outdated modules
+go list -u -m all
+
+# Tidy and verify
+go mod tidy && go mod verify
+```
+
+**Don't**: Use unpinned, unverified, or unscanned dependencies
+
+```text
+# Vulnerable requirements.txt — unpinned
+fastapi
+uvicorn
+pydantic
+# Problems:
+# - Any version (including ones with CVEs) may be installed
+# - No reproducibility between builds
+# - No integrity verification
+```
+
+```jsonc
+// Vulnerable package.json — floating ranges
+{
+  "dependencies": {
+    "express": "^4.0.0",
+    "some-lib": "*"
+  }
+}
+// ^ and * allow installing any new major/minor versions
+// A compromised package publish can inject malware
+```
+
+```dockerfile
+# Vulnerable: dependencies not scanned
+FROM python:3.13-alpine
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+# No --require-hashes, no pip-audit
+# A dependency with a known CVE ships silently to production
+```
+
+**Why**: Supply-chain attacks (OWASP A06:2021 — Vulnerable and Outdated Components) increasingly target dependency ecosystems. Unpinned packages allow silent upgrades to compromised versions (e.g., `event-stream`, `ua-parser-js` incidents). Hash verification (`--require-hashes`, `npm ci`, `go mod verify`) ensures installed packages match what was tested. Automated auditing (`pip-audit`, `npm audit`, `govulncheck`) catches CVEs before they reach production.
+
+**Refs**: CWE-1104, OWASP A06:2021, NIST SP 800-161 (Supply Chain Risk), CIS Docker Benchmark 4.9, SLSA Supply Chain Levels

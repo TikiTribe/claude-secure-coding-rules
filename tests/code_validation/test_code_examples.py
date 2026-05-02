@@ -75,7 +75,7 @@ class TestPythonCodeExamples:
 
             for import_line in import_lines:
                 try:
-                    ast.parse(import_line)
+                    ast.parse(import_line.strip())
                 except SyntaxError as e:
                     errors.append(
                         f"Invalid import in rule '{rule_name}': "
@@ -99,7 +99,7 @@ class TestJavaScriptCodeExamples:
                 timeout=5
             )
             return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
+        except (subprocess.SubprocessError, OSError):
             return False
 
     def test_javascript_examples_parse_correctly(
@@ -119,40 +119,80 @@ class TestJavaScriptCodeExamples:
         if not node_available:
             pytest.skip("Node.js not available for JavaScript validation")
 
+        # Build a single Node.js checker script that validates all blocks in
+        # one process invocation.  Each block is checked with new Function()
+        # (CommonJS-style) first, then via SourceTextModule for ES-module
+        # syntax (import/export).  Blocks are delimited by a sentinel line
+        # written to a temp data file to avoid shell-argument limitations.
+        # Results are printed as JSON so we can parse them back cleanly.
+        sentinel = "<<<BLOCK_SEP>>>"
+        combined = sentinel.join(b["code"] for b in js_blocks)
+
+        checker = r"""
+const fs = require('fs');
+const vm = require('vm');
+const data = fs.readFileSync(process.argv[2], 'utf8');
+const SENTINEL = '<<<BLOCK_SEP>>>';
+const blocks = data.split(SENTINEL);
+const results = [];
+for (const code of blocks) {
+    let err = null;
+    // Try SourceTextModule (handles ES module import/export)
+    if (vm.SourceTextModule) {
+        try {
+            new vm.SourceTextModule(code, { context: vm.createContext({}) });
+        } catch (e) {
+            // SourceTextModule rejects non-module syntax too; fall back below
+            try { new Function(code); } catch (e2) { err = e2.message; }
+        }
+    } else {
+        try { new Function(code); } catch (e) { err = e.message; }
+    }
+    results.push(err);
+}
+process.stdout.write(JSON.stringify(results) + '\n');
+"""
+
+        import json as _json
+
+        with tempfile.NamedTemporaryFile(suffix=".js", mode="w", delete=False) as f:
+            f.write(checker)
+            checker_path = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False, encoding="utf-8") as f:
+            f.write(combined)
+            data_path = f.name
+
         errors = []
+        try:
+            result = subprocess.run(
+                ["node", "--experimental-vm-modules", checker_path, data_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
 
-        for block in js_blocks:
-            code = block["code"]
-            rule_name = block["rule_name"]
-
-            # Use Node.js to check syntax
-            check_script = f"""
-            try {{
-                new Function({json.dumps(code)});
-                process.exit(0);
-            }} catch (e) {{
-                console.error(e.message);
-                process.exit(1);
-            }}
-            """
-
-            try:
-                result = subprocess.run(
-                    ["node", "-e", check_script],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
+            if result.returncode != 0:
+                errors.append(f"Node.js checker failed: {result.stderr.strip()[:500]}")
+            else:
+                json_line = next(
+                    (l for l in reversed(result.stdout.splitlines()) if l.strip().startswith("[")),
+                    None,
                 )
-
-                if result.returncode != 0:
-                    errors.append(
-                        f"JavaScript syntax error in rule '{rule_name}': "
-                        f"{result.stderr.strip()}"
-                    )
-            except subprocess.TimeoutExpired:
-                errors.append(
-                    f"JavaScript validation timeout for rule '{rule_name}'"
-                )
+                if json_line is None:
+                    errors.append(f"Node.js checker produced no output. stderr: {result.stderr.strip()[:300]}")
+                else:
+                    block_results = _json.loads(json_line)
+                    for block, err_msg in zip(js_blocks, block_results):
+                        if err_msg is not None:
+                            errors.append(
+                                f"JavaScript syntax error in rule '{block['rule_name']}': {err_msg}"
+                            )
+        except subprocess.TimeoutExpired:
+            errors.append("JavaScript validation timed out")
+        finally:
+            Path(checker_path).unlink(missing_ok=True)
+            Path(data_path).unlink(missing_ok=True)
 
         if errors:
             pytest.fail("\n".join(errors))
@@ -243,12 +283,27 @@ class TestYamlJsonExamples:
 
         errors = []
 
+        # Build a loader that tolerates unknown tags (e.g. CloudFormation
+        # !Ref, !Sub, !GetAtt) while still rejecting true YAML errors.
+        class _PermissiveLoader(yaml.SafeLoader):
+            pass
+
+        _PermissiveLoader.add_multi_constructor(
+            "", lambda loader, tag_suffix, node: (
+                loader.construct_scalar(node)
+                if isinstance(node, yaml.ScalarNode)
+                else loader.construct_sequence(node)
+                if isinstance(node, yaml.SequenceNode)
+                else loader.construct_mapping(node)
+            )
+        )
+
         for block in yaml_blocks:
             code = block["code"]
             rule_name = block["rule_name"]
 
             try:
-                yaml.safe_load(code)
+                yaml.load(code, Loader=_PermissiveLoader)  # noqa: S506
             except yaml.YAMLError as e:
                 errors.append(
                     f"YAML syntax error in rule '{rule_name}': {e}"
@@ -336,7 +391,7 @@ class TestShellExamples:
                 timeout=5
             )
             return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
+        except (subprocess.SubprocessError, OSError):
             return False
 
     def test_shell_examples_have_valid_syntax(
@@ -457,7 +512,7 @@ class TestGoExamples:
                 timeout=5
             )
             return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
+        except (subprocess.SubprocessError, OSError):
             return False
 
     def test_go_examples_compile(
@@ -499,9 +554,22 @@ class TestGoExamples:
                 )
 
                 if result.returncode != 0:
-                    # Filter out import errors (common in examples)
                     stderr = result.stderr
-                    if "could not import" not in stderr:
+                    # Skip errors expected in educational code snippets:
+                    # - could not import / no required module provides: external packages
+                    # - undefined: references to symbols declared outside the snippet
+                    # - declared and not used: unused vars common in partial snippets
+                    # - non-declaration statement outside function body: bare statements
+                    # - function main is undeclared: snippets without a main() entry point
+                    _snippet_errors = [
+                        "could not import",
+                        "no required module provides",
+                        "undefined:",
+                        "declared and not used:",
+                        "non-declaration statement outside function body",
+                        "function main is undeclared in the main package",
+                    ]
+                    if not any(pat in stderr for pat in _snippet_errors):
                         errors.append(
                             f"Go compilation error in rule '{rule_name}': "
                             f"{stderr.strip()}"

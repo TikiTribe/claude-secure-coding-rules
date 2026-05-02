@@ -280,7 +280,7 @@ Priority areas for new contributions:
 ### Other Areas
 - [ ] Mobile (React Native, Flutter, Swift, Kotlin)
 - [ ] Infrastructure as Code (Terraform, Pulumi)
-- [ ] Container security (Docker, Kubernetes)
+- [x] Container security (Docker, Kubernetes, Helm)
 - [ ] CI/CD security (GitHub Actions, GitLab CI)
 
 ## Code of Conduct

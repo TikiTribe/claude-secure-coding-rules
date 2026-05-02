@@ -274,17 +274,17 @@ npm outdated
 npm install package@1.2.3
 ```
 
-```javascript
+```jsonc
 // package.json - pin versions
 {
   "dependencies": {
-    "express": "4.18.2"  // Exact version
+    "express": "4.18.2"
   }
 }
 ```
 
 **Don't**:
-```json
+```jsonc
 {
   "dependencies": {
     "express": "*",      // VULNERABLE: Any version
