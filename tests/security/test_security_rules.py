@@ -8,6 +8,7 @@ and "Do" examples pass security checks.
 import json
 import subprocess
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -176,8 +177,11 @@ class TestBanditIntegration:
             try:
                 fname.write_text(block["code"])
                 index_map[str(fname)] = block["rule_name"]
-            except OSError:
-                pass
+            except OSError as exc:
+                warnings.warn(
+                    f"Skipping block_{i}.py due to write error: {exc}",
+                    RuntimeWarning,
+                )
 
         if not index_map:
             return {}
