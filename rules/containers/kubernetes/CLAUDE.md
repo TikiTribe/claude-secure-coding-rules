@@ -1633,6 +1633,7 @@ spec:
     verifyImages:
     - imageReferences:
       - "myregistry.io/*:*"
+      - "myregistry.io/*@sha256:*"
       attestations:
       - type: https://cyclonedx.org/bom
         attestors:
