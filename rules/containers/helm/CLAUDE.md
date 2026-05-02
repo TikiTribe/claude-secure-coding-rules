@@ -776,7 +776,7 @@ helm template ./myapp --set image.tag=v1.0.0 | kubeconform -strict -
 
 **Do**: Show post-install guidance without exposing secrets; use `helm show values` safely
 
-```
+```text
 # templates/NOTES.txt
 {{- $fullName := include "myapp.fullname" . -}}
 
@@ -809,7 +809,7 @@ WARNING: TLS is not configured on the Ingress. Enable TLS before production use.
 
 **Don't**: Print secrets or sensitive values in NOTES.txt
 
-```
+```text
 # Vulnerable: Leaking secret values in NOTES.txt
 Your database password is: {{ .Values.database.password }}
 Your API key: {{ .Values.apiKey }}
@@ -905,7 +905,7 @@ dependencies:
 
 ### Recommended Chart Directory Structure
 
-```
+```text
 myapp/
 ├── Chart.yaml               # Chart metadata with exact dependency versions
 ├── Chart.lock               # Locked dependency digests (commit to version control)
