@@ -1658,13 +1658,12 @@ spec:
           kinds: [Pod]
     validate:
       message: "Images must use immutable digest references (@sha256:...)"
-      foreach:
-      - list: "request.object.spec.containers"
-        pattern:
-          image: "*@sha256:*"
-      - list: "request.object.spec.initContainers"
-        pattern:
-          image: "*@sha256:*"
+      pattern:
+        spec:
+          containers:
+          - image: "*@sha256:*"
+          initContainers:
+          - image: "*@sha256:*"
 ```
 
 ```bash
