@@ -1700,8 +1700,10 @@ cosign verify \
 
 ```bash
 # Scan cluster for unsigned or unverified images
-# Using Trivy operator (runs inside cluster)
-kubectl apply -f https://raw.githubusercontent.com/aquasecurity/trivy-operator/main/deploy/helm/
+# Using Trivy Operator (runs inside the cluster)
+helm repo add aqua https://aquasecurity.github.io/helm-charts/
+helm repo update
+helm install trivy-operator aqua/trivy-operator -n trivy-system --create-namespace
 kubectl get vulnerabilityreports -A
 kubectl get sbomreports -A
 ```
