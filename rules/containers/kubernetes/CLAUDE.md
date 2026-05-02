@@ -1600,6 +1600,7 @@ spec:
     verifyImages:
     - imageReferences:
       - "myregistry.io/myapp:*"
+      - "myregistry.io/myapp@sha256:*"
       attestors:
       - count: 1
         entries:
