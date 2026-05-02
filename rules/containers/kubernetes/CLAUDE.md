@@ -1659,19 +1659,11 @@ spec:
       message: "Images must use immutable digest references (@sha256:...)"
       foreach:
       - list: "request.object.spec.containers"
-        deny:
-          conditions:
-            any:
-            - key: "{{ element.image }}"
-              operator: NotEquals
-              value: "*@sha256:*"
+        pattern:
+          image: "*@sha256:*"
       - list: "request.object.spec.initContainers"
-        deny:
-          conditions:
-            any:
-            - key: "{{ element.image }}"
-              operator: NotEquals
-              value: "*@sha256:*"
+        pattern:
+          image: "*@sha256:*"
 ```
 
 ```bash
