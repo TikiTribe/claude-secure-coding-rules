@@ -802,7 +802,7 @@ Security Notes:
 {{- if not .Values.networkPolicy.enabled }}
 WARNING: NetworkPolicy is disabled. Enable it for production deployments.
 {{- end }}
-{{- if not .Values.ingress.tls }}
+{{- if and .Values.ingress.enabled (not .Values.ingress.tls) }}
 WARNING: TLS is not configured on the Ingress. Enable TLS before production use.
 {{- end }}
 ```
