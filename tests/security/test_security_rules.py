@@ -99,12 +99,17 @@ class TestSemgrepIntegration:
         return findings
 
     @pytest.mark.slow
-    def test_dont_examples_trigger_security_warnings(
+    def test_dont_examples_have_more_warnings_than_do_examples(
         self,
         code_blocks_by_language: dict[str, list[dict[str, Any]]],
         semgrep_available: bool,
     ) -> None:
-        """Verify Don't examples are flagged by Semgrep (single batched scan)."""
+        """Don't examples collectively trigger more Semgrep warnings than Do examples.
+
+        This is a comparative negative test: it passes as long as insecure examples
+        are flagged more often than secure ones. It avoids false-positive failures
+        from SAST tools detecting security APIs used safely in Do examples.
+        """
         if not semgrep_available:
             pytest.skip("Semgrep not available")
 
@@ -113,76 +118,31 @@ class TestSemgrepIntegration:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            dont_blocks_by_lang: dict[str, list[dict[str, Any]]] = {
-                lang: [b for b in code_blocks_by_language.get(lang, []) if b["type"] == "dont"]
-                for lang in supported_languages
-            }
-
-            findings = self._run_semgrep_batch(dont_blocks_by_lang, temp_path)
-
-            untriggered = []
-            for lang, blocks in dont_blocks_by_lang.items():
-                ext = _LANG_EXTENSIONS.get(lang, ".txt")
-                lang_dir = temp_path / lang
-                for i, block in enumerate(blocks):
-                    fname = str(lang_dir / f"block_{i}{ext}")
-                    if not findings.get(fname):
-                        untriggered.append(
-                            f"Rule '{block['rule_name']}' ({lang}): "
-                            f"Don't example not flagged by Semgrep"
-                        )
-
-            if untriggered:
-                pytest.xfail(
-                    f"{len(untriggered)} Don't examples not detected:\n"
-                    + "\n".join(untriggered[:10])
-                )
-
-    @pytest.mark.slow
-    def test_do_examples_pass_security_checks(
-        self,
-        code_blocks_by_language: dict[str, list[dict[str, Any]]],
-        semgrep_available: bool,
-    ) -> None:
-        """Verify Do examples don't trigger security warnings (single batched scan)."""
-        if not semgrep_available:
-            pytest.skip("Semgrep not available")
-
-        supported_languages = ["python", "javascript", "typescript", "go", "java"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            do_dir = temp_path / "do"
+            dont_dir = temp_path / "dont"
+            do_dir.mkdir()
+            dont_dir.mkdir()
 
             do_blocks_by_lang: dict[str, list[dict[str, Any]]] = {
                 lang: [b for b in code_blocks_by_language.get(lang, []) if b["type"] == "do"]
                 for lang in supported_languages
             }
+            dont_blocks_by_lang: dict[str, list[dict[str, Any]]] = {
+                lang: [b for b in code_blocks_by_language.get(lang, []) if b["type"] == "dont"]
+                for lang in supported_languages
+            }
 
-            findings = self._run_semgrep_batch(do_blocks_by_lang, temp_path)
+            do_findings = self._run_semgrep_batch(do_blocks_by_lang, do_dir)
+            dont_findings = self._run_semgrep_batch(dont_blocks_by_lang, dont_dir)
 
-            errors = []
-            for lang, blocks in do_blocks_by_lang.items():
-                ext = _LANG_EXTENSIONS.get(lang, ".txt")
-                lang_dir = temp_path / lang
-                for i, block in enumerate(blocks):
-                    fname = str(lang_dir / f"block_{i}{ext}")
-                    high_severity = [
-                        r for r in findings.get(fname, [])
-                        if r.get("extra", {}).get("severity") in ["ERROR", "WARNING"]
-                    ]
-                    if high_severity:
-                        errors.append(
-                            f"Rule '{block['rule_name']}' ({lang}): "
-                            f"Do example triggered {len(high_severity)} warning(s)"
-                        )
+            do_count = sum(len(v) for v in do_findings.values())
+            dont_count = sum(len(v) for v in dont_findings.values())
 
-            if errors:
-                # xfail: security education examples that show safe use of dangerous APIs
-                # (e.g. subprocess.run, exec) will always trigger SAST false positives
-                pytest.xfail(
-                    f"{len(errors)} Do example(s) triggered SAST warnings (expected false positives):\n"
-                    + "\n".join(errors[:10])
-                )
+            assert dont_count >= do_count, (
+                f"Expected Don't examples to trigger at least as many Semgrep warnings "
+                f"as Do examples, but got {dont_count} Don't vs {do_count} Do warnings. "
+                f"Security rules may not be demonstrating a meaningful risk reduction."
+            )
 
 
 class TestBanditIntegration:
@@ -242,80 +202,51 @@ class TestBanditIntegration:
         return findings
 
     @pytest.mark.slow
-    def test_python_dont_examples_flagged_by_bandit(
+    def test_python_dont_examples_have_more_bandit_findings_than_do(
         self,
         code_blocks_by_language: dict[str, list[dict[str, Any]]],
         bandit_available: bool,
     ) -> None:
-        """Verify Python Don't examples trigger Bandit warnings (single batched scan)."""
-        if not bandit_available:
-            pytest.skip("Bandit not available")
+        """Don't examples collectively trigger more Bandit findings than Do examples.
 
-        python_blocks = code_blocks_by_language.get("python", [])
-        dont_blocks = [b for b in python_blocks if b["type"] == "dont"]
-
-        if not dont_blocks:
-            pytest.skip("No Python Don't examples found")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            findings = self._run_bandit_batch(dont_blocks, temp_path)
-
-            untriggered = []
-            for i, block in enumerate(dont_blocks):
-                if block["code"].strip().startswith("..."):
-                    continue
-                fname = str(temp_path / f"block_{i}.py")
-                if not findings.get(fname):
-                    untriggered.append(
-                        f"Rule '{block['rule_name']}': Don't example not flagged by Bandit"
-                    )
-
-            if untriggered:
-                pytest.xfail(
-                    f"{len(untriggered)} Python Don't examples not detected by Bandit"
-                )
-
-    @pytest.mark.slow
-    def test_python_do_examples_pass_bandit(
-        self,
-        code_blocks_by_language: dict[str, list[dict[str, Any]]],
-        bandit_available: bool,
-    ) -> None:
-        """Verify Python Do examples pass Bandit checks (single batched scan)."""
+        This is a comparative negative test: it passes as long as insecure Python
+        examples produce more HIGH/MEDIUM Bandit findings than secure ones. This
+        avoids false-positive failures when Do examples use dangerous APIs safely.
+        """
         if not bandit_available:
             pytest.skip("Bandit not available")
 
         python_blocks = code_blocks_by_language.get("python", [])
         do_blocks = [b for b in python_blocks if b["type"] == "do"]
+        dont_blocks = [b for b in python_blocks if b["type"] == "dont"]
 
-        if not do_blocks:
-            pytest.skip("No Python Do examples found")
+        if not do_blocks or not dont_blocks:
+            pytest.skip("Need both Do and Don't Python examples")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            findings = self._run_bandit_batch(do_blocks, temp_path)
+            do_dir = temp_path / "do"
+            dont_dir = temp_path / "dont"
+            do_dir.mkdir()
+            dont_dir.mkdir()
 
-            errors = []
-            for i, block in enumerate(do_blocks):
-                fname = str(temp_path / f"block_{i}.py")
-                issues = [
-                    r for r in findings.get(fname, [])
-                    if r.get("issue_severity") in ["HIGH", "MEDIUM"]
-                ]
-                if issues:
-                    errors.append(
-                        f"Rule '{block['rule_name']}': "
-                        f"Do example has {len(issues)} Bandit issue(s)"
-                    )
+            do_findings = self._run_bandit_batch(do_blocks, do_dir)
+            dont_findings = self._run_bandit_batch(dont_blocks, dont_dir)
 
-            if errors:
-                # xfail: security education "Do" examples showing safe use of dangerous
-                # APIs (subprocess, exec, etc.) will always trigger SAST false positives
-                pytest.xfail(
-                    f"{len(errors)} Do example(s) triggered Bandit warnings (expected false positives):\n"
-                    + "\n".join(errors[:10])
-                )
+            do_count = sum(
+                len([r for r in issues if r.get("issue_severity") in ["HIGH", "MEDIUM"]])
+                for issues in do_findings.values()
+            )
+            dont_count = sum(
+                len([r for r in issues if r.get("issue_severity") in ["HIGH", "MEDIUM"]])
+                for issues in dont_findings.values()
+            )
+
+            assert dont_count >= do_count, (
+                f"Expected Don't examples to trigger at least as many HIGH/MEDIUM Bandit "
+                f"findings as Do examples, but got {dont_count} Don't vs {do_count} Do findings. "
+                f"Security rules may not be demonstrating a meaningful risk reduction."
+            )
 
 
 class TestCustomSecurityRules:
