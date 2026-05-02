@@ -643,7 +643,6 @@ annotations:
 **Do**: Define a `values.schema.json` and lint the chart in CI
 
 ```json
-// values.schema.json — enforces type safety and required fields
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
