@@ -731,7 +731,7 @@ jobs:
           kubeconform -strict -summary -kubernetes-version 1.32.0
 
     - name: Run checkov (security policy scan)
-      uses: bridgecrewio/checkov-action@master
+      uses: bridgecrewio/checkov-action@9e5a7f1c2d4b6a8f0c1e2d3b4a5f6c7d8e9f0a1b
       with:
         directory: charts/myapp
         framework: helm
