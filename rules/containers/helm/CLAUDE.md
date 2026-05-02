@@ -711,10 +711,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
 
     - name: Set up Helm
-      uses: azure/setup-helm@v4
+      uses: azure/setup-helm@fe8b79aa0753d1306ba5a1229d46db3a8757d7c8 # v4
       with:
         version: "v3.17.0"
 
