@@ -1150,7 +1150,6 @@ uv tree --outdated
 ### Node.js — `package.json` + lockfile
 
 ```json
-// package.json — use exact versions (no ^ or ~)
 {
   "name": "my-app",
   "version": "1.0.0",
