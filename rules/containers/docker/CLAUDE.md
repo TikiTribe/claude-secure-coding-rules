@@ -1100,16 +1100,16 @@ name = "my-app"
 version = "1.0.0"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.115.0,<0.116",
-    "uvicorn[standard]>=0.34.0,<0.35",
-    "pydantic>=2.11.0,<3",
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.11.0",
 ]
 
 [dependency-groups]
 dev = [
-    "pip-audit>=2.8.0",
-    "ruff>=0.9.0",
-    "pytest>=8.3.0",
+    "pip-audit==2.8.0",
+    "ruff==0.9.0",
+    "pytest==8.3.0",
 ]
 
 [tool.uv]
