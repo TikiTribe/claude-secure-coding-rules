@@ -1228,10 +1228,14 @@ protectKernelDefaults: true
 makeIPTablesUtilChains: true
 eventRecordQPS: 5
 tlsCipherSuites:
+  # TLS 1.2 ciphers (TLS 1.3 ciphers are always enabled and not configurable)
   - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
   - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
   - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
   - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+  - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+tlsMinVersion: VersionTLS12
 ```
 
 ```bash
@@ -1561,3 +1565,162 @@ kubescape scan *.yaml --format json --output results.json
 ```
 
 **Refs**: CIS Kubernetes Benchmark, NSA Kubernetes Hardening Guide, Pod Security Standards
+
+---
+
+## Rule: Image Supply Chain Verification
+
+**Level**: `strict`
+
+**When**: Deploying container images to Kubernetes
+
+**Do**: Enforce cryptographic image signature verification and digest pinning at admission time
+
+```yaml
+# Kyverno: Verify Cosign signatures before admission
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/description: >
+      Images must be signed with Cosign using keyless OIDC signing
+      before they are admitted to the cluster.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+  - name: verify-signature
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    verifyImages:
+    - imageReferences:
+      - "myregistry.io/myapp:*"
+      - "myregistry.io/myapp@sha256:*"
+      attestors:
+      - count: 1
+        entries:
+        - keyless:
+            subject: "https://github.com/my-org/my-repo/.github/workflows/release.yml@refs/heads/main"
+            issuer: "https://token.actions.githubusercontent.com"
+            rekor:
+              url: https://rekor.sigstore.dev
+      mutateDigest: true     # Rewrite tag to digest for immutability
+      verifyDigest: true
+      required: true
+```
+
+```yaml
+# Kyverno: Require SBOM attestation alongside signature
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-sbom-attestation
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+  - name: check-sbom
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    verifyImages:
+    - imageReferences:
+      - "myregistry.io/*:*"
+      - "myregistry.io/*@sha256:*"
+      attestations:
+      - type: https://cyclonedx.org/bom
+        attestors:
+        - entries:
+          - keyless:
+              subject: "https://github.com/my-org/*"
+              issuer: "https://token.actions.githubusercontent.com"
+```
+
+```yaml
+# Kyverno: Enforce digest-only image references (no mutable tags)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+spec:
+  validationFailureAction: Enforce
+  rules:
+  - name: require-digest
+    match:
+      any:
+      - resources:
+          kinds: [Pod]
+    validate:
+      message: "Images must use immutable digest references (@sha256:...)"
+      pattern:
+        spec:
+          containers:
+          - image: "*@sha256:*"
+          initContainers:
+          - image: "*@sha256:*"
+```
+
+```bash
+# CI/CD: Sign image and attach SBOM after build (GitHub Actions)
+# 1. Build and push
+docker build -t myregistry.io/myapp:v1.2.3 .
+docker push myregistry.io/myapp:v1.2.3
+
+# 2. Generate SBOM
+syft myregistry.io/myapp:v1.2.3 -o cyclonedx-json > sbom.json
+
+# 3. Sign image (keyless via OIDC — no key management needed)
+cosign sign --yes myregistry.io/myapp:v1.2.3
+
+# 4. Attach SBOM as attestation
+cosign attest --yes --type cyclonedx \
+  --predicate sbom.json \
+  myregistry.io/myapp:v1.2.3
+
+# 5. Verify before deploy
+cosign verify \
+  --certificate-identity-regexp="https://github.com/my-org/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  myregistry.io/myapp:v1.2.3
+```
+
+```bash
+# Scan cluster for unsigned or unverified images
+# Using Trivy Operator (runs inside the cluster)
+helm repo add aqua https://aquasecurity.github.io/helm-charts/
+helm repo update
+helm install trivy-operator aqua/trivy-operator -n trivy-system --create-namespace
+kubectl get vulnerabilityreports -A
+kubectl get sbomreports -A
+```
+
+**Don't**: Allow unsigned or mutable image references in production
+
+```yaml
+# Vulnerable: Mutable tag with no signature check
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: app
+    image: myregistry.io/myapp:latest
+    imagePullPolicy: IfNotPresent
+# Risks:
+# - Tag can be silently repointed to malicious image
+# - No cryptographic proof of build provenance
+# - Supply chain compromise undetectable
+
+# Vulnerable: No admission policy — unsigned images admitted
+# Any developer can push a compromised image and deploy it
+```
+
+**Why**: Supply chain attacks (OWASP A06:2021) compromise container images before they reach production — via compromised CI/CD pipelines, dependency confusion, or registry tampering. Cosign keyless signing creates an immutable, verifiable audit trail in the public Rekor transparency log, linking each image to the specific CI/CD workflow that built it. Kyverno enforces these checks at admission, blocking unverified images before they can run. Combined with digest pinning, this ensures that what was approved is exactly what runs.
+
+**Refs**: CWE-494, OWASP A06:2021, SLSA (Supply-chain Levels for Software Artifacts) L3+, NIST SP 800-218 (SSDF), CIS Kubernetes Benchmark 5.5, Sigstore / Cosign documentation

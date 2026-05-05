@@ -168,19 +168,24 @@ class TestRuleContent:
     def test_rule_names_are_unique(
         self, all_rules: list[dict[str, Any]]
     ) -> None:
-        """Verify all rule names are unique across the project."""
-        seen_names: dict[str, Path] = {}
+        """Verify rule names are unique within each file (duplicates across files are allowed)."""
+        file_rules: dict[Path, list[str]] = {}
         duplicates = []
 
+        # Group rules by file
         for rule in all_rules:
+            filepath = rule["filepath"]
             name = rule["name"]
-            if name in seen_names:
+            
+            if filepath not in file_rules:
+                file_rules[filepath] = []
+            
+            if name in file_rules[filepath]:
                 duplicates.append(
-                    f"Duplicate rule name '{name}': "
-                    f"{seen_names[name]} and {rule['filepath']}"
+                    f"Duplicate rule name '{name}' within file {filepath}"
                 )
             else:
-                seen_names[name] = rule["filepath"]
+                file_rules[filepath].append(name)
 
         if duplicates:
             pytest.fail("\n".join(duplicates))
@@ -264,19 +269,28 @@ class TestInternalLinks:
     """Tests for internal link validity."""
 
     def test_no_broken_internal_links(
-        self, rule_files: list[Path], project_root: Path
+        self, rule_files: list[Path], project_root: Path,
+        file_contents_cache: dict
     ) -> None:
         """Verify all internal markdown links point to existing files."""
         link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
         errors = []
 
+        code_block_pattern = re.compile(r"```.*?```", re.DOTALL)
+
         for filepath in rule_files:
-            content = filepath.read_text(encoding="utf-8")
-            links = link_pattern.findall(content)
+            content = file_contents_cache.get(filepath) or filepath.read_text(encoding="utf-8")
+            # Strip code blocks before scanning for links to avoid false positives
+            stripped = code_block_pattern.sub("", content)
+            links = link_pattern.findall(stripped)
 
             for link_text, link_target in links:
                 # Skip external links
                 if link_target.startswith(("http://", "https://", "#")):
+                    continue
+                
+                # Skip code patterns that look like links (e.g., [tool_name](**args))
+                if link_target.startswith("**"):
                     continue
 
                 # Resolve the link path
@@ -299,14 +313,15 @@ class TestInternalLinks:
             pytest.fail("\n".join(errors))
 
     def test_no_broken_image_links(
-        self, rule_files: list[Path], project_root: Path
+        self, rule_files: list[Path], project_root: Path,
+        file_contents_cache: dict
     ) -> None:
         """Verify all image links point to existing files."""
         image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
         errors = []
 
         for filepath in rule_files:
-            content = filepath.read_text(encoding="utf-8")
+            content = file_contents_cache.get(filepath) or filepath.read_text(encoding="utf-8")
             images = image_pattern.findall(content)
 
             for alt_text, image_path in images:

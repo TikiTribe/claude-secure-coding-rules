@@ -13,13 +13,13 @@ These foundational container security rules apply to all containerized environme
 **Do**: Use minimal base images that contain only essential components
 ```dockerfile
 # Best: Distroless for compiled applications
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 COPY --from=builder /app/binary /app/binary
 USER nonroot:nonroot
 ENTRYPOINT ["/app/binary"]
 
 # Good: Alpine for interpreted languages
-FROM python:3.12-alpine AS runtime
+FROM python:3.13-alpine AS runtime
 RUN apk add --no-cache \
     ca-certificates \
     && rm -rf /var/cache/apk/*
@@ -66,7 +66,7 @@ CMD ["python3", "/app/app.py"]
 **Do**: Configure containers to run as non-root users
 ```dockerfile
 # Create dedicated user with specific UID/GID
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Create non-root user with specific UID for consistency
 RUN addgroup -g 10001 -S appgroup && \
@@ -107,7 +107,7 @@ spec:
 **Don't**: Run containers as root or without explicit user specification
 ```dockerfile
 # Vulnerable: Running as root (default)
-FROM node:20
+FROM node:22
 WORKDIR /app
 COPY . .
 RUN npm install
@@ -264,7 +264,7 @@ docker run untrusted-registry.io/someapp:latest
 **Do**: Use runtime secret injection mechanisms
 ```dockerfile
 # Dockerfile: No secrets in image
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 WORKDIR /app
 COPY requirements.txt .
@@ -326,7 +326,7 @@ secrets:
 **Don't**: Embed secrets in images during build
 ```dockerfile
 # Vulnerable: Secrets in build arguments
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 ARG DATABASE_PASSWORD
 ENV DATABASE_PASSWORD=${DATABASE_PASSWORD}
 # Risk: Secret visible in image layers and history
@@ -351,7 +351,7 @@ COPY credentials.json /app/credentials.json
 
 **Do**: Configure containers with read-only root filesystems
 ```dockerfile
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 WORKDIR /app
 COPY --chown=nobody:nobody . .
@@ -676,7 +676,7 @@ spec:
 
 **Do**: Implement comprehensive health checks
 ```dockerfile
-FROM python:3.12-alpine
+FROM python:3.13-alpine
 
 WORKDIR /app
 COPY . .
@@ -755,7 +755,7 @@ spec:
 **Do**: Implement comprehensive supply chain security measures
 ```yaml
 # Multi-stage build with pinned versions and verification
-FROM golang:1.22.0-alpine@sha256:abc123... AS builder
+FROM golang:1.24-alpine@sha256:abc123... AS builder
 
 # Verify dependencies
 COPY go.mod go.sum ./
@@ -765,7 +765,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /app
 
 # Minimal runtime image
-FROM gcr.io/distroless/static-debian12@sha256:def456...
+FROM gcr.io/distroless/static-debian13@sha256:def456...
 COPY --from=builder /app /app
 USER nonroot:nonroot
 ENTRYPOINT ["/app"]

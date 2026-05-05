@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/TikiTribe/claude-secure-coding-rules/security/advisories/new
+    about: Report a security vulnerability privately
+  - name: Discussions
+    url: https://github.com/TikiTribe/claude-secure-coding-rules/discussions
+    about: Ask questions or discuss ideas

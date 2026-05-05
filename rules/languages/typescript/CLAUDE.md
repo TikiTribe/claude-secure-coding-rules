@@ -18,7 +18,7 @@ Security rules for TypeScript development in Claude Code.
 **When**: Configuring TypeScript projects.
 
 **Do**:
-```json
+```jsonc
 // tsconfig.json
 {
   "compilerOptions": {

@@ -63,7 +63,7 @@ class RuleParser:
     )
 
     # Pattern for rule headers
-    RULE_HEADER_PATTERN = re.compile(r"^##\s+Rule:\s+(.+)$", re.MULTILINE)
+    RULE_HEADER_PATTERN = re.compile(r"^###\s+Rule:\s+(.+)$", re.MULTILINE)
 
     def __init__(self, content: str, filepath: Path) -> None:
         """Initialize parser with markdown content."""
@@ -75,10 +75,10 @@ class RuleParser:
     def _parse(self) -> None:
         """Parse all rules from the markdown content."""
         # Split content by rule headers
-        rule_splits = re.split(r"(?=^## Rule:)", self.content, flags=re.MULTILINE)
+        rule_splits = re.split(r"(?=^### Rule:)", self.content, flags=re.MULTILINE)
 
         for rule_text in rule_splits:
-            if not rule_text.strip() or "## Rule:" not in rule_text:
+            if not rule_text.strip() or "### Rule:" not in rule_text:
                 continue
 
             rule = self._parse_rule(rule_text)
@@ -271,14 +271,20 @@ def owasp_references(all_rules: list[dict[str, Any]]) -> dict[str, list[str]]:
     return owasp_refs
 
 
-# Coverage configuration
-def pytest_cov_config():
-    """Return coverage configuration."""
-    return {
-        "branch": True,
-        "source": ["tests"],
-        "omit": [
-            "*/conftest.py",
-            "*/__pycache__/*"
-        ]
-    }
+@pytest.fixture(scope="session")
+def file_contents_cache(rule_files: list[Path]) -> dict[Path, str]:
+    """Return cached file contents for all rule files (avoids repeated disk reads)."""
+    cache: dict[Path, str] = {}
+    for filepath in rule_files:
+        try:
+            cache[filepath] = filepath.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"Warning: Failed to read {filepath}: {e}")
+            cache[filepath] = ""
+    return cache
+
+
+@pytest.fixture(scope="session")
+def combined_rule_text(all_rules: list[dict[str, Any]]) -> str:
+    """Return a single lowercase string of all rule text for fast keyword scanning."""
+    return " ".join(rule["raw_text"].lower() for rule in all_rules)

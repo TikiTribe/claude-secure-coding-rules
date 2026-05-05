@@ -108,7 +108,7 @@ arr[user_index] = value;  // No bounds check
 
 **Why**: Buffer overflows allow attackers to overwrite memory, potentially executing arbitrary code or crashing the application.
 
-**Refs**: CWE-120, CWE-121, CWE-122, OWASP A06:2025
+**Refs**: CWE-120, CWE-121, CWE-122, CWE-787, CWE-125, OWASP A06:2025
 
 ---
 

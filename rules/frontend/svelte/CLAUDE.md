@@ -399,17 +399,16 @@ export async function load({ params }) {
 **When**: Using environment variables.
 
 **Do**:
-```javascript
-// Only PUBLIC_ prefixed vars are sent to client
-// .env
+```bash
+# .env — only PUBLIC_ vars are sent to the client
 PUBLIC_API_URL=https://api.myapp.com
-DATABASE_URL=postgres://...  // Server only
-JWT_SECRET=...               // Server only
+DATABASE_URL=postgres://...  # Server only
+JWT_SECRET=...               # Server only
+```
 
+```javascript
 // src/routes/+page.svelte
-<script>
-  import { PUBLIC_API_URL } from '$env/static/public';
-</script>
+import { PUBLIC_API_URL } from '$env/static/public';
 
 // src/routes/api/+server.js
 import { DATABASE_URL } from '$env/static/private';

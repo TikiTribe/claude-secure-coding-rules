@@ -174,9 +174,10 @@ npm ci --ignore-scripts  # Install from lockfile only
 
 # Verify package signatures
 pip install --require-hashes -r requirements.txt
+```
 
-# Pin exact versions with hashes
-# requirements.txt
+```ini
+# requirements.txt - pin exact versions with hashes
 requests==2.31.0 \
     --hash=sha256:58cd2187c01e70e6e26505bca751777aa9f2ee0b7f4300988b709f44e013003f
 ```

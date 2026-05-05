@@ -402,7 +402,7 @@ npm outdated
 npm install react@18.2.0
 ```
 
-```json
+```jsonc
 // package.json - Consider using exact versions
 {
   "dependencies": {
@@ -413,7 +413,7 @@ npm install react@18.2.0
 ```
 
 **Don't**:
-```json
+```jsonc
 {
   "dependencies": {
     "some-package": "*"  // VULNERABLE: Any version

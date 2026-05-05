@@ -70,7 +70,7 @@ terraform {
 **When**: Configuring backend storage permissions for IaC state
 
 **Do**:
-```json
+```jsonc
 // AWS S3 bucket policy - restrict to specific roles
 {
   "Version": "2012-10-17",
@@ -134,7 +134,7 @@ resource "google_storage_bucket" "terraform_state" {
 ```
 
 **Don't**:
-```json
+```jsonc
 // VULNERABLE: Public bucket policy
 {
   "Version": "2012-10-17",
@@ -237,7 +237,7 @@ terraform {
 }
 
 # DANGEROUS: Force unlock without investigation
-terraform force-unlock <LOCK_ID>
+# terraform force-unlock LOCK_ID  (run only after confirming no active operations)
 ```
 
 **Why**: Concurrent state modifications corrupt state files, leading to resource duplication, orphaned resources, and infrastructure inconsistencies. State corruption requires manual intervention and can cause outages.
@@ -1108,8 +1108,8 @@ terraform {
 }
 
 # DANGEROUS: Not committing lock file
-# .gitignore
-.terraform.lock.hcl  # Don't ignore this!
+# In .gitignore (wrong - do not add this):
+# .terraform.lock.hcl  # This file should be committed, not ignored!
 ```
 
 **Why**: Unpinned providers can introduce breaking changes or vulnerabilities. The lock file ensures reproducible builds and prevents supply chain attacks through compromised provider versions.

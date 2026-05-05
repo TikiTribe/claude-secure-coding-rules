@@ -337,7 +337,7 @@ llm = LLM(
 )
 
 # VULNERABLE: Hardcoded token
-os.environ["HF_TOKEN"] = "hf_xxxxx"  # Exposed credential
+os.environ["HF_TOKEN"] = "hf_1234567890abcdef"  # Exposed credential
 ```
 
 **Why**: Unverified models can contain malicious code in custom model definitions or poisoned weights that produce harmful outputs.
