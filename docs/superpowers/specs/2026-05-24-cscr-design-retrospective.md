@@ -143,43 +143,109 @@ RCS ships 104 methodology skills with zero hooks. RCS's reputation is solid. RCS
 
 The current CSCR design (Option A) is trying to be RCS *plus* enforcement. The premortems suggest the *plus* is the part that doesn't work.
 
-## Recommendation
+## Decision: Option B with BYOH (Bring-Your-Own-Hooks)
 
-**Adopt Option B (skills-only) for v2.0.0. Reserve Option C or D for v2.x if the hook layer is genuinely needed.**
+**Adopted: Option B (skills-only plugin) with an optional reference-implementation hooks library that the user installs into their own Claude Code config.**
 
-Reasoning:
+This is a sharpened version of Option B. The plugin ships hooks as *reference implementations*, not as active code. The user opts into them explicitly, installs them into their own `~/.claude/hooks/cscr/` directory, and owns the runtime trust decision.
 
-1. **Sustainability matters more than feature completeness for v2.0.0.** Two rounds of 11 Critical findings on Option A is a strong signal that further premortems will surface more. Option B passes the same premortem cleanly because the threat model is much narrower.
-2. **The catalog is the primary value.** v1's actual problem is not "no enforcement" — it is "84 files copied by hand, 8,800 lines always-on in `_core/` alone, no path-scoping, no on-demand loading." Option B fixes those completely. The enforcement-via-hooks layer was the ambitious goal added on top; the ambitious goal is the part with the recurring Critical findings.
-3. **Option B can be shipped in 6-10 weeks vs Option A's 4-8 months.** The faster ship lets CSCR users get the catalog wins quickly. If demand for hook-based enforcement is strong post-v2.0.0, Option C (Bash-only hooks) is a natural v2.x expansion that builds on a stable v2.0.0 foundation.
-4. **Honest framing is easier to maintain when claims are smaller.** Option A's honest-framing constraint (no `enforce`, `block`, `refuse` outside Tier A; no `co-signed` without per-release review) is real but adds CI lint complexity and PR-review burden. Option B has no enforcement claims to police — the framing is naturally honest.
-5. **RCS-symmetric is a strong default.** Two repos with the same architecture (skills + evals + settings-template, no hooks) reduces cognitive load for users who install both. The cross-pointer model already in the design becomes more credible when the architectures match.
+### What ships in BYOH
 
-**What we lose by choosing B:**
+```
+claude-secure-coding-rules/
+├── .claude-plugin/
+│   └── plugin.json                  # name, version, metadata only
+├── skills/                          # ~42 skills, primary value
+├── settings-template.json           # declarative permission rules,
+│                                    # works without any hooks
+├── hooks/optional/                  # reference implementations
+│   ├── README.md                    # WHEN to adopt, WHY each one is opt-in,
+│   │                                # what each one does NOT catch
+│   ├── _examples/                   # escape-hatch patterns, allowlist patterns
+│   ├── block-force-push-protected.py
+│   ├── block-curl-pipe-sh.py
+│   ├── block-chmod-777.py
+│   ├── block-unpinned-installs.py
+│   ├── block-hardcoded-secrets.py
+│   ├── block-eval-failsecure.py
+│   ├── block-pickle-loads.py
+│   ├── ...                          # 11-15 reference scripts
+│   ├── coverage/                    # per-hook bypass-class docs
+│   └── bundles/                     # curated groups: bash-only, ai-ml, full
+├── tools/
+│   ├── cscr-hooks.py                # install/update/list/remove user-local hooks
+│   ├── cscr-verify.py               # verify the plugin install
+│   └── cscr-configure.py            # interactive settings-template merger
+└── docs/
+    ├── how-to/
+    │   ├── install.md
+    │   ├── enable-optional-hooks.md # the central doc for BYOH
+    │   ├── write-your-own-hook.md
+    │   └── audit-cscr-pre-trust.md
+    └── explanation/
+        ├── three-layers.md          # catalog + template + opt-in user-hooks
+        ├── why-hooks-are-opt-in.md  # references the premortem findings
+        └── ...
+```
 
-- The "Tier A hooks block 12 RCE-class patterns" claim. This was the headline that motivated Round 1's "yes go big" decision. Replacing it with "the catalog teaches you to avoid these patterns and configures permission rules to deny the worst" is a downgrade in marketing terms, an honest narrowing in security terms.
-- The political/competitive position of "the security plugin that actually enforces." CSCR would not occupy that niche. Whether anyone else can is an open question — the premortem suggests no.
+### User workflow
 
-**What we gain:**
+1. `/plugin install tikitribe-secure-coding-rules` — installs skills, template, inert reference scripts
+2. Read `docs/how-to/enable-optional-hooks.md` — explains the trust model
+3. `cscr hooks install block-force-push-protected` (or `--bundle bash-only`) — copies the script into `~/.claude/hooks/cscr/`, adds the hook entry to `~/.claude/settings.json`, prints the coverage doc inline
+4. Audit, modify, or remove individually via `cscr hooks list / update / remove`
+5. The hooks live in the user's home dir, not the plugin dir; the user can edit them freely; updates are diff-reviewed before overwrite
 
-- A v2.0.0 that ships in ~2 months instead of ~6 months.
-- A v2.0.0 that passes adversarial premortem on first pass with few or no Criticals.
-- A v2.0.0 whose claims match what the platform actually delivers.
-- Architectural symmetry with RCS that strengthens both repos.
-- Capacity preserved for v2.x to add narrowly-scoped Bash hooks (Option C) once the v2.0.0 catalog is shipped and stable.
+### How BYOH addresses the Critical findings
 
-## Decision required from Rock
+| Round 1/2 finding | BYOH disposition |
+|---|---|
+| M3 / N1 (AST→regex attacker-controllable) | User adopted the script knowing the documented bypass classes; chooses fail-secure variant if they want |
+| M4 / N5 (hash-pinning self-referential) | Disappears — CSCR doesn't run anything in the user's session by default |
+| N2 (escape-hatch salt model-readable) | CSCR ships *example* escape-hatch patterns; user chooses their approach |
+| N3 (in-tree allowlist) | Same — example patterns in docs, user picks |
+| N6 (sigstore + co-signing) | Plugin still sigstore-signed but threat surface shrinks: compromise window is adoption-time only |
+| N7 (global advisory kill switch) | No kill switch because no plugin-shipped hooks to disable |
+| N4 (PR-diff Action unscaffolded) | User implements their own PR review for `~/.claude/hooks/cscr/` if they want it |
+| N8 (bypass log writable) | User owns the log location and retention |
+| N9 (latency budget cross-platform) | User benchmarks on their own hardware before enabling |
+| N17 ("refutation doesn't block release") | No deterministic enforcement claim to refute |
 
-This document is a decision support memo, not a spec. The architectural choice is yours.
+The findings that *still apply* under BYOH are the catalog-side concerns (N11 eval gaming, N13 statistical thinness, N14 OWASP Benchmark coverage gap, plus governance findings). Those need Amendment 03-style resolution but they are tractable in a way the hooks-side findings were not.
 
-**(A)** Continue current architecture. Write Amendment 03 for N8-N18, run Round 3, accept the continued amendment cycle. v2.0.0 in 4-8 months with the "Tier A hooks enforce" claim narrowed and caveated.
+### Honest framing under BYOH
 
-**(B)** Skills-only. Rewrite the design doc to remove the hook layer entirely. ~42 skills + permission-rule template + governance. v2.0.0 in 6-10 weeks with honest "catalog + platform configurator" framing.
+> CSCR teaches secure patterns through a skill catalog and ships a permission-rule template that uses Claude Code's platform-level enforcement. For users who want additional deterministic checks beyond what permission rules express, CSCR ships a library of reference hook scripts with documented coverage and bypass classes. The user installs the hooks they want into their own Claude Code config; CSCR does not run code in your session by default. Each hook's coverage doc names the bypass classes it does not catch. You are adopting reference implementations on your own infrastructure with your own threat model.
 
-**(C)** Bash-only hooks. Keep hooks but narrow to the 5-6 patterns the model can't route around at the Bash layer. Drop the Write/Edit hooks. v2.0.0 in 10-14 weeks with "narrow but genuine" enforcement claim.
+### Reasoning for B+BYOH over pure B, C, D, or A
 
-**(D)** Catalog + configurator. Ship the skills plus an interactive `cscr configure` CLI that drives Claude Code's platform-level enforcement (permission rules, sandbox). v2.0.0 in 12-16 weeks with "the enforcement is the platform's; CSCR is the curator" framing.
+1. **Sustainability:** premortem clears almost completely on the plugin itself. Two rounds of 11 Critical findings on Option A is strong signal that further amendments would surface more. BYOH passes the same premortem cleanly because CSCR no longer runs code in the user's session.
+2. **The catalog is the primary value.** v1's actual problem is "84 files copied by hand, 8,800 lines always-on, no path-scoping, no on-demand loading." BYOH fixes all of that — and adds an optional power-user enforcement layer for those who want it.
+3. **Trust decision lands in the right place.** The user knows their threat model, false-positive tolerance, and codebase quirks better than CSCR can. Putting the runtime trust decision with the user respects that and removes the supply-chain attack surface CSCR can't credibly defend.
+4. **Reference implementations are real value.** Users who write their own hooks read CSCR's first. The optional library teaches what good hook code looks like — that is teaching value layered on top of the catalog's teaching value.
+5. **RCS-symmetric on the default path.** A user who installs both CSCR and RCS and adopts no optional hooks sees two structurally identical plugins. The cross-pointer model becomes more credible when the architectures match. CSCR adds value beyond RCS only for users who explicitly want it (the optional hooks library).
+6. **v2.x runway preserved.** If a particular hook proves widely useful and widely safe in real deployments, it could be promoted to default-enabled in v3 with proper deprecation, telemetry, and informed consent. The optional library is the proving ground.
 
-My recommendation is **B** with **C as a deliberate v2.x expansion** once v2.0.0 is shipped and the catalog's adoption is measured. The 11 Critical findings across two rounds are strong evidence that the hook layer in its current form is fighting the platform. Option B accepts that constraint instead of fighting it further.
+### Tradeoffs accepted
 
-If you disagree and want to continue with Option A, the next step is Amendment 03 for N8-N18 and Round 3. If you choose C or D, the next step is rewriting the design doc against the new architecture and running a fresh single-round premortem on it (the changes are large enough that the prior premortems' findings won't all carry over).
+**You give up:**
+- The "install one plugin and you're protected" narrative. Users opt into hooks explicitly.
+- Some users will skip the hooks step and only get the catalog. That's fine — they still get the catalog.
+- The hooks reference library becomes a maintenance commitment (current scripts, documented bypass classes) but it is far lighter than maintaining shipped-and-running hooks: no sigstore-of-hooks, no per-platform latency benchmarks, no `cscr.enforcement` setting, no escape-hatch infrastructure.
+
+**You gain:**
+- v2.0.0 ships in ~6-10 weeks
+- v2.0.0 passes adversarial premortem on first pass with few or no Criticals
+- v2.0.0 claims match what CSCR actually delivers
+- Power users get exactly the enforcement they want, configured exactly the way they want
+- The optional library teaches hook authorship to the broader Claude Code ecosystem
+
+## Next steps
+
+1. Rewrite the design doc against the BYOH architecture. The current doc is structured around hooks-as-first-class; the new one centers on the catalog with hooks-as-reference-library.
+2. Carry forward from prior amendments: skills catalog (M1-M9), eval discipline (M14), SECURITY.md + governance.md + standards-pin.yaml (M5, M7), RCS cross-pointer (M9), honest-framing constraint (M1, N6).
+3. Drop from prior amendments: hook supply-chain machinery (M4, N5, N6), escape-hatch mechanism (M2, N2, N3), `cscr.enforcement` user-vs-project resolution (N7), AST fail-secure logic (N1), `~/.cscr/` state directory (N2, N3 resolutions).
+4. Run a single fresh premortem round on the new design to confirm the new shape passes cleanly.
+5. Move to implementation planning (`writing-plans` skill).
+
+This decision document is final unless new information arrives. The next artifact is the rewritten design doc.
