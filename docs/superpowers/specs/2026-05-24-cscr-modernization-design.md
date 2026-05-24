@@ -1,11 +1,13 @@
 # tikitribe-secure-coding-rules v2 Modernization Design
 
-**Status:** Approved design with Amendment 01 applied, ready for implementation planning
-**Date:** 2026-05-24 (Amendment 01 applied 2026-05-24)
+**Status:** Approved design with Amendments 01 and 02 applied, ready for implementation planning (pending Rock's decision on Round 3 vs design retrospective)
+**Date:** 2026-05-24 (Amendments 01 and 02 applied 2026-05-24)
 **Author:** Rock Lambros
 **Plugin name:** `tikitribe-secure-coding-rules`
 **Target version:** v2.0.0
-**Amendment history:** Amendment 01 (this revision) — resolves Round 1 adversarial premortem findings M1–M11 (false-confidence reframing, escape-hatch hardening, AST hooks, supply-chain controls, SECURITY.md+VDP, corpus-quality audit, standards pinning, converter contract, cross-pointer hardening, staged hook rollout, outcome metrics). See `docs/superpowers/specs/2026-05-24-cscr-amendment-01.md` for finding-by-finding rationale.
+**Amendment history:**
+- Amendment 01 — resolved Round 1 premortem findings M1–M11 (false-confidence reframing, escape-hatch hardening, AST hooks, supply-chain controls, SECURITY.md+VDP, corpus-quality audit, standards pinning, converter contract, cross-pointer hardening, staged hook rollout, outcome metrics). See `2026-05-24-cscr-amendment-01.md`.
+- Amendment 02 — resolved Round 2 Critical findings N1–N7 (AST→regex fail-secure, escape-hatch salt moved out of tree, allowlist moved out of tree, hash-pinning removed in favor of user-runnable `cscr verify`, sigstore single-signer disclosure, `cscr.enforcement` setting user-level only). Honest-framing constraint extended to supply-chain verbs. See `2026-05-24-cscr-amendment-02.md`.
 
 ## Purpose
 
@@ -31,7 +33,7 @@ Three enforcement layers ranked by reliability. The current repo conflates all t
 
 Layer 1 is new in v2. Layer 2 is shipped as `settings-template.json` for users to merge into their project settings. Layer 3 is the existing rule corpus, restructured as skills.
 
-**Honest-framing constraint.** The README and any user-facing copy may use enforcement verbs (`enforce`, `block`, `refuse`) only when describing Tier A hooks AND only for the bypass classes documented in `enforcement-coverage.md`. Layer 2 and Layer 3 use `advises`, `loads guidance for`, `documents`. A CI lint over README.md and docs/ flags marketing verbs in non-Tier-A contexts.
+**Honest-framing constraint.** The README and any user-facing copy may use enforcement verbs (`enforce`, `block`, `refuse`) only when describing Tier A hooks AND only for the bypass classes documented in `enforcement-coverage.md`. Layer 2 and Layer 3 use `advises`, `loads guidance for`, `documents`. Supply-chain verbs (`co-signed`, `attested`, `verified`, `hash-pinned`) require explicit per-release accuracy review — single-signer releases cannot claim "co-signed," releases without runtime verification cannot claim "verified," etc. A CI lint over README.md and docs/ flags both enforcement and supply-chain verbs in unsupported contexts.
 
 ## Repository layout (v2)
 
@@ -39,9 +41,9 @@ Layer 1 is new in v2. Layer 2 is shipped as `settings-template.json` for users t
 claude-secure-coding-rules/
 ├── .claude-plugin/
 │   └── plugin.json                  # name, version, author, marketplace metadata,
-│                                    # plus hookScriptHashes map (SHA-256 per hook script)
-├── .cscr-allowlist.json.example     # template for consuming projects: out-of-band
-│                                    # registry of permitted (rule-id, file, line-hash) bypasses
+│                                    # hookScriptHashes map (forward-compatible only — no
+│                                    # runtime verification until Claude Code adds native
+│                                    # support; see Amendment 02 N5)
 ├── skills/
 │   ├── applying-owasp-top-10/
 │   │   ├── SKILL.md
@@ -84,7 +86,15 @@ claude-secure-coding-rules/
 │   │                                # required for P1–P4
 │   ├── tests/converter/golden/      # input rule files + expected SKILL.md output
 │   ├── run_evals.py                 # RCS-compatible eval harness
-│   └── lint_skills.py               # frontmatter validation
+│   ├── lint_skills.py               # frontmatter validation
+│   ├── cscr-verify.py               # user-runnable supply-chain audit:
+│   │                                # recompute hook hashes, fetch sigstore bundle,
+│   │                                # compare. PASS/FAIL. (Amendment 02 N5)
+│   ├── cscr-hash.py                 # generate line-hash for `cscr:allow` comments,
+│   │                                # reads ~/.cscr/installation-salt (Amendment 02 N2)
+│   └── cscr-allowlist.py            # CLI: add/remove/list entries in
+│                                    # ~/.cscr/allowlists/<project-hash>.json
+│                                    # (Amendment 02 N3)
 ├── docs/
 │   ├── standards-pin.yaml           # external standards version pins (OWASP, NIST,
 │   │                                # MITRE) with publication dates and canonical URLs
@@ -108,6 +118,18 @@ claude-secure-coding-rules/
 ├── CLAUDE.md                        # project instructions
 └── README.md                        # rewritten for plugin-install; honest-framing constraint
 ```
+
+**Out-of-tree state (Amendment 02 N2, N3, N7).** The plugin stores three categories of state outside the project tree to prevent the model from modifying its own enforcement parameters:
+
+```
+~/.cscr/                             # chmod 700, user-only
+├── installation-salt                # 256-bit random, generated on first run
+└── allowlists/
+    └── <project-hash>.json          # per-project escape-hatch entries,
+                                     # managed via `cscr allowlist` CLI
+```
+
+The plugin's `settings-template.json` includes deny rules `Read(~/.cscr/**)` and `Write(~/.claude/**)` — these are load-bearing for the bypass-prevention claim. Users who do not merge the template explicitly accept the residual risk that the model could read the salt or rewrite enforcement settings.
 
 ## Skills catalog
 
@@ -222,29 +244,43 @@ Live at `hooks/hooks.json`. Fire on every PreToolUse for the relevant tool (Bash
 
 The merged Pattern 4 reduces the table to 11 enumerated patterns plus the merger note. The implementation still ships 12 hook scripts (the merger is logical, not file-level).
 
-Each hook is one Python script under `hooks/enforcement/`. Stdin is the standard Claude Code hook JSON. Per-hook target ≤150ms; aggregate budget across 6 Write/Edit hooks ≤750ms, measured end-to-end by CI benchmark.
+Each hook is one Python script under `hooks/enforcement/`. Stdin is the standard Claude Code hook JSON. Per-hook target ≤150ms; aggregate budget across 6 Write/Edit hooks ≤750ms, measured end-to-end by CI benchmark. (Note: this budget holds on GHA Linux runners; per-platform variance — Windows-with-Defender, M-series cold Python start, corporate EDR — is documented in `hooks/enforcement/coverage/latency.md` and deferred to Amendment 03 N9 for the cross-platform mitigation.)
 
 **Per-hook coverage docs.** Each hook ships with `hooks/enforcement/coverage/<hook-name>.md` enumerating exactly which call shapes are caught, which bypass classes are documented, and which Layer 3 skill is the fallback. The aggregate is `docs/explanation/enforcement-coverage.md`.
 
-### Escape hatch (M2-hardened)
+**Edit-mode AST handling (Amendment 02 N1).** Edit calls deliver deltas (`old_string`/`new_string`), not full content. The hook reads the current file from disk, applies the diff in memory (`new_content = file_content.replace(old_string, new_string, 1)`), then parses the result. The TOCTOU window between hook read and Claude Code write is documented in each per-hook coverage doc.
 
-A bypass requires THREE conditions, not one:
+**Fail-secure on AST regression (Amendment 02 N1).** If `ast.parse` fails on the post-edit content AND the pre-edit file parsed successfully, the hook blocks the edit with stderr: "CSCR cannot validate this edit: post-edit AST parse failed. Apply the edit in smaller fragments or fix the syntax error first." This converts the attacker's "introduce a parse error to fall through to weaker checks" technique into a self-DoS the user notices. For new files (no pre-edit state), AST failure plus any regex-floor match also blocks; the regex never silently passes.
 
-1. **Inline marker with line-hash:** `# cscr:allow <rule-id>:<sha256-prefix-8>` (or `// cscr:allow N:HASH` / `<!-- cscr:allow N:HASH -->`) where the SHA-prefix is computed over the offending line plus a stable salt published with the plugin version. The hook computes the same hash; mismatch = block.
-2. **Out-of-band allowlist registry:** `.cscr-allowlist.json` at the consuming project's root, owned by humans (not the model), lists permitted `(rule-id, file-path, line-hash)` tuples. A bypass that's NOT in `.cscr-allowlist.json` AND not matching its line-hash gets blocked.
+### Escape hatch (Amendment 02 N2 + N3)
+
+A bypass requires THREE conditions, none of which the model can satisfy unaided:
+
+1. **Inline marker with line-hash:** `# cscr:allow <rule-id>:<sha256-prefix-8>` (or `// cscr:allow N:HASH` / `<!-- cscr:allow N:HASH -->`) where the SHA-prefix is computed over the offending line plus a **per-installation salt** stored at `~/.cscr/installation-salt` (chmod 600, user-only). The hook computes the same hash; mismatch = block. The user generates the hash by running `cscr-hash <line>` from their terminal — the salt is never read by code the model controls.
+2. **Out-of-tree allowlist registry:** The allowlist lives at `~/.cscr/allowlists/<project-hash>.json`, NOT at the project root. The model has no default Read or Write to `~/.cscr/`. Entries are added via `cscr allowlist add <rule-id> <file> <line>` run by the user in their terminal.
 3. **Non-bypassable rule deny-list:** Rules #8 (hardcoded secrets) and #12 (force-push to protected branches) are non-bypassable. The hook ignores `cscr:allow` for these.
 
-**PR-diff gate (optional, for consuming projects).** A GitHub Action `cscr-allowlist-gate` blocks PRs that introduce new `cscr:allow` entries without a matching diff in `.cscr-allowlist.json`. Opt-in per consuming project.
+**Settings-template deny rules are load-bearing.** The plugin's `settings-template.json` includes `Read(~/.cscr/**)`. Users who merge the template get the rule. Users who don't merge accept the residual risk that a permission-rule-light Claude Code session could grant the model Read access to the salt and the allowlist, at which point the bypass-prevention claim degrades.
 
-**Bypass logging.** SessionEnd hook in the plugin writes any `cscr:allow` comments introduced during the session to `~/.claude/projects/<project>/cscr-bypass-log.jsonl`. Audited via `/cscr:audit-bypasses` skill.
+**Honest claim narrowing.** The bypass is defeated against a model running in default-permission Claude Code sessions where `~/.cscr/` is not in the model's Read scope. A model with global Read (e.g., `bypassPermissions` mode, or a project granting `Read(~/**)`) can still compute the hash. This is documented in `docs/explanation/three-layers.md`.
 
-### Default posture (M10-staged)
+**PR-diff gate (optional, now hygiene rather than load-bearing).** A GitHub Action `cscr-allowlist-gate` flags PRs that modify the local `.cscr-allowlist-changes.log` (audit log of allowlist edits made via the CLI). Opt-in per consuming project. With the out-of-tree allowlist (item 2), this gate is now documentation hygiene rather than the only defense against in-tree injection.
 
-v2.0.0 ships `cscr.enforcement: "advisory"` by default. Hooks run in advisory mode (exit 0 with stderr warning) for the 30-day post-release window. v2.1.0 flips the default to `"strict"` (exit 2 = block) AFTER the project has received and addressed real-world false-positive reports.
+**Bypass logging (Amendment 02 N5).** SessionEnd hook in the plugin writes any `cscr:allow` comments introduced during the session to `~/.cscr/logs/<project-hash>.jsonl`. The same out-of-tree permission discipline applies. (Amendment 03 N8 will further harden against abnormal termination via a heartbeat write at SessionStart.)
 
-First-run notice via SessionStart hook displays: "CSCR is in advisory mode. To enable blocking, set `cscr.enforcement: \"strict\"` in your project settings. See docs/how-to/enable-hooks.md."
+### Default posture (Amendment 02 N7)
 
-Per-rule disable: users can set `cscr.rules.<rule-id>.enabled: false` to disable individual hooks while keeping the rest. The non-bypassable deny-list (rules #8 and #12) ignores this setting.
+v2.0.0 ships `cscr.enforcement: "advisory"` by default. Hooks run in advisory mode (exit 0 with stderr warning) for the 30-day post-release window. v2.1.0 flips the default to `"strict"` (exit 2 = block) AFTER the strict-flip threshold is met (Amendment 03 N18 will define the threshold concretely; the v2.0.0 placeholder is "after the project has received and addressed real-world false-positive reports").
+
+**`cscr.enforcement` setting is honored only from user-level settings** (`~/.claude/settings.json`), NOT from project-level settings. The model has no default `Write(~/.claude/**)` permission, so it cannot flip a project from strict to advisory by writing project settings. When the hook detects a project-level `cscr.enforcement` setting, it emits stderr: "CSCR enforcement mode is set at the user level, not the project level. Project-level setting ignored." This is load-bearing for the non-bypassable claim on rules #8 and #12.
+
+The `settings-template.json` includes `Write(~/.claude/**)` as a deny rule. Users who don't merge the template, or who explicitly grant the model that permission, accept the residual risk.
+
+First-run notice via SessionStart hook displays: "CSCR is in advisory mode. To enable blocking, set `cscr.enforcement: \"strict\"` in your user-level `~/.claude/settings.json`. See docs/how-to/enable-hooks.md."
+
+Per-rule disable: users can set `cscr.rules.<rule-id>.enabled: false` in user-level settings to disable individual hooks while keeping the rest. The non-bypassable deny-list (rules #8 and #12) ignores this setting AND ignores `cscr.enforcement: "advisory"` — they always block.
+
+**Honest claim narrowing for non-bypassable.** Rules #8 and #12 cannot be disabled by a model with default permissions in a Claude Code session. They can be disabled by a user with shell access to `~/.claude/settings.json` AND who has merged the CSCR settings template. Users who have not merged the template, or who have granted the model `Write(~/.claude/**)`, accept the residual risk.
 
 A telemetry-free FP feedback channel via `/cscr:report-false-positive` skill collects anonymized pattern data and opens a pre-filled GitHub issue. No silent telemetry.
 
@@ -381,7 +417,7 @@ A CI job in CSCR clones RCS at a pinned commit SHA (not a tag, to avoid moving r
 8. **P5 — Tier A hooks (AST-based per M3).** Author the 11 enumerated strict hook scripts (#4 merged into #3) with AST detection for language-aware patterns and regex floor for partial-edit fallback. pytest fixtures include known-FN payloads per hook. Per-hook ≤150ms, aggregate ≤750ms; CI benchmark gates. Per-hook coverage docs at `hooks/enforcement/coverage/<hook>.md` and aggregate `docs/explanation/enforcement-coverage.md`. Hook script hashes added to `.claude-plugin/plugin.json` `hookScriptHashes`. Escape-hatch mechanism (`# cscr:allow N:HASH` + `.cscr-allowlist.json`) implemented.
 9. **P6 — Tier B hooks.** Add `hooks:` frontmatter to skills that warrant warnings (estimate ~15 skills, not all 42).
 10. **P6.5 — Third-party held-out review (M11).** Hand a held-out vulnerable-code corpus (e.g., OWASP Benchmark v1.2 + curated CWE Top 25 set) to a named external reviewer. Test with and without CSCR loaded. Pre-register numerical claims. Publish results.
-11. **P7 — Marketplace submission.** Submit to `claude-plugins-community`. Sigstore-attest the release; co-sign with the second key holder (or document why v2.0.0 ships with single-key signing as accepted residual risk). Update README. Tag v2.0.0.
+11. **P7 — Marketplace submission.** Submit to `claude-plugins-community`. Sigstore-attest the release with the single maintainer key. Co-signing is a v2.x.0 milestone, explicitly disclosed in release notes and `docs/governance.md` as not-yet-implemented. Publish `cscr verify` CLI for user-runnable supply-chain audit. Update README per honest-framing constraint (no claims of "co-signed" or "verified" without per-release accuracy review). Tag v2.0.0.
 
 ### Backward compatibility
 
@@ -402,9 +438,11 @@ The `rules/` tree stays accessible from the `v1.x` git tag. The v2 README has a 
 | Drift between RCS and CSCR cross-references | CI drift-check, frontmatter-parsed, pinned-SHA per M9. |
 | Hook script performance overhead | AST hooks per M3; per-hook ≤150ms, aggregate ≤750ms across 6 Write/Edit hooks. CI benchmark gates end-to-end aggregate, not per-hook isolated. |
 | Plugin enabling hooks by default surprises users | M10 staged rollout: advisory in v2.0.0, strict in v2.1.0 after public FP postmortem. First-run notice via SessionStart. |
-| **(NEW) Marketplace push or maintainer-credential compromise** | M4: sigstore-attested releases; `hookScriptHashes` in plugin manifest verified at load; `docs/how-to/audit-cscr-pre-trust.md` six-check audit; second-key-holder requirement for releases. |
+| **(NEW) Marketplace push or maintainer-credential compromise** | M4 + Amendment 02 N5/N6: sigstore-attested releases (single-signer at v2.0.0, co-signed in a v2.x milestone); user-runnable `cscr verify` CLI for post-install hash audit; `docs/how-to/audit-cscr-pre-trust.md` six-check audit. No runtime hash verification until Claude Code adds native support — disclosed explicitly. |
 | **(NEW) Outcome metric refutation in third-party review** | M11: honest release-note language documenting what was measured AND what was NOT improved; README claims updated to match the measured uplift. Refutation does not block release. |
-| **(NEW) Escape-hatch bypass via model-emitted comment** | M2: three-condition bypass (inline marker with line-hash + out-of-band allowlist registry + non-bypassable rule deny-list for #8 and #12); SessionEnd bypass logging. |
+| **(NEW) Escape-hatch bypass via model-emitted comment** | M2 + Amendment 02 N2/N3: three-condition bypass with per-installation salt (`~/.cscr/installation-salt`) and out-of-tree allowlist (`~/.cscr/allowlists/<project-hash>.json`); model has no default Read to `~/.cscr/` when settings-template is merged. SessionEnd bypass logging written to `~/.cscr/logs/`. Defeated only against models in default-permission sessions; documented residual risk for `bypassPermissions` or `Read(~/**)` configurations. |
+| **(NEW, Amendment 02 N7) Model rewrites `cscr.enforcement` to advisory in project settings** | `cscr.enforcement` honored only from `~/.claude/settings.json` (user-level); project-level setting ignored with stderr warning. Settings template includes `Write(~/.claude/**)` deny rule. Non-bypassable rules (#8, #12) ignore advisory mode entirely. |
+| **(NEW, Amendment 02 N1) Attacker controls AST→regex fallback via mid-edit syntax errors** | Fail-secure on AST regression: if pre-edit file parsed but post-edit does not, block with stderr explanation. Read-file-apply-diff-parse pattern for Edit calls. Regex floor never silently passes; blocks plus emits match as hint. |
 | **(NEW) Multi-statement dataflow false negatives in AST hooks** | M3: explicitly named as out-of-scope for Tier A; documented in `enforcement-coverage.md`; Layer 3 skill + recommended Semgrep rule covers the gap. |
 | **(NEW) Standards drift (OWASP / NIST / MITRE rev superseded)** | M7: `docs/standards-pin.yaml` machine-readable version pins; monthly CI check opens issue on supersession; 90-day update SLA documented in governance.md. |
 
@@ -426,6 +464,7 @@ v2.0.0 ships when ALL of the following are true:
 4. The CI drift-check against RCS passes (frontmatter-parsed, pinned-SHA).
 5. README's "Migrating from v1" section is in place.
 6. **(Revised)** Total p95 per-session loaded skill size, measured by a representative AI/ML+FastAPI test fixture, is less than the v1 baseline. Not a fuzzy "small factor."
-7. **(New, M1+M11)** `docs/explanation/enforcement-coverage.md` exists and is reviewed by a named third party; README contains no enforcement verbs (`enforce`, `block`, `refuse`) outside Tier A scope; pre-registered third-party held-out review is complete with results published in release notes.
+7. **(Revised, M1+M11+Amendment 02 N6)** `docs/explanation/enforcement-coverage.md` exists and is reviewed by a named third party; README contains no enforcement verbs (`enforce`, `block`, `refuse`) outside Tier A scope AND no supply-chain verbs (`co-signed`, `attested`, `verified`, `hash-pinned`) without explicit per-release accuracy review; pre-registered third-party held-out review is complete with results published in release notes.
 8. **(New, M5)** `SECURITY.md` exists, has been smoke-tested by an external reporter, and the contact channel works.
-9. **(New, M4)** Release is sigstore-attested; hook-script hashes are pinned in `.claude-plugin/plugin.json`; `docs/how-to/audit-cscr-pre-trust.md` documents the six-check audit applied to CSCR itself.
+9. **(Revised, Amendment 02 N5+N6)** Release is sigstore-attested with a single maintainer key; `cscr verify` CLI command exists and produces clear PASS/FAIL output; `docs/how-to/audit-cscr-pre-trust.md` documents the six-check audit applied to CSCR itself. Co-signing is a v2.x.0 milestone, explicitly disclosed as not-yet-implemented in release notes.
+10. **(New, Amendment 02 N2+N3+N7)** `settings-template.json` includes deny rules for `Read(~/.cscr/**)` and `Write(~/.claude/**)`; `cscr-hash` and `cscr allowlist` CLIs exist; the README and SECURITY.md document these as load-bearing for the bypass-prevention and non-bypassable claims; users who do not merge the template are explicitly told they accept the residual risk.
