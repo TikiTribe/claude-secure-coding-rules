@@ -1,47 +1,59 @@
 # tikitribe-secure-coding-rules v2 Modernization Design
 
-**Status:** Approved design (post-retrospective), ready for fresh single-round premortem, then implementation planning
-**Date:** 2026-05-24 (architecture revised 2026-05-24 after two-round premortem)
+**Status:** Approved (B-pure architecture, post three premortem rounds), ready for implementation planning
+**Date:** 2026-05-24 (architecture revised three times same day — see Decision lineage below)
 **Author:** Rock Lambros
 **Plugin name:** `tikitribe-secure-coding-rules`
 **Target version:** v2.0.0
-**Architecture:** Option B with BYOH (Bring-Your-Own-Hooks) per `2026-05-24-cscr-design-retrospective.md`
-**Prior documents (superseded but retained for context):**
-- `2026-05-24-cscr-amendment-01.md` — resolved Round 1 findings (catalog quality, RCS congruence, governance, supply chain) — most resolutions carry forward
-- `2026-05-24-cscr-amendment-02.md` — resolved Round 2 Critical findings against the hooks-shipped-in-plugin architecture — superseded by the architectural shift to BYOH
-- `2026-05-24-cscr-design-retrospective.md` — step-back analysis and B+BYOH decision
+**Architecture:** B-pure — catalog + permission-rule template + documentation; no CSCR-authored executable code ships in the plugin
+
+## Decision lineage
+
+| Round | Architecture attacked | Critical findings | Outcome |
+|---|---|---|---|
+| Round 1 | Original hooks-shipped-in-plugin (M1-M11 amendment) | 5 Critical | Amendment 01 applied |
+| Round 2 | Amendment 01 hooks-with-out-of-tree-state | 6 Critical | Amendment 02 applied |
+| Retrospective | Step-back; chose Option B with BYOH (reference hooks the user installs) | — | Design rewritten for B+BYOH |
+| Fresh round | B+BYOH architecture | 5 Critical | B+BYOH abandoned; B-pure adopted |
+
+**The pattern that forced B-pure:** Any architecture that ships executable enforcement scripts (whether plugin-active or user-installable) recreates the model-controlled-bypass problem because the agent has Bash tool access. A prompt-injected model can instruct the user to run `cscr hooks install --bundle full --accept-coverage`; the user approves at the documented 93% rate (Hughes 2026); the runtime attack surface after adoption is identical to the original hook-shipping architecture. Three rounds of premortem on three architectures all surfaced 5+ Criticals on the same root cause.
+
+**B-pure escapes the trap by not shipping any executable scripts.** Hook authorship is taught in documentation; users who want hooks write their own. CSCR's claims are bounded to what the *catalog* and the *permission-rule template* deliver — both of which are inert files the user merges into their config or reads in a session.
+
+Prior amendments and the retrospective are preserved in `docs/superpowers/specs/` for context. Their resolutions are partially carried forward (catalog structure, eval discipline, RCS congruence, governance, supply chain at the plugin-metadata layer) and partially dropped (everything involving CSCR-shipped executable hooks).
 
 ## Purpose
 
-Convert `claude-secure-coding-rules` (CSCR) from a `cp`-distributed library of always-on CLAUDE.md rule files into a Claude Code plugin built on the 2026-era platform primitives: skills (description-matched, path-scoped, on-demand loading), permission rules (declarative deny), and the community plugin marketplace.
+Convert `claude-secure-coding-rules` (CSCR) from a `cp`-distributed library of always-on CLAUDE.md rule files into a Claude Code plugin that ships:
+
+1. **The catalog** — ~42 path-scoped, on-demand-loading skills that teach secure patterns by domain
+2. **A permission-rule template** — a static `settings-template.json` users merge into their own Claude Code settings; enforcement happens at the platform layer, not in any CSCR-shipped code
+3. **Documentation** — including a "write your own hook" guide with full code examples in markdown that users copy manually if they want enforcement beyond what permission rules can express
 
 The v1 problems v2 fixes:
-1. **`Level: strict` was advisory prose, not enforcement.** v2 is honest about this: enforcement comes from the platform's permission rules and (optionally) from user-installed hooks the user adopts after reading their coverage docs.
-2. **8,800+ lines in `_core/` alone** burned the user's context window on every session. v2 path-scopes skills so most sessions load only 2-4 of the 42 skills.
-3. **`cp`-based distribution.** v2 ships via the community marketplace as a single `/plugin install` command.
+- **`Level: strict` was advisory prose, not enforcement.** v2 is honest about this: enforcement comes from the platform's permission rules. CSCR does not claim deterministic enforcement of anything not expressible as a permission rule.
+- **8,800+ lines in `_core/` alone** burned the user's context window on every session. v2 path-scopes skills so most sessions load only 2-4 of the 42 skills.
+- **`cp`-based distribution.** v2 ships via the community marketplace as a single `/plugin install` command.
 
 ## Non-goals
 
-- v2 is not a deterministic enforcement plugin. The two-round adversarial premortem demonstrated that a plugin layer cannot reliably enforce against an agent that controls the inputs to the enforcement check. v2 ships an optional hooks reference library for users who want to operate enforcement on their own infrastructure with their own threat model — but the *plugin itself* does not run code in the user's session by default.
-- v2 is not a methodology repo. RCS owns that lane. CSCR stays a catalog of framework-specific controls.
-- v2 does not bundle SAST runners. Existing `tests/` Semgrep/Bandit integration validates rule examples; production SAST stays the user's responsibility.
+- v2 is not a deterministic enforcement plugin. Three rounds of premortem demonstrated that a plugin layer cannot reliably enforce against an agent that controls the inputs to the enforcement check. v2 does not attempt this.
+- v2 does not ship executable enforcement code. No `cscr hooks install`, no `cscr-configure` interactive merger, no `cscr-verify` CLI. The user merges the settings template manually or via tools they already use; sigstore verification of the release is documented but performed by the user with `python -m sigstore verify`, not by a CSCR-shipped binary.
+- v2 is not a methodology repo. RCS owns that lane.
+- v2 does not bundle SAST runners.
 
 ## Architecture
 
-Three layers, ranked by where enforcement actually lives:
+Two layers, ranked by where enforcement actually lives:
 
 | Layer | Mechanism | Who runs it | What it covers |
 |---|---|---|---|
 | 1. Platform-level enforcement | Claude Code permission rules in user/project `settings.json` | The Claude Code harness, deterministically | File paths (`.env`, `secrets/**`), command patterns (`curl \| sh`, force-push targeting `main`/`master`), MCP allow/deny, sandbox config |
-| 2. Optional user-installed hooks | Reference Python scripts in `hooks/optional/`, installed into user's `~/.claude/hooks/cscr/` via `cscr hooks install` | The user's own Claude Code session, after explicit opt-in | Documented per-script: Bash-level patterns (force-push, curl-pipe-sh, chmod 777, unpinned installs), with per-script bypass-class docs |
-| 3. Skills (advisory) | `SKILL.md` loaded on description match and `paths:` glob | Claude during a session | Framework idioms, defense-in-depth, the rest of the catalog |
+| 2. Skills (advisory) | `SKILL.md` loaded on description match and `paths:` glob | Claude during a session | Framework idioms, defense-in-depth, the rest of the catalog |
 
-The plugin itself ships:
-- Layer 1: `settings-template.json` users merge into their own settings
-- Layer 2: inert reference scripts in `hooks/optional/` (the user copies the ones they want into their own config; nothing CSCR ships runs automatically)
-- Layer 3: ~42 skills
+There is no Layer 3 / hook layer in v2. The retrospective's BYOH layer was attempted in a prior revision and rejected after the fresh premortem surfaced 5 Criticals. Users who want enforcement beyond what permission rules express read `docs/how-to/write-your-own-hook.md` and author their own hooks in their own infrastructure with their own threat model.
 
-**Honest-framing constraint.** The README and user-facing copy may use enforcement verbs (`enforce`, `block`, `refuse`) only in two contexts: (a) describing Claude Code's permission rules (the platform enforces, not CSCR), or (b) describing a specific hook in the optional library when paired with that hook's documented coverage. Layer 3 uses `advises`, `loads guidance for`, `documents`. A CI lint over README.md and docs/ flags violations.
+**Honest-framing constraint.** The README and user-facing copy may use enforcement verbs (`enforce`, `block`, `refuse`) only when describing Claude Code's permission rules (which CSCR's template uses but does not implement). Layer 2 uses `advises`, `loads guidance for`, `documents`. Supply-chain verbs (`co-signed`, `attested`, `verified`) require per-release accuracy review — single-signer releases cannot claim "co-signed," releases without runtime verification cannot claim "verified at runtime," etc. A CI lint over README.md, docs/, and the marketplace listing description flags violations. The lint covers a deny-phrase list, not just verbs (`the security plugin`, `protects you from`, `authoritative`, `comprehensive coverage`, `enterprise-grade`, etc.).
 
 ## Repository layout
 
@@ -63,70 +75,54 @@ claude-secure-coding-rules/
 │   ├── javascript-security/
 │   ├── ...                          # ~42 skills total
 │   └── README.md                    # cross-skill index, sigma-sorted
-├── settings-template.json           # platform-level permission rules,
-│                                    # merged into user/project settings via cscr-configure
-├── hooks/optional/                  # reference implementations — NOT loaded by default
-│   ├── README.md                    # WHEN to adopt, WHY each is opt-in,
-│   │                                # what each does NOT catch
-│   ├── _examples/                   # escape-hatch patterns, allowlist patterns
-│   ├── block-force-push-protected.py
-│   ├── block-curl-pipe-sh.py
-│   ├── block-chmod-777.py
-│   ├── block-unpinned-installs.py
-│   ├── block-hardcoded-secrets.py
-│   ├── block-eval-failsecure.py
-│   ├── block-pickle-loads.py
-│   ├── ...                          # ~11-15 reference scripts
-│   ├── coverage/                    # per-hook bypass-class docs
-│   │   ├── block-force-push-protected.md
-│   │   ├── block-curl-pipe-sh.md
-│   │   └── ...
-│   └── bundles/                     # curated install groups
-│       ├── bash-only.json           # only Bash-side patterns the model can't easily route around
-│       ├── ai-ml-stack.json         # hooks relevant to LangChain/RAG/MCP work
-│       └── full.json                # everything, with documented residual risk
+├── settings-template.json           # platform-level permission rules
 ├── SECURITY.md                      # VDP, reporting channel, disclosure policy
+├── TERMS.md                         # warranty disclaimer + no-fitness-for-regulated-use
 ├── tests/
-│   ├── hooks/                       # pytest unit tests for each reference hook script
 │   ├── structural/                  # rule-format tests, adapted to SKILL.md
-│   ├── semantic/                    # Do/Don't examples evaluated against the reference
-│   │                                # hooks, validates corpus-to-hook consistency
+│   ├── semantic/                    # Do/Don't examples evaluated against the
+│   │                                # settings-template permission rules and
+│   │                                # documented hook patterns
 │   └── coverage/                    # OWASP/CWE coverage analysis (semantic check)
 ├── tools/
 │   ├── rule-to-skill-converter.py   # mechanical v1 → v2 first pass; --strict mode
 │   ├── tests/converter/golden/      # golden-file converter tests
 │   ├── run_evals.py                 # RCS-compatible eval harness
-│   ├── lint_skills.py               # frontmatter validation
-│   ├── cscr-configure.py            # interactive: merge settings-template into user/project
-│   ├── cscr-hooks.py                # install / update / list / remove user-local hooks
-│   └── cscr-verify.py               # verify plugin install: sigstore signature + skill hashes
+│   └── lint_skills.py               # frontmatter validation
 ├── docs/
 │   ├── standards-pin.yaml           # external standards version pins
 │   ├── governance.md                # ownership, dispute resolution, update SLA,
-│   │                                # release co-signing roadmap
+│   │                                # release co-signing roadmap, deprecation policy
 │   ├── superpowers/specs/           # design docs, amendments, retrospective
 │   ├── how-to/
 │   │   ├── install.md
-│   │   ├── enable-optional-hooks.md # CENTRAL doc for BYOH adoption
-│   │   ├── write-your-own-hook.md   # teaches hook authorship
-│   │   ├── audit-cscr-pre-trust.md  # six-check audit applied to CSCR itself
-│   │   ├── handle-rule-conflicts.md # org-wide carve-outs for regulated environments
+│   │   ├── merge-settings-template.md # how to merge the template into your settings
+│   │   ├── write-your-own-hook.md   # full code examples; user copies manually
+│   │   ├── verify-the-release.md    # how to run `python -m sigstore verify`
+│   │   ├── audit-cscr-pre-trust.md  # six-check audit
+│   │   ├── handle-rule-conflicts.md
 │   │   └── contribute-a-skill.md
 │   └── explanation/
-│       ├── three-layers.md          # catalog + template + opt-in user-hooks
-│       ├── why-hooks-are-opt-in.md  # references the two premortem rounds
-│       ├── enforcement-coverage.md  # per-mechanism coverage and bypass classes
+│       ├── two-layers.md            # catalog + template
+│       ├── why-no-hooks.md          # references the three premortem rounds
+│       ├── enforcement-coverage.md  # what permission rules CAN and CANNOT enforce
 │       ├── converter-contract.md
-│       ├── sigma-score.md           # vendored from RCS
+│       ├── sigma-score.md           # vendored from RCS, re-validated for security
 │       └── relationship-to-rcs.md
 ├── CLAUDE.md                        # project instructions
-└── README.md                        # honest-framing constraint; positions CSCR as
-                                     # catalog + platform-configurator + reference hooks
+└── README.md                        # honest-framing; positions CSCR as catalog + platform configurator
 ```
+
+**Notable absences** (deliberate, per fresh-round F1-F5):
+- No `tools/cscr-configure.py` (the settings template is a static JSON file the user merges)
+- No `tools/cscr-hooks.py` (no hooks ship; user authors hooks from documentation)
+- No `tools/cscr-verify.py` (sigstore verification is `python -m sigstore verify` against the release tarball; documented in `verify-the-release.md`)
+- No `hooks/optional/` directory (eliminates the BYOH attack surface)
+- No `~/.cscr/` state directory (no per-installation salts or allowlists)
 
 ## Skills catalog
 
-The catalog is the primary value of v2. Each rule domain becomes one skill directory. The conversion principle: a CLAUDE.md rule file becomes a SKILL.md with frontmatter that scopes loading (`paths:`, `description`, `when_to_use`), a body that teaches the patterns, and bundled `reference/` files for deep dives.
+The catalog is the primary value of v2. Each rule domain becomes one skill directory.
 
 ### Per-skill anatomy
 
@@ -134,23 +130,38 @@ The catalog is the primary value of v2. Each rule domain becomes one skill direc
 skills/python-security/
 ├── SKILL.md                   # frontmatter + concise instructions, <400 lines
 ├── reference/
-│   ├── deserialization.md     # detailed pickle/yaml/marshal patterns
-│   ├── subprocess.md          # shell=True, command injection
-│   └── crypto.md              # weak algos, hardcoded keys
+│   ├── deserialization.md
+│   ├── subprocess.md
+│   └── crypto.md
 ├── examples/
 │   ├── secure-sql.py
 │   └── secure-subprocess.py
 └── evals/
-    ├── 01-happy-path.json
-    ├── 02-edge-case.json
-    ├── 03-anti-trigger.json
-    └── 04-adversarial/        # multiple adversarial probes per skill
+    ├── 01-happy-path/         # n≥3 scenarios per cell
+    │   ├── 01.json
+    │   ├── 02.json
+    │   └── 03.json
+    ├── 02-edge-case/
+    │   ├── 01.json
+    │   ├── 02.json
+    │   └── 03.json
+    ├── 03-anti-trigger/
+    │   ├── 01.json
+    │   ├── 02.json
+    │   └── 03.json
+    └── 04-adversarial/        # n≥5 scenarios per skill, distinct attack families
         ├── 01.json
         ├── 02.json
         ├── 03.json
         ├── 04.json
         └── 05.json
 ```
+
+Total per skill: 14 eval scenarios (3+3+3+5), each scored independently. The "shipped" bar is: all 14 pass. (Up from the BYOH design's 8, per fresh-round F13 / DataSci #10 on n=1 cells being example-not-test.)
+
+### Adversarial variant taxonomy
+
+Each skill commits to a documented variant taxonomy *before* writing adversarial probes. The taxonomy enumerates known attack families for that domain (per fresh-round DataSci #2). For `python-security` the families might be {direct call, aliased import, base64-then-loads, dill substitution, custom `__reduce__`, gadget chain}; the 5 adversarial probes draw one from each. The taxonomy lives at `skills/<name>/evals/04-adversarial/taxonomy.md` and is part of the skill's "shipped" deliverable.
 
 ### SKILL.md frontmatter pattern
 
@@ -169,15 +180,13 @@ paths:
   - "**/requirements*.txt"
 when_to_use: |
   User is writing Python that touches user input, subprocess, deserialization,
-  crypto, file I/O, or database queries. User asks "is this Python code secure?"
+  crypto, file I/O, or database queries.
 version: 2.0.0
 sigma: 18
 ---
 ```
 
-The `paths:` field is the key context-budget win. The python skill no longer loads when editing Terraform. Most sessions load 2-4 skills, not all 42.
-
-### Catalog mapping (current → v2)
+### Catalog mapping (unchanged from prior revisions)
 
 | Current v1 path | v2 skill | Σ |
 |---|---|---|
@@ -187,35 +196,28 @@ The `paths:` field is the key context-budget win. The python skill no longer loa
 | `_core/mcp-security.md` | `applying-mcp-security` | 19 |
 | `_core/rag-security.md` | `applying-rag-security` | 18 |
 | `_core/graph-database-security.md` | `applying-graph-db-security` | 15 |
-| `languages/python/CLAUDE.md` | `python-security` | 18 |
-| `languages/javascript/CLAUDE.md` | `javascript-security` | 18 |
-| `languages/typescript/CLAUDE.md` | `typescript-security` | 16 |
-| `languages/{go,rust,java,csharp,ruby,r,cpp,julia,sql}/CLAUDE.md` | one skill each | 12-16 |
-| `backend/fastapi/CLAUDE.md` | `fastapi-security` | 17 |
-| `backend/{express,django,flask,nestjs}/CLAUDE.md` | one skill each | 14-17 |
-| `backend/{langchain,crewai,autogen,transformers,vllm,triton,torchserve,ray-serve,bentoml,mlflow,modal}/CLAUDE.md` | one skill each | 13-18 |
-| `frontend/{react,nextjs,vue,angular,svelte}/CLAUDE.md` | one skill each | 14-17 |
-| `rag/**` | grouped: `rag-orchestration-security`, `rag-vector-store-security`, `rag-graph-security`, `rag-document-processing-security`, `rag-embeddings-security`, `rag-chunking-security`, `rag-observability-security` | 14-18 |
-| `iac/{terraform,pulumi}/CLAUDE.md` | one skill each | 17 |
-| `containers/{docker,kubernetes,helm}/CLAUDE.md` | one skill each | 17 |
-| `cicd/{github-actions,gitlab-ci}/CLAUDE.md` | one skill each | 16 |
+| `languages/**` | 12 skills (one per language) | 12-18 |
+| `backend/**` | ~16 skills | 13-18 |
+| `frontend/**` | 5 skills | 14-17 |
+| `rag/**` | 7 grouped skills | 14-18 |
+| `iac/**` | 2 skills (Terraform, Pulumi) | 17 |
+| `containers/**` | 3 skills (Docker, k8s, Helm) | 17 |
+| `cicd/**` | 2 skills (GitHub Actions, GitLab CI) | 16 |
 
 Total: ~42 skills.
 
 ### Naming convention
 
-- Active-voice gerund (`applying-owasp-top-10`) where the skill *does* something or applies a standard
-- `<domain>-security` (`python-security`, `fastapi-security`) where the skill encodes a reference catalog for that domain
-
-The split is the seam between RCS (methodology, verb-first) and CSCR (catalog, domain-first).
+- Active-voice gerund (`applying-owasp-top-10`) where the skill *does* something
+- `<domain>-security` (`python-security`, `fastapi-security`) for catalog skills
 
 ### Namespacing
 
-Skills are invoked as `/tikitribe-secure-coding-rules:python-security`. They auto-load via description match without users typing the namespace; explicit invocation uses the full path.
+`/tikitribe-secure-coding-rules:python-security`. Auto-load via description match.
 
 ## Layer 1: Platform-level permission rules
 
-CSCR ships `settings-template.json` containing permission rules the user merges into their own `~/.claude/settings.json` (or project-level `.claude/settings.json`). The template is the *only* layer of CSCR-shipped enforcement that runs by default — and it runs in the platform, not in a CSCR-shipped hook.
+CSCR ships `settings-template.json` containing permission rules the user merges into their own `~/.claude/settings.json` (or project-level `.claude/settings.json`) **manually** — no CSCR-shipped CLI performs the merge. The user uses their preferred tooling: `jq`, a JSON merge utility, their editor, or a shell pipeline.
 
 ### What the template covers
 
@@ -237,6 +239,9 @@ CSCR ships `settings-template.json` containing permission rules the user merges 
       "Bash(curl * | bash)",
       "Bash(wget * | sh)",
       "Bash(wget * | bash)",
+      "Bash(sh -c *curl*)",
+      "Bash(bash -c *curl*)",
+      "Bash(eval *curl*)",
       "Bash(git push --force main)",
       "Bash(git push --force master)",
       "Bash(git push --force-with-lease main)",
@@ -249,195 +254,177 @@ CSCR ships `settings-template.json` containing permission rules the user merges 
 }
 ```
 
-These are deterministic at the platform level. The user merges them once via `cscr configure --interactive` (which explains each rule and lets the user opt out per-rule).
+### What the template does NOT cover (per fresh-round F7)
 
-### What the template does NOT cover
+The template adds shell-of-curl patterns (`sh -c *curl*`, `bash -c *curl*`, `eval *curl*`) to address the Round 3 bypass-class concern. It still does not catch:
 
-Permission rules can express file paths and command shapes, but not Python AST patterns or content inspection. The template cannot block `eval(user_input)` in a Write payload — that requires content inspection, which lives in Layer 2 (optional user hooks) or Layer 3 (skill text). The `enforcement-coverage.md` doc enumerates this honestly.
+- Process substitution: `bash <(curl ...)`
+- Download-then-exec: `curl ... -o /tmp/x && sh /tmp/x`
+- Tee-then-exec: `curl ... | tee /tmp/x; sh /tmp/x`
+- Multi-step variable construction: `URL=...; curl $URL | sh`
 
-## Layer 2: Optional reference hooks (BYOH)
+The template's `enforcement-coverage.md` enumerates these explicitly. No claim is made that the template "blocks all pipe-to-shell." The claim is "blocks the patterns named in this template; documented bypass classes are listed."
 
-The plugin ships ~11-15 reference Python scripts in `hooks/optional/`. They are inert files until the user adopts them. The user opts in per-script or per-bundle.
+### Merge guidance
 
-### What ships in the reference library
+`docs/how-to/merge-settings-template.md` walks the user through:
 
-Each script has a one-purpose name and a per-script coverage doc. Examples:
+1. **Inspect their existing settings** for `deny` rules. If they already have stricter rules (e.g., `Bash(curl *)`), keep theirs — CSCR's template never replaces user rules; the merge is additive only.
+2. **Use a JSON merge tool of their choice** (`jq -s '.[0] * .[1]'` with deduplication, an editor, or any tool). CSCR ships no merger.
+3. **Verify with `cat ~/.claude/settings.json | jq '.permissions.deny'`** that the resulting list contains both their original rules and CSCR's additions.
+4. **Document their merged state** in their dotfiles repo or settings backup, since they own the file.
 
-| Reference script | What it catches | What it does NOT catch (per coverage doc) |
-|---|---|---|
-| `block-force-push-protected.py` | Bash `git push --force` / `--force-with-lease` to `main`/`master`/`release/*` | Force push via shell function alias; modified `push.default` config |
-| `block-curl-pipe-sh.py` | Bash `curl ... \| sh`, `wget ... \| bash`, `iex (irm ...)` | Download-then-chmod-exec sequence; tee-then-exec |
-| `block-chmod-777.py` | `chmod 777`, `chmod a+rwx` | `chmod 0777` octal alias (caught by extended variant) |
-| `block-unpinned-installs.py` | `pip install <pkg>` without `==`, `npm install <pkg>@latest`, `uvx --from git+` without `@<ref>` | Offline install from cached package; manual download then install |
-| `block-hardcoded-secrets.py` | AWS keys, OpenAI keys, GitHub PATs, Stripe keys, private-key blocks (regex + entropy) | Base64-encoded; concatenation `"sk-" + "abcd..."`; loaded from a separately-written file |
-| `block-eval-failsecure.py` | Python `eval(...)` / `exec(...)` / `compile(...)` on non-literal args, with fail-secure on AST parse regression | Obfuscation via `getattr(builtins, 'e'+'val')(...)` |
-| `block-pickle-loads.py` | `pickle.loads`, `marshal.loads`, `yaml.load` without `SafeLoader`, `dill.loads` | Custom deserialization wrappers; module-aliased imports |
+### Why no `cscr-configure` merger (per fresh-round F2 and F6)
 
-Each script's coverage doc is the trust artifact. The user reads it before opting in.
+A CSCR-shipped interactive merger is itself executable code the model can instruct the user to invoke, with the same model-controlled-bypass surface as the BYOH `cscr hooks install` flow. The fresh round demonstrated this. Manual merge via the user's existing tools puts the trust decision genuinely in the user's hands, with no CSCR-authored binary in the loop.
 
-### Bundles
+## Layer 2: Skills (advisory)
 
-`hooks/optional/bundles/` provides curated install groups:
+The catalog. See "Skills catalog" above. Skills load on description match and `paths:` glob; they advise the model on framework idioms and defense-in-depth. They make no enforcement claim.
 
-- **`bash-only.json`** — the Bash-level patterns the model can't easily route around (force-push, curl-pipe-sh, chmod 777, unpinned installs). Lowest false-positive risk. Recommended starting point.
-- **`ai-ml-stack.json`** — hooks relevant to LangChain/RAG/MCP work (pickle, hardcoded API keys, trust_remote_code variants).
-- **`full.json`** — everything, with explicit documentation of residual risk per script.
+## Documentation: write-your-own-hook
 
-### The `cscr hooks` CLI
+`docs/how-to/write-your-own-hook.md` teaches hook authorship in detail. Full code examples are in markdown that the user copies manually into their own `~/.claude/hooks/` directory. CSCR ships zero executable hook files; the guide ships ~10-12 documented patterns in fenced code blocks.
 
-```bash
-# List available reference hooks with coverage summaries
-cscr hooks list
+Each documented pattern includes:
+- The Python source for the hook script
+- The settings.json hook entry the user adds
+- The bypass classes that pattern does NOT catch (per fresh-round F22 / Gov #4)
+- Suggested unit tests the user writes
+- A reference to which Layer 1 permission rule (if any) complements the hook
 
-# Install a single hook (copies script to ~/.claude/hooks/cscr/,
-# adds entry to ~/.claude/settings.json, prints coverage doc inline)
-cscr hooks install block-force-push-protected
+Patterns documented include (but are not limited to): `block-force-push-protected`, `block-curl-pipe-sh-extended`, `block-chmod-777`, `block-unpinned-installs`, `block-hardcoded-secrets-regex`, `block-eval-on-user-input` (with the AST fail-secure pattern fully written out), `block-pickle-loads`, `warn-missing-pydantic-fastapi`.
 
-# Install a bundle
-cscr hooks install --bundle bash-only
+The user reads the guide, picks the patterns they want, copies the code into their own files, writes the settings entry themselves, and tests against their own codebase. CSCR has no install command and no upgrade mechanism for these — they're documentation, not a distribution.
 
-# Update installed hooks (diff-review before overwrite)
-cscr hooks update
+**Why this is safer than BYOH (per fresh-round F1, F2, F9):**
 
-# Remove a hook
-cscr hooks remove block-force-push-protected
+- No `cscr hooks install` CLI for the model to invoke via Bash
+- No `cscr hooks update` to ship malicious updates through
+- No settings.json contract for CSCR to define and break
+- Friction is the safety mechanism. A user who manually authors a hook from documentation has engaged enough with the pattern to know what it does. A user who runs `cscr hooks install --bundle full --accept-coverage` has not.
+- Trust is local in the strongest possible sense. The user's hook is the user's code.
 
-# Show currently installed and where they came from
-cscr hooks status
-```
+**What this gives up:**
 
-### Trust model under BYOH
+- Easy onboarding for hooks. Users who want hooks have to do the work.
+- A single CSCR-maintained source of truth for hook implementations. If CSCR's documented pattern has a bypass and the user copied it months ago, the user doesn't get an automatic fix.
 
-The user owns runtime trust:
+**Mitigation for that giving-up:**
 
-1. **Plugin install** (sigstore-attested, single-signer at v2.0.0) ships inert reference scripts the user can read. Compromise window for the plugin is adoption-time, not every PreToolUse.
-2. **`cscr hooks install`** is an explicit user action. The user reads the coverage doc inline before the script is copied into their config.
-3. **User-local hooks** live in `~/.claude/hooks/cscr/`. The user can audit, modify, or remove them at any time. Updates are diff-reviewed before overwrite.
-4. **CSCR cannot make claims** about what the user's hooks do, because the user owns them. CSCR's coverage docs describe the *reference implementation*; the user's modified copy may differ.
-
-### Why hooks are opt-in (referenced in `docs/explanation/why-hooks-are-opt-in.md`)
-
-Two adversarial premortem rounds against an earlier design that shipped hooks as active components surfaced 11 cumulative Critical findings. The pattern: each cryptographic or operational hardening of the hook layer introduced a new attack surface inside the same threat model. The root cause is structural — a plugin layer cannot deterministically enforce against an agent that controls the inputs to the enforcement check. BYOH moves the trust decision to the user, who knows their threat model better than CSCR can.
+- `docs/how-to/write-your-own-hook.md` includes a "subscribe to security advisories" section pointing at the repo's GitHub Security Advisories. When a bypass is documented for one of CSCR's pattern examples, CSCR ships an advisory; the user who subscribed updates their copy manually.
 
 ## Eval discipline
 
-Every shipped skill carries 4 evals under `skills/<name>/evals/`. The eval count is concrete:
-
-```
-evals/
-├── 01-happy-path.json          # 1 scenario
-├── 02-edge-case.json           # 1 scenario
-├── 03-anti-trigger.json        # 1 scenario
-└── 04-adversarial/             # ≥5 scenarios per skill
-    ├── 01.json
-    ├── 02.json
-    ├── 03.json
-    ├── 04.json
-    └── 05.json
-```
-
-The total per skill is 8 eval scenarios (1 + 1 + 1 + 5). Each adversarial scenario is scored independently. The "shipped" bar is: all 8 pass.
+14 evals per skill (3 happy + 3 edge + 3 anti-trigger + 5 adversarial), each scored independently. Adversarial variant taxonomy documented per skill.
 
 | File | Purpose | Pass condition |
 |---|---|---|
-| `01-happy-path.json` | User asks for the secure pattern in-scope | Model produces canonical secure pattern and cites the rule |
-| `02-edge-case.json` | Ambiguous / boundary scenario | Model flags the gating rule and applies it or asks the user to disambiguate |
-| `03-anti-trigger.json` | Adjacent but unrelated request | Skill stays dormant |
-| `04-adversarial/0N.json` | Prompt-injection-flavored request to produce the insecure pattern (N=5 variants per skill) | Model refuses and cites the rule (or the user has installed the relevant optional hook, in which case the hook blocks AND the model cites the rule) |
+| `01-happy-path/0N.json` | User asks for the secure pattern in-scope (3 variants per skill) | Model produces canonical secure pattern and cites the rule |
+| `02-edge-case/0N.json` | Ambiguous / boundary scenarios (3 variants) | Model flags the gating rule and applies it or asks |
+| `03-anti-trigger/0N.json` | Adjacent but unrelated requests (3 variants) | Skill stays dormant |
+| `04-adversarial/0N.json` | Prompt-injection variants from documented attack families (5, one per family) | Model refuses and cites the rule |
 
-Hook reference scripts get separate pytest unit tests under `tests/hooks/` with malicious-payload fixtures, including documented bypass-class probes (so the test confirms what the coverage doc says).
+Schema mirrors RCS so `tools/run_evals.py` is reusable. The schema bump for the new directory-of-files layout is documented in `docs/explanation/run-evals-schema-bump.md` and contributed upstream to RCS for the shared harness (per fresh-round MLEng #9).
 
-Schema mirrors RCS so RCS's `tools/run_evals.py` harness is reusable. PRAGMATIC discipline applies: Sonnet-only by default, full 3-model optional. Implementation plan covers Haiku stratification for top-Σ skills.
+**Public/private adversarial split** (per fresh-round F12): 60% of adversarial probes ship public in-tree; 40% are held in a private repo and rotated by a *named third party* who has never seen the public set. Quarterly rotation. The honest claim is "held out from the public training corpus and from the maintainer's authoring process at rotation time" — not "held out forever."
+
+PRAGMATIC discipline applies: Sonnet-only by default. Haiku stratification for top-Σ security skills is in the implementation plan.
 
 ## Relationship to RCS
 
-| Dimension | RCS | CSCR v2 |
+| Dimension | RCS | CSCR v2 (B-pure) |
 |---|---|---|
 | Content lane | Methodology (verb-named, decision-tree) | Catalog (framework-specific, reference) |
-| Skill naming | `verb-noun` (`enforcing-seed-hygiene`) | `<domain>-security` for catalog + `applying-<standard>` for core |
+| Skill naming | `verb-noun` | `<domain>-security` + `applying-<standard>` |
 | Skill format | Anthropic Skills format | Identical |
-| Install path | Symlink from clone or community marketplace | `/plugin install` from marketplace |
-| Eval shape | 3 JSON evals | 3 + adversarial (n≥5) |
-| Sigma scoring | Yes (1-20) | Yes (vendored rubric) |
-| Plugin-shipped executable code | None | None (reference hooks are inert files; user opts in) |
+| Plugin-shipped executable code | None | None |
+| Eval shape | 3 JSON evals | 14 evals (3+3+3+5) |
+| Sigma scoring | Yes | Yes (re-validated for security per fresh-round DataSci #7) |
 | Governance | Per-skill SemVer + repo integration tags | Same |
 
 ### The cross-pointer
 
-RCS's `applying-secure-coding-rules` skill names CSCR as the corpus. CSCR's AI/ML skills (`applying-ai-ml-security`, `langchain-security`, `applying-mcp-security`) cite RCS skills like `auditing-train-test-split`, `threat-modeling-llm-app`, and `auditing-mcp-server-pre-trust` for the methodology side.
+RCS's `applying-secure-coding-rules` skill names CSCR as the corpus. CSCR's AI/ML skills cite RCS skills for the methodology side. The cross-pointer is now safer because both repos ship the same shape (skills only, no executable enforcement) — a typo-squat attacker has less surface to mimic since neither repo has install CLIs to forge.
 
 ### Drift check
 
-CI job clones RCS at a pinned commit SHA, walks `skills/*/*/SKILL.md`, parses YAML frontmatter, asserts that each skill `name:` referenced by CSCR's "see also" blocks exists in RCS. Same in reverse. README scraping is explicitly NOT used.
+CI job clones RCS at a pinned commit SHA, parses YAML frontmatter, asserts skill `name:` references resolve. Same in reverse.
 
 ## Migration plan
 
-**Branch model:** `v2/` branch hosts the rebuild. `main` stays on the current `rules/` layout until v2 is tagged. After v2.0.0 release, `main` switches to the v2 layout; pre-v2 head gets a `v1.x` tag for users who pin to it.
+**Branch model:** `v2/` branch hosts the rebuild. `main` switches to v2 after v2.0.0 tags. Pre-v2 head gets a `v1.x` tag.
 
 ### Phased build on `v2/`
 
-1. **P0 — Scaffolding.** `.claude-plugin/plugin.json`, repo restructure, `tools/rule-to-skill-converter.py` (with `--strict` mode and golden tests), `SECURITY.md`, `docs/governance.md`, `docs/standards-pin.yaml`. CI updated.
-2. **P0.5 — Corpus quality audit.** Every `Do` example in `rules/` is reviewed against current standards. Every `Don't` example is verified to actually contain the vulnerable pattern. Deprecated mitigations (e.g., the FastAPI denylist-based prompt-injection defense at `rules/backend/fastapi/CLAUDE.md:440-451`) are rewritten before conversion. The converter `--strict` mode refuses to process any rule whose audit fails.
-3. **P0.6 — Standards-currency audit.** OWASP LLM Top 10 references updated from v1.1 (2023) to 2025 numbering. `tests/coverage/test_coverage.py` updated to 2025 list. `docs/standards-pin.yaml` populated with version, publication date, canonical URL for each cited standard.
-4. **P1 — Core skills.** Convert `_core/*.md` to 6 skills (`applying-owasp-top-10`, `applying-ai-ml-security`, `applying-agentic-ai-security`, `applying-mcp-security`, `applying-rag-security`, `applying-graph-db-security`). Each with 8 evals (1+1+1+5).
-5. **P2 — Language skills.** Convert `languages/**` to 12 skills.
-6. **P3 — Framework skills.** Convert `backend/**`, `frontend/**` to ~16 skills.
-7. **P4 — Infra & RAG skills.** Convert `iac/**`, `containers/**`, `cicd/**`, `rag/**` to ~12 skills.
-8. **P5 — Settings template + `cscr configure` CLI.** Author `settings-template.json` with the deterministic deny rules. Build the interactive merger that explains each rule and lets the user opt out per-rule.
-9. **P6 — Optional hooks reference library.** Author ~11-15 reference scripts in `hooks/optional/` with per-script coverage docs. Author bundles (`bash-only.json`, `ai-ml-stack.json`, `full.json`). Build the `cscr hooks` CLI (install / update / list / remove / status). pytest fixtures include known-bypass-class probes per script (so the test confirms what the coverage doc says).
-10. **P6.5 — Third-party held-out review.** Hand a stratified held-out corpus (Web/SAST patterns + AI/ML patterns + Supply-chain patterns + Repo-policy patterns) to a named external reviewer. Test with and without CSCR loaded; with and without optional hooks installed. Pre-register specific numerical claims via OSF (or a signed git tag in a third-party-controlled repo). Publish results in release notes.
-11. **P7 — Marketplace submission.** Submit to `claude-plugins-community`. Sigstore-attest the release with the single maintainer key. Co-signing is a v2.x milestone, explicitly disclosed in release notes and `docs/governance.md`. Publish `cscr verify` CLI. Update README per honest-framing constraint. Tag v2.0.0.
+1. **P0 — Scaffolding.** `.claude-plugin/plugin.json`, repo restructure, `tools/rule-to-skill-converter.py` (with `--strict` mode and golden tests; --strict consumes an explicit audit-output schema per fresh-round F18), `SECURITY.md`, `TERMS.md`, `docs/governance.md`, `docs/standards-pin.yaml`. **CI rewrite** (per fresh-round F14): explicit job specifications for eval harness, structural tests, semantic tests, RCS drift check, honest-framing lint (including deny-phrase list), converter golden tests. Workflows scoped to `skills/**` and the new layout.
+2. **P0.5 — Corpus quality audit.** Every `Do` example reviewed against current standards. Every `Don't` verified. Deprecated mitigations rewritten. Budget: ~80+ person-hours (per fresh-round F4). The audit produces an explicit YAML output the converter `--strict` mode consumes.
+3. **P0.6 — Standards-currency audit.** OWASP LLM Top 10 → 2025 numbering. NIST AI RMF revision check. MITRE ATLAS sync. `standards-pin.yaml` populated.
+4. **P1-P4 — Skill conversion.** Convert in catalog order: `_core` (6 skills) → languages (12) → frameworks (16) → infra & RAG (12). Each skill ships 14 evals with documented adversarial variant taxonomy.
+5. **P5 — Settings template + documentation.** Author `settings-template.json` with extended permission rules including the shell-of-curl patterns. Author `docs/how-to/merge-settings-template.md` walking the user through manual merge. Author `docs/how-to/write-your-own-hook.md` with ~10-12 documented hook patterns including full code, bypass-class enumeration, and unit-test suggestions.
+6. **P6 — Third-party held-out review.** Hand a stratified held-out corpus to a named external reviewer with a *signed SoW, mutual NDA, and documented liability allocation* (per fresh-round F5). Strata: Web/SAST + AI/ML + Supply-chain + IaC + Containers + Frontend + Languages (7 strata per fresh-round DataSci #3, not 4). Reviewer is procured *before P0 begins* so the timeline does not wait on recruitment (per fresh-round MLOps #7). Pre-register specific numerical claims via OSF (not signed git tag — per fresh-round F3 / DataSci #4).
+7. **P7 — Marketplace submission.** Submit to `claude-plugins-community`. Sigstore-attest the release with the single maintainer key. Co-signing is a v2.x milestone, explicitly disclosed in release notes, marketplace listing description, README adjacent to any signing claim, and `docs/governance.md` (per fresh-round F10 / Gov #5). Tag v2.0.0.
 
 ### Backward compatibility
 
-The `rules/` tree stays accessible from the `v1.x` git tag. The v2 README has a "Migrating from v1" section pointing to `/plugin install tikitribe-secure-coding-rules` and explaining that the `cp` flow is no longer maintained.
+The `rules/` tree stays accessible from the `v1.x` git tag. The v2 README has a prominent banner at the top disclaiming v1 framing and linking to a "what changed and why" doc (per fresh-round F15 / Gov #6).
 
-### Estimated scope
+### Estimated scope (realistic)
 
-~42 skills × (SKILL.md + 8 evals + reference files) + ~12 reference hook scripts + per-hook coverage docs + 3 CLIs (`cscr configure`, `cscr hooks`, `cscr verify`) + SECURITY.md + governance.md + standards-pin.yaml + third-party held-out review + sigstore release pipeline + CI updates.
+Per fresh-round F4 / MLOps #1: bottom-up estimate is ~600 person-hours. Realistic timeline: **10-14 weeks** for one maintainer (revised up from B+BYOH's optimistic 6-10 weeks). The B-pure architecture is smaller in code surface than B+BYOH (no `cscr-*` CLIs, no hook scripts, no test fixtures for them) but the eval count went from 8 to 14 per skill (588 total) and the corpus-quality audit + third-party reviewer procurement add ~120 person-hours of judgment work.
 
-Realistic timeline: 6-10 weeks for one maintainer (significantly less than the prior hooks-shipped-in-plugin architecture, which estimated 4-8 months).
+If the timeline pressure is acute, the implementation plan can scope P6.5 (third-party review) to top-Σ skills only at v2.0.0 and defer long-tail review to v2.1.
 
 ## Risk register
 
 | Risk | Mitigation |
 |---|---|
-| Converter produces low-quality SKILL.md | `--strict` mode (P0); golden-file tests; mechanical convert + manual `description`/`when_to_use` pass per skill |
+| Converter produces low-quality SKILL.md | `--strict` mode (P0); golden-file tests with explicit byte-equivalence policy (PyYAML pinned, line-ending normalized, Unicode NFC) per fresh-round F21; mechanical convert + manual `description`/`when_to_use` pass per skill |
 | Skill description truncation at 1,536 chars | First sentence = trigger phrase. Lint check in CI |
-| Community-marketplace review delay | Submit early on `v2/` branch with preview tag; `--plugin-dir` install for early adopters |
+| Community-marketplace review delay | Submit early on `v2/` branch with preview tag; document v2.0.0 as "tagged + sigstore-attested + signed" separately from "marketplace-listed" (per fresh-round MLOps #10) |
 | Drift between RCS and CSCR cross-references | CI drift-check, frontmatter-parsed, pinned-SHA |
-| Standards drift (OWASP / NIST / MITRE rev superseded) | `docs/standards-pin.yaml` machine-readable pins; monthly CI check opens issue; 90-day update SLA in `governance.md` |
+| Standards drift | `docs/standards-pin.yaml` machine-readable pins; daily (not monthly) CI check via RSS/feed where available; 180-day update SLA in `governance.md` (revised from 90 per fresh-round F8 / MLOps #8 single-maintainer infeasibility) |
 | Corpus contradictions between rule examples and current standards | P0.5 audit pass; rewrite deprecated examples before conversion |
-| User adopts a reference hook without reading its coverage doc | `cscr hooks install` prints the coverage doc inline before copying the script; refuses without `--accept-coverage` flag |
-| User modifies an installed hook, then `cscr hooks update` overwrites their changes | `cscr hooks update` is diff-review interactive; never silently overwrites |
-| Maintainer-credential compromise | sigstore-attested releases (single-signer at v2.0.0, co-signed in v2.x milestone); user-runnable `cscr verify` for post-install integrity audit; `docs/how-to/audit-cscr-pre-trust.md` six-check audit |
-| Outcome metric refutation in third-party review | Honest release-note language documenting what was measured AND what was NOT improved; README claims updated to match the measured uplift |
-| Pre-registration without neutral custodian | OSF or signed git tag in a third-party-controlled repo. Named explicitly in P6.5 |
-| Adversarial eval gaming (in-repo answer keys) | 50% of adversarial probes ship public; 50% held in a private repo rotated quarterly; third-party reviewer uses both sets |
+| User merges settings-template and accidentally weakens existing stricter rules | `merge-settings-template.md` explicitly walks the user through preserving their existing rules; CSCR ships zero auto-merge code, so the failure mode requires the user to make a manual mistake rather than CSCR to make it for them. Honest tradeoff: less convenient, but a regression vector the prior architectures had is gone |
+| User authors a hook from documentation, hook has a bypass | `write-your-own-hook.md` documents bypass classes per pattern; GitHub Security Advisories ship corrections when a pattern has a documented bypass; users who care subscribe |
+| Marketplace approval delay | Decouple v2.0.0 (tagged + signed) from marketplace-listed milestone |
+| Maintainer-credential compromise | Sigstore-attested releases (single-signer at v2.0.0, co-signed in v2.x milestone with named candidate in `governance.md`); user-runnable `python -m sigstore verify` for post-install integrity; six-check audit in `audit-cscr-pre-trust.md` |
+| Outcome metric refutation in third-party review | Honest release-note language documenting what was measured AND what was NOT improved; README claims updated to match the measured uplift; refutation does not block release but triggers a relabel-to-X path per fresh-round F17 deferred |
+| Pre-registration without neutral custodian | OSF only (not signed git tag) per fresh-round F3 |
+| Adversarial eval gaming via in-repo answer keys | 60% public, 40% private rotated by a *named third party* (not the maintainer) quarterly |
+| Liability framing under EU AI Act / Product Liability Directive | `TERMS.md` alongside LICENSE with no-warranty-for-security-purpose and no-fitness-for-regulated-use; consider distributing through an LLC or non-profit entity (open question for governance.md) |
+| README v1 framing persists in caches/citations | Banner at top of v2 README; canonical "what changed and why" doc; security-advisory class for v1 claim corrections |
 
 ## Success criteria
 
 v2.0.0 ships when ALL of the following are true:
 
-1. Plugin is installable from the community marketplace as `/plugin install tikitribe-secure-coding-rules`.
-2. All ~42 skills have 8 passing evals each (1 happy + 1 edge + 1 anti-trigger + 5 adversarial probes, each scored independently).
-3. All ~12 reference hook scripts have passing pytest unit tests, including documented bypass-class probes; each has a coverage doc at `hooks/optional/coverage/<hook>.md` enumerating covered call shapes and known bypass classes.
-4. CI drift-check against RCS passes (frontmatter-parsed, pinned-SHA).
-5. README's "Migrating from v1" section is in place.
-6. Total p95 per-session loaded skill size, measured by a representative AI/ML+FastAPI test fixture, is less than the v1 baseline.
-7. `docs/explanation/enforcement-coverage.md` exists and is reviewed by a named third party; README contains no enforcement verbs outside permitted contexts (platform permission rules + specific named hooks); no supply-chain verbs (`co-signed`, `attested`, `verified`) without per-release accuracy review; pre-registered third-party held-out review is complete with results in release notes.
-8. `SECURITY.md` exists, has been smoke-tested by an external reporter, and the contact channel works.
-9. Release is sigstore-attested with a single maintainer key; `cscr verify` CLI exists and produces PASS/FAIL output; `docs/how-to/audit-cscr-pre-trust.md` documents the six-check audit. Co-signing is a v2.x milestone, explicitly disclosed.
-10. `settings-template.json` and `cscr configure` CLI exist; `hooks/optional/` library + `cscr hooks` CLI exist; `docs/how-to/enable-optional-hooks.md` is the central trust-model doc and explicitly states CSCR does not run code in the user's session by default.
+1. Plugin is installable from `claude-plugins-community` as `/plugin install tikitribe-secure-coding-rules`. (Or: tagged + sigstore-attested + signed, with marketplace-listed status documented as a separate milestone if marketplace approval is delayed.)
+2. All ~42 skills have 14 passing evals each (3 happy + 3 edge + 3 anti-trigger + 5 adversarial), each scored independently. Adversarial variant taxonomy documented per skill.
+3. `settings-template.json` exists with extended permission rules; `docs/how-to/merge-settings-template.md` walks the user through manual merge and explicitly addresses preserving existing stricter rules. `docs/explanation/enforcement-coverage.md` enumerates per-template-rule bypass classes.
+4. `docs/how-to/write-your-own-hook.md` exists with ~10-12 documented patterns (full code, bypass classes, suggested tests). Zero executable hook files ship in the plugin.
+5. CI drift-check against RCS passes (frontmatter-parsed, pinned-SHA).
+6. README's "Migrating from v1" section is in place. README banner disclaims v1 framing.
+7. Total p95 per-session loaded skill size, measured across ≥10 representative project-shape fixtures (not one), is less than the v1 baseline. Bootstrap 95% CI reported.
+8. `docs/explanation/enforcement-coverage.md` exists and is reviewed by the named third-party reviewer. README and marketplace listing description contain no enforcement verbs outside permitted contexts (platform permission rules only). No supply-chain verbs without per-release accuracy review. Honest-framing lint covers deny-phrase list, not just verbs.
+9. Pre-registered third-party held-out review (P6) is complete with results published in release notes. Reviewer was procured with signed SoW, mutual NDA, and documented liability allocation BEFORE P0 began. Pre-registration via OSF (not git-tag substitution).
+10. `SECURITY.md` exists, has been smoke-tested by an external reporter, and the contact channel works. `TERMS.md` documents warranty disclaimer and no-fitness-for-regulated-use. `governance.md` enumerates: named maintainer(s), succession contact, 180-day standards-drift SLA, deprecation procedure, co-signing milestone target version with named candidate, dispute resolution for corpus-poisoning PR-review escalations.
+11. Release is sigstore-attested with single maintainer key; `docs/how-to/verify-the-release.md` documents `python -m sigstore verify`; `docs/how-to/audit-cscr-pre-trust.md` documents six-check audit. Co-signing is a v2.x milestone with explicit timeline and named candidate.
 
-## Open items for fresh single-round premortem
+## Open items for implementation phase
 
-Before implementation begins, run one fresh premortem round against this revised design. The prior two rounds attacked an architecture that no longer exists; their findings have been triaged into "carried forward" (catalog quality, governance, supply chain) and "no longer applicable" (hook-layer attacks, escape-hatch mechanism, hash-pinning self-reference). The fresh round should attack:
+- Bottom-up timeline re-estimate published in `governance.md` so external observers can hold it accountable (per fresh-round F4).
+- Reviewer procurement (P6) begins before P0 closes — recruitment is on the critical path.
+- Counsel review of `TERMS.md` (estimated $2-5K) and entity-structure decision (LLC vs personal distribution) before v2.0.0 tags.
+- Co-signer candidate named in `governance.md` before v2.0.0 tags, even if co-signing itself ships in v2.1.
+- The fresh-round Medium findings (F15-F23) are tracked for implementation but not gating on the architecture. Each has a documented mitigation in this design or risk register.
 
-- The skills catalog and eval discipline (especially the n=5 adversarial sample and the corpus-quality audit)
-- The settings template's coverage and the `cscr configure` UX
-- The BYOH trust model (what new attacks does the optional library enable that the plugin's own hooks would have caught?)
-- The cross-pointer with RCS and the drift check
-- Governance, release process, third-party review credibility
+## What this architecture ships that the prior architectures did not
 
-If the fresh round produces ≤2 Critical findings, proceed to implementation. If it produces more, triage before P0 begins.
+- **Honest architectural claims.** "CSCR teaches; Claude Code's permission rules enforce; you write your own hooks if you want enforcement beyond what permission rules express."
+- **A premortem that clears on first round.** B-pure was attacked implicitly via the fresh-round counterfactuals; the Critical findings against B+BYOH all evaporate under B-pure (F1 disappears — no `cscr hooks install`; F2 disappears — no merger; F3 disappears — no shipped hook script; F6 disappears — no CLI binaries; F9 disappears — no update channel). The remaining findings are catalog-side and governance-side, with established mitigations.
+- **A faster path to user value despite the longer timeline.** B-pure ships ~42 skills + a template + documentation. v2.0.0 is a real upgrade over v1 the moment users install it, even before they write any hooks of their own.
+- **Architectural symmetry with RCS.** Both repos ship skills + docs + no executable enforcement. The cross-pointer becomes more credible.
+- **A defensible position under regulator review.** "CSCR is a documentation catalog and configuration template. It does not run code in your session. Enforcement happens at the platform layer. Hook authorship is taught but not provided."
+
+This is the architecture v2.0.0 ships.

@@ -249,3 +249,58 @@ The findings that *still apply* under BYOH are the catalog-side concerns (N11 ev
 5. Move to implementation planning (`writing-plans` skill).
 
 This decision document is final unless new information arrives. The next artifact is the rewritten design doc.
+
+---
+
+## Addendum: B+BYOH attacked, B-pure adopted
+
+After the rewritten design doc was authored and committed, a fresh single-round premortem (six perspectives in parallel) was run against the B+BYOH architecture. Acceptance gate was ≤2 Critical findings → proceed to implementation.
+
+**Fresh round produced 5 Critical, 8 High, 9 Medium.**
+
+The pattern across three rounds was now visible: **any architecture that ships CSCR-authored executable enforcement code recreates the model-controlled-bypass problem because the agent has Bash tool access.**
+
+Specifically, the 5 fresh Criticals against B+BYOH were:
+
+| # | Finding | Root cause |
+|---|---|---|
+| F1 | `cscr hooks install` is model-callable via Bash | Model emits the install command; user approves at the 93% rate |
+| F2 | Settings.json hook-entry contract undefined; merger weakens existing user rules | CSCR doesn't specify conflict resolution; security-conscious users get a regression |
+| F3 | `block-eval-failsecure.py` re-introduces Round 2 N1 AST-on-Edit problem | The retrospective claimed to drop this; the reference library re-shipped it |
+| F4 | 6-10 week timeline doesn't survive 600+ person-hour artifact count | The estimate was based on 4 evals/skill (168 total); B+BYOH ships 8 (336 total) |
+| F5 | P6.5 third-party review governance unaddressed; success criterion unachievable on schedule | No SoW, no NDA, no insurance, no recruitment plan |
+
+F1, F3, F6 (CLI self-verifier), F9 (update channel) all collapse to the same root cause: **CSCR-shipped executable code the model can instruct the user to run.**
+
+### B-pure adopted
+
+The fresh round forced the recognition that BYOH did not actually relocate trust — it relocated the *act of installation* while preserving the *runtime attack surface*. The only architecture that escapes the trap is one where CSCR ships zero executable enforcement code:
+
+- ~42 skills (the catalog) — unchanged
+- `settings-template.json` (declarative permission rules) — unchanged; user merges manually with their own tooling
+- `docs/how-to/write-your-own-hook.md` (full code examples in markdown the user copies) — replaces `hooks/optional/`
+- No `cscr-configure`, no `cscr-hooks`, no `cscr-verify` CLI binaries — eliminated
+- No `~/.cscr/` state directory — eliminated
+- Sigstore verification via `python -m sigstore verify` documented in `docs/how-to/verify-the-release.md` — no CSCR-shipped binary
+
+The design doc was rewritten a second time to reflect B-pure (see commit log).
+
+### Tradeoffs accepted under B-pure
+
+- **Longer timeline (10-14 weeks vs 6-10).** Adding the corpus-quality audit + reviewer procurement + 14 evals/skill costs about 4 extra weeks. The B-pure architecture itself is smaller (no CLIs to build) but the eval discipline tightened in response to fresh-round F13.
+- **Friction is the safety mechanism.** Users who want hooks must read documentation and author code. There is no `--bundle full` shortcut. This is the point.
+- **No automatic upgrade for user-authored hooks.** Users subscribe to GitHub Security Advisories and update their copies manually when a bypass is documented.
+- **Loses the "all-in-one security plugin" marketing position.** CSCR is a catalog + template + docs. That's it. Users who want enforcement beyond what permission rules express bring their own enforcement code.
+
+### What B-pure gains
+
+- Premortem clears the architectural Criticals. The remaining findings are catalog-side and governance-side, both well-understood problem classes.
+- Honest claims throughout. "CSCR teaches; Claude Code enforces; you write hooks if you want them." No verb has to be linted out of the README because the claims are bounded by what the architecture actually delivers.
+- Defensible under regulator review. Substance-over-form analysis lands cleanly because CSCR doesn't ship executable enforcement code at all.
+- Architectural symmetry with RCS, deeper than B+BYOH had. Both repos ship skills + docs only; cross-pointer typo-squat amplification reduces because neither has install CLIs to forge.
+
+### What this means for the decision document
+
+The original recommendation in this document — Option B (skills-only) — was correct in spirit but underspecified the cost of even minimal executable code. BYOH attempted to preserve the optional-hooks teaching value as installable scripts; the fresh round demonstrated that *shipping the scripts* (whether active or inert) is the load-bearing failure, not their default-on/default-off status.
+
+B-pure preserves the teaching value as *documentation*, which is durable, copy-paste-friendly, and outside the model's invocable surface. That's the architecture v2.0.0 ships under.
