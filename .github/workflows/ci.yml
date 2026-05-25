@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - run: pip install -e .
+      - run: pip install -e '.[dev]'
       - run: pytest tools/tests/test_lint_skills.py -v
       - name: Lint all SKILL.md under skills/
         run: |
@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - run: pip install -e .
+      - run: pip install -e '.[dev]'
       - run: pytest tools/tests/ -v --tb=short
 
   honest-framing-lint:
@@ -63,7 +63,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - run: pip install -e .
+      - run: pip install -e '.[dev]'
       - name: Run honest-framing lint
         run: |
           if [ -f tools/honest_framing_lint.py ]; then
@@ -81,7 +81,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - run: pip install -e .
+      - run: pip install -e '.[dev]'
       - name: Run RCS drift check
         run: |
           if [ -f tools/rcs_drift_check.py ]; then
@@ -100,7 +100,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - run: pip install -e .
+      - run: pip install -e '.[dev]'
       - name: Run skill evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

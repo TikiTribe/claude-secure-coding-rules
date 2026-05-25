@@ -11,6 +11,12 @@ dependencies = [
     "jsonschema==4.23.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pytest-mock==3.14.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest==8.3.3",
