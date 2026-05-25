@@ -1,1 +1,70 @@
-audited_rules: []
+audited_rules:
+  - path: rules/_core/owasp-2025.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    notes: |
+      Audited all 10 rules (one per A01-A10 category, with A01 containing two rules).
+      11 rule sections checked in total. Four distinct issues found:
+
+      ISSUE 1 — A01 SSRF rule: logic bug in Do example (CRITICAL)
+        The validate_url() function checks whether parsed.hostname is a private/loopback IP,
+        but the exception it raises (ValueError) is caught by the same except clause that
+        handles "not an IP literal" cases. The line `raise ValueError("Internal addresses
+        blocked")` inside the try block is silently swallowed by `except ValueError: pass`,
+        making the private-IP guard a no-op. An attacker supplying a private IP literal
+        (e.g. http://192.168.1.1) passes the allowlist check (it is not in ALLOWED_HOSTS,
+        so validate_url raises ValueError("Host not allowed") before reaching the IP check)
+        but an IP-literal that IS allowlisted would bypass the private-IP guard entirely.
+        Additionally the allowlist-first design does not defend against DNS rebinding: an
+        allowlisted FQDN could resolve to an internal address at fetch time because no
+        post-resolution IP check is performed.
+        Fix required: restructure the IP-literal check so its ValueError is not caught by
+        the hostname-parsing except; add a post-DNS-resolution IP check via socket.getaddrinfo.
+
+      ISSUE 2 — A04 crypto rule: bcrypt as lead Do recommendation, not Argon2id (STANDARDS GAP)
+        The Do example leads with bcrypt (rounds=12). OWASP A04:2025 now explicitly recommends
+        Argon2, yescrypt, scrypt, or PBKDF2-HMAC-SHA-512 as first-choice algorithms; bcrypt
+        is described as legacy-acceptable with "additional consultation recommended." Presenting
+        bcrypt as the primary Do example contradicts OWASP 2025's stated hierarchy. Argon2id
+        should be the lead example, with bcrypt noted as a legacy-acceptable alternative.
+        The PBKDF2HMAC derive_key() helper in the same Do block uses SHA-256 (not SHA-512),
+        which is below the OWASP-recommended PBKDF2-HMAC-SHA-512 variant.
+        Fix required: replace bcrypt lead with argon2-cffi (Argon2id); note bcrypt as
+        legacy-acceptable; update derive_key to use hashes.SHA512() with >=600000 iterations.
+
+      ISSUE 3 — A06 insecure design rule: CWE-840 not in official A06:2025 mapping (REF ERROR)
+        The Refs line cites CWE-840 (Business Logic Errors). The OWASP A06:2025 page does not
+        map CWE-840 to this category. A06 maps 39 CWEs covering privilege management,
+        credential storage, trust boundaries, and upload restrictions — not business logic.
+        Fix required: replace CWE-840 with a CWE that appears in the official A06:2025
+        mapping, e.g. CWE-269 (Improper Privilege Management) or CWE-501 (Trust Boundary
+        Violation).
+
+      ISSUE 4 — A07 authentication rule: session.regenerate() does not exist in Flask (BROKEN Do)
+        The Do example calls session.regenerate() on Flask's session proxy object. Flask's
+        session object is a dict-like proxy (SecureCookieSession) with no regenerate() method.
+        This call raises AttributeError at runtime. The correct Flask pattern for session
+        fixation prevention is session.clear() followed by assigning new values; actual session
+        ID rotation requires flask-login's login_user() or a custom session interface.
+        Fix required: remove session.regenerate() and replace with a comment explaining that
+        Flask regenerates the session cookie automatically when session.clear() is called and
+        new values are set, or show the flask-login pattern.
+
+      Non-blocking observations (no status change):
+      - A02 Refs cite CWE-209 (Information Exposure Through Error Messages); CWE-209 does not
+        appear in the official A02:2025 CWE mapping (16 CWEs), though it is present in A10.
+        The Don't example illustrates CWE-209 behavior, making it misleading under A02.
+        Recommend moving CWE-209 reference to the A10 rule where it is officially mapped.
+      - A03 Refs cite CWE-829 (Inclusion of Functionality from Untrusted Control Sphere).
+        The OWASP A03:2025 page maps CWE-1357, CWE-1395, CWE-1104, CWE-447, CWE-1329,
+        CWE-1035. CWE-829 is not in that list; it belongs to A08 (Integrity Failures).
+        Recommend replacing with CWE-1395 or CWE-1357.
+      - A05 Refs cite CWE-79 (XSS) but the Do/Don't examples show only SQL and OS-command
+        injection. No XSS example is present. Either add an XSS Do/Don't pair or drop CWE-79
+        from Refs to avoid implying coverage that is not demonstrated.
+      - A08 OWASP page returned 404 on both URL variants tested; CWE mapping could not be
+        independently verified from the live site. CWE-502 and CWE-829 citations in A08 Refs
+        appear reasonable based on the 2021 predecessor category, but are unverified against
+        the 2025 RC1 mapping.
+    issues_filed: []
