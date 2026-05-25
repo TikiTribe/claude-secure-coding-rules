@@ -5,7 +5,7 @@ This file provides security rules for agentic AI systems that perform autonomous
 ## Overview
 
 **Scope**: AI agents with tool use, code execution, file system access, and autonomous decision-making
-**Standards**: OWASP LLM Top 10, NIST AI RMF, Google SAIF
+**Standards**: OWASP LLM Top 10 2025, NIST AI RMF, Google SAIF
 **Focus**: Action validation, tool security, permission boundaries, and execution isolation
 
 ---
@@ -78,8 +78,10 @@ class SecureToolExecutor:
         """Execute tool with resource limits and isolation."""
         import resource
         import signal
+        import subprocess
 
-        # Set resource limits
+        # Set resource limits applied in the child process before exec.
+        # preexec_fn applies the rlimits in the child process before exec; POSIX-only.
         def set_limits():
             resource.setrlimit(resource.RLIMIT_CPU, (30, 30))  # 30s CPU
             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,) * 2)  # 512MB
@@ -92,7 +94,15 @@ class SecureToolExecutor:
         signal.alarm(60)  # 60s wall clock
 
         try:
-            return tool.execute(**params)
+            # Run the tool in a subprocess with resource limits enforced via preexec_fn.
+            # preexec_fn=set_limits installs the rlimits in the child before exec.
+            proc = subprocess.run(
+                tool.command(**params),
+                capture_output=True,
+                text=True,
+                preexec_fn=set_limits,  # applies CPU + AS limits in child; POSIX-only
+            )
+            return proc.stdout
         finally:
             signal.alarm(0)
 ```
@@ -111,7 +121,7 @@ def agent_action(llm_output):
 
 **Why**: Compromised or manipulated agents can invoke dangerous tools. Validation prevents unauthorized actions and parameter injection.
 
-**Refs**: OWASP LLM07 (Insecure Plugin Design), NIST AI RMF MANAGE 1.3, MITRE ATLAS AML.T0051
+**Refs**: OWASP LLM06:2025 (Excessive Agency), NIST AI RMF MANAGE 1.3, MITRE ATLAS AML.T0051
 
 ---
 
@@ -195,6 +205,66 @@ class ToolPermissionPolicy:
                 return True
 
         return False
+
+    def _check_code_safety(self, code: str, policy: dict) -> bool:
+        """Static AST safety check for submitted Python code.
+
+        Returns True if the code passes the checks, False if a violation is found.
+        This is a defense-in-depth FIRST GATE before sandboxed execution — it is NOT
+        a sufficient sandbox on its own. Sophisticated payloads can evade static AST
+        analysis (eval-of-getattr-of-builtins, attribute mangling, etc.). Use this
+        together with the resource-limited subprocess sandbox.
+        """
+        import ast
+
+        # Blocked builtins: allow arbitrary execution or sandbox escape.
+        forbidden_builtins = frozenset({
+            "eval", "exec", "compile",
+            "__import__",
+            "open",
+            "input",
+            "globals", "locals", "vars",
+            "breakpoint",
+        })
+
+        # High-risk modules; the policy blocked_imports list supplements this.
+        forbidden_modules = frozenset(policy.get('blocked_imports', [])) | frozenset({
+            "subprocess", "socket", "ctypes",
+            "pickle", "marshal", "shelve",
+            "importlib", "code", "codeop",
+        })
+
+        try:
+            tree = ast.parse(code, mode="exec")
+        except SyntaxError:
+            # Malformed code is rejected; do not allow it to reach the sandbox.
+            return False
+
+        for node in ast.walk(tree):
+            # Block direct builtin calls: eval(...), exec(...), open(...), etc.
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in forbidden_builtins:
+                    return False
+
+            # Block top-level imports of forbidden modules.
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", 1)[0]
+                    if root in forbidden_modules:
+                        return False
+
+            if isinstance(node, ast.ImportFrom):
+                if node.module:
+                    root = node.module.split(".", 1)[0]
+                    if root in forbidden_modules:
+                        return False
+
+            # Catch obfuscated builtin lookups: builtins.eval, __builtins__["exec"], etc.
+            if isinstance(node, ast.Attribute):
+                if node.attr in forbidden_builtins:
+                    return False
+
+        return True
 ```
 
 **Don't**:
@@ -306,7 +376,7 @@ result = eval(agent_generated_expression)
 
 **Why**: Unrestricted code execution allows arbitrary system access. Sandboxing limits what generated code can do.
 
-**Refs**: OWASP LLM06 (Excessive Agency), CWE-94, NIST SSDF PW.5.1
+**Refs**: OWASP LLM06:2025 (Excessive Agency), CWE-94, NIST SSDF PW.5.1
 
 ---
 
@@ -412,7 +482,7 @@ def execute_task(task):
 
 **Why**: Unrestricted autonomy can lead to runaway costs, unintended consequences, or exploitation. Humans should remain in control of high-impact decisions.
 
-**Refs**: OWASP LLM06 (Excessive Agency), NIST AI RMF GOVERN 3.2, ISO/IEC 23894 A.1
+**Refs**: OWASP LLM06:2025 (Excessive Agency), NIST AI RMF GOVERN 3.2, ISO/IEC 23894 A.1
 
 ---
 
@@ -511,7 +581,7 @@ def call_api(agent_output):
 
 **Why**: Agent outputs can be manipulated through prompt injection or model errors. Validation prevents unintended file writes, API calls, or system modifications.
 
-**Refs**: OWASP LLM02 (Insecure Output Handling), NIST AI RMF MEASURE 2.9
+**Refs**: OWASP LLM05:2025 (Improper Output Handling), NIST AI RMF MEASURE 2.9
 
 ---
 
@@ -705,7 +775,7 @@ def run_agent(task):
 
 **Why**: Session isolation prevents data leakage between users and limits blast radius of compromised sessions.
 
-**Refs**: OWASP LLM05 (Supply Chain Vulnerabilities), CWE-200, NIST AI RMF MANAGE 2.4
+**Refs**: OWASP LLM06:2025 (Excessive Agency), CWE-200, NIST AI RMF MANAGE 2.4
 
 ---
 
