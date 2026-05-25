@@ -1,0 +1,53 @@
+# Machine-readable pins for external standards CSCR cites.
+# Updated per the SLA in docs/governance.md.
+# CI checks freshness via tools/standards-check.py (daily via GitHub Actions).
+
+standards:
+  - id: OWASP-Top-10
+    version: "2025"
+    revision: "RC1"
+    published: "2025-11-15"
+    url: "https://owasp.org/Top10/2025/"
+    skills_citing: ["applying-owasp-top-10"]
+
+  - id: OWASP-LLM-Top-10
+    version: "2025"
+    revision: "stable"
+    published: "2025-04-01"
+    url: "https://genai.owasp.org/llm-top-10/"
+    skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security", "applying-mcp-security", "applying-rag-security", "langchain-security"]
+
+  - id: OWASP-MCP-Top-10
+    version: "2025"
+    revision: "stable"
+    published: "2025-09-01"
+    url: "https://owasp.org/mcp-top-10/"
+    skills_citing: ["applying-mcp-security"]
+
+  - id: NIST-AI-RMF
+    version: "1.0"
+    revision: "with NIST AI 600-1 (GenAI Profile, 2024)"
+    published: "2023-01-26"
+    url: "https://www.nist.gov/itl/ai-risk-management-framework"
+    skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security"]
+
+  - id: NIST-SSDF
+    version: "SP-800-218"
+    revision: "v1.1"
+    published: "2022-02"
+    url: "https://csrc.nist.gov/publications/detail/sp/800-218/final"
+    skills_citing: ["applying-owasp-top-10"]
+
+  - id: MITRE-ATLAS
+    version: "matrix"
+    revision: "rolling"
+    published: "rolling"
+    url: "https://atlas.mitre.org/"
+    skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security"]
+
+  - id: CWE
+    version: "4.15"
+    revision: "stable"
+    published: "2024-07-16"
+    url: "https://cwe.mitre.org/"
+    skills_citing: ["applying-owasp-top-10", "python-security", "javascript-security", "typescript-security"]
