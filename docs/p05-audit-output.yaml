@@ -948,3 +948,142 @@ audited_rules:
         These are the only two OWASP CI/CD Top 10 categories not addressed. Advisory
         for a future v2.1 addition — not a defect in the rules that exist.
     issues_filed: []
+
+  - path: rules/cicd/github-actions/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Action Pinning - Pin by Full SHA
+      - Token Permissions - Minimal GITHUB_TOKEN Scope
+      - Secret Protection - Mask Secrets in Logs
+      - Injection Prevention - Safe Input Handling
+      - OIDC Authentication - Use Federated Identity
+      - Environment Protection - Required Reviewers
+      - Workflow Permissions - Restrict Fork PR Execution
+      - Artifact Security - Sign and Attest Artifacts
+      - Dependency Review - Block Vulnerable Dependencies
+      - Self-Hosted Runner Security - Ephemeral Runners
+      - Reusable Workflow Security - Trust Boundaries
+    notes: |
+      Audited all 11 rule sections. Five distinct blocking issues found.
+      CICD-SEC-N references verified against the OWASP CI/CD Top 10 published taxonomy;
+      all cited numbers and short names are accurate. No OWASP LLM numbering issues
+      (this file uses OWASP CI/CD Top 10, not the LLM taxonomy).
+
+      ISSUE 1 — Dependency Review Do example: five action pins use tags not SHAs,
+        violating the file's own strict Pin-by-SHA rule (VIOLATES OWN RULE / CRITICAL)
+        In the "Comprehensive security scanning" Do example (lines 997-1027), five
+        action references use mutable version pins:
+          github/codeql-action/init@v3
+          github/codeql-action/autobuild@v3
+          github/codeql-action/analyze@v3
+          github/codeql-action/upload-sarif@v3
+          aquasecurity/trivy-action@0.16.0
+        Every other Do example in the file uses full SHA pins with version comments
+        (e.g., actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1).
+        The file's first rule ("Pin by Full SHA") is strict level and explicitly lists
+        tag and version references as the VULNERABLE pattern. Using them in a Do
+        example in the same file teaches practitioners that SHA pinning is optional for
+        first-party actions. This is also a CICD-SEC-3 (Dependency Chain Abuse)
+        violation: codeql-action has been targeted in supply chain incidents; tags
+        are mutable even for GitHub-owned actions.
+        Fix required: replace all five version/tag pins with full commit SHAs with
+        version comments. Use pin-github-action or the GitHub UI to resolve current
+        SHAs.
+
+      ISSUE 2 — Environment Protection Do example: workflow_dispatch input directly
+        interpolated into a run: shell command (INJECTION IN DO EXAMPLE / CRITICAL)
+        Line 652 in the "Environment Protection - Required Reviewers" Do example:
+          run: ./migrate.sh ${{ github.event.inputs.migration }}
+        This is the exact CICD-SEC-4 (Poisoned Pipeline Execution) injection pattern
+        that the "Injection Prevention - Safe Input Handling" strict rule prohibits.
+        github.event.inputs.migration is user-supplied at trigger time. An attacker
+        with Dispatch permission submits any shell payload as the migration value.
+        The environment approval gate controls whether the job runs, not what executes
+        inside it once approved. The safe pattern (env var assignment + format
+        validation before use) is demonstrated elsewhere in the same file but absent
+        here.
+        Fix required:
+          env:
+            MIGRATION: ${{ github.event.inputs.migration }}
+          run: |
+            if [[ ! "$MIGRATION" =~ ^[a-zA-Z0-9_]+$ ]]; then
+              echo "Invalid migration name"; exit 1
+            fi
+            ./migrate.sh "$MIGRATION"
+
+      ISSUE 3 — Dependency Review Do example: matrix.language referenced with no
+        matrix definition — silent empty-string substitution (YAML LOGIC BUG)
+        Line 1008 in the CodeQL analyze step:
+          category: "/language:${{ matrix.language }}"
+        The codeql job has no strategy.matrix block. The init step hardcodes
+        languages: javascript, python (line 1000) while the analyze step references
+        matrix.language, which evaluates to an empty string. GitHub Actions silently
+        substitutes empty strings for undefined matrix context. The resulting SARIF
+        upload carries category: "/language:" with no language, breaking security
+        finding routing and filtering. Developers copying this Do example will ship
+        a broken CodeQL configuration without any error surfaced at runtime.
+        Fix required: remove the category input entirely (CodeQL infers it from init)
+        or use a static string: category: "/language:javascript". If a matrix scan
+        is intended, add the strategy.matrix block.
+
+      ISSUE 4 — Action Pinning Refs: "SLSA Level 4" does not exist in SLSA v1.1
+        (STALE REF)
+        Line 70: "SLSA Level 4: Pinned Dependencies"
+        SLSA v1.0 (released March 2023, current as SLSA v1.1) removed Level 4 from
+        the framework. The v0.1 draft four-level model was restructured to Levels 1-3.
+        The "Pinned Dependencies" requirement from draft v0.1 Level 4 was relocated
+        to the SLSA Dependency Track, which is separate from the numbered Build Levels.
+        Citing a non-existent SLSA level undermines practitioner trust when they look
+        up the current specification. The same error was found in gitlab-ci/CLAUDE.md
+        (ISSUE 4 in that audit).
+        The Artifact Security rule cites "SLSA Level 2: Signed Provenance" and "SLSA
+        Level 3: Non-falsifiable Provenance" (lines 929-930). These are structurally
+        reasonable mappings to SLSA v1.1 L2/L3 concepts but the level descriptions do
+        not exactly match SLSA v1.1 track-level terminology ("hosted" for L2, "hardened"
+        for L3). Advisory to align descriptions; the numbers themselves are correct.
+        Fix required: replace "SLSA Level 4: Pinned Dependencies" with SLSA v1.1
+        language, e.g. "SLSA Dependency Track: Require pinned dependencies" or
+        "SLSA Build L3: Hardened, isolated build environment."
+
+      ISSUE 5 — Environment Protection Refs: NIST SSDF PW.9 description does not
+        match the actual PW.9 control text (INCORRECT REF DESCRIPTION)
+        Line 682: "NIST SSDF PW.9: Configure Build Processes"
+        NIST SP 800-218 PW.9 is "Archive and Protect Each Software Release." The
+        description "Configure Build Processes" does not match PW.9. SSDF PW.5
+        ("Create Source Code by Adhering to Secure Coding Practices") is the task
+        that addresses build process configuration. PW.9 is about release archival
+        and integrity protection — closer in spirit to this rule's release-gating
+        topic, but the wrong description is attached to the citation.
+        Fix required: update the description to match the actual PW.9 text:
+        "NIST SSDF PW.9: Archive and Protect Each Software Release"; or replace
+        with a more precise SSDF mapping for deployment approval workflow.
+
+      Non-blocking observations (no status change):
+      - OWASP A06:2021 cited at line 1052 (Dependency Review Refs). The project
+        targets OWASP Top 10 2025 throughout; A06:2025 is the same category
+        (Vulnerable and Outdated Components). Update to A06:2025 for version
+        consistency. Same issue found in cicd/_core/cicd-security.md (ISSUE 4 there).
+      - Environment Protection Do example (lines 586-627): workflow-level
+        permissions: {} (empty) applies to all jobs, but the deploy-staging and
+        deploy-production jobs define no job-level permissions override. The checkout
+        step requires at minimum contents: read; without it these jobs fail with
+        "Resource not accessible by integration." Advisory: add
+        permissions: contents: read to each deploy job.
+      - Workflow Permissions pull_request_target Do example (lines 713-767): trustedUsers
+        is hardcoded as ['user1', 'user2']. These are placeholder values; a developer
+        who ships them unchanged leaves the allowlist protecting nobody. A note
+        recommending replacement with org membership checks (already shown as the
+        preferred path in the same block) would prevent this mistake. Advisory only.
+      - Secret Protection Do example (line 229): passes ${{ secrets.PRIVATE_KEY }}
+        into a run: heredoc. When ACTIONS_STEP_DEBUG=true, expression values appear
+        in the debug log before masking applies. This is an inherent GitHub Actions
+        limitation rather than a Do-example bug, but a comment acknowledging the
+        debug-log exception would set accurate expectations for practitioners.
+        Advisory only.
+      - CWE-1035 (line 1051): exists and is commonly cited for this rule type, but
+        it is an OWASP-2017 category-mapping CWE rather than a base vulnerability
+        CWE. More precise child CWEs could be used. Advisory only.
+    issues_filed: []
