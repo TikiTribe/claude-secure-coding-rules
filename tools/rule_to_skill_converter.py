@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 
@@ -69,52 +70,68 @@ def derive_skill_name(rule_path: Path) -> str:
     raise ValueError(f"Cannot derive skill name from {rule_path}")
 
 
+PATHS_BY_SKILL: dict[str, list[str]] = {
+    # Language skills
+    "python-security": ["**/*.py", "**/*.pyi", "**/pyproject.toml", "**/requirements*.txt"],
+    "javascript-security": ["**/*.js", "**/*.mjs", "**/*.cjs", "**/package.json"],
+    "typescript-security": ["**/*.ts", "**/*.tsx", "**/tsconfig*.json"],
+    "go-security": ["**/*.go", "**/go.mod", "**/go.sum"],
+    "rust-security": ["**/*.rs", "**/Cargo.toml", "**/Cargo.lock"],
+    "java-security": ["**/*.java", "**/pom.xml", "**/build.gradle*"],
+    "csharp-security": ["**/*.cs", "**/*.csproj"],
+    "ruby-security": ["**/*.rb", "**/Gemfile", "**/Gemfile.lock"],
+    "r-security": ["**/*.R", "**/*.Rmd", "**/DESCRIPTION"],
+    "cpp-security": ["**/*.cpp", "**/*.hpp", "**/*.cc", "**/*.h", "**/CMakeLists.txt"],
+    "julia-security": ["**/*.jl", "**/Project.toml"],
+    "sql-security": ["**/*.sql"],
+    # Backend framework skills
+    "fastapi-security": ["**/*.py", "**/pyproject.toml", "**/requirements*.txt"],
+    "django-security": ["**/*.py", "**/settings.py", "**/urls.py"],
+    "flask-security": ["**/*.py", "**/app.py"],
+    "express-security": ["**/*.js", "**/*.ts", "**/package.json"],
+    "nestjs-security": ["**/*.ts", "**/nest-cli.json"],
+    "langchain-security": ["**/*.py"],
+    "crewai-security": ["**/*.py"],
+    "autogen-security": ["**/*.py"],
+    "transformers-security": ["**/*.py"],
+    "vllm-security": ["**/*.py"],
+    "triton-security": ["**/*.py", "**/config.pbtxt"],
+    "torchserve-security": ["**/*.py", "**/*.mar"],
+    "ray-serve-security": ["**/*.py"],
+    "bentoml-security": ["**/*.py", "**/bentofile.yaml"],
+    "mlflow-security": ["**/*.py", "**/MLproject"],
+    "modal-security": ["**/*.py"],
+    # Frontend framework skills
+    "react-security": ["**/*.jsx", "**/*.tsx", "**/package.json"],
+    "nextjs-security": ["**/*.jsx", "**/*.tsx", "**/next.config*"],
+    "vue-security": ["**/*.vue", "**/*.js", "**/*.ts"],
+    "angular-security": ["**/*.ts", "**/*.html", "**/angular.json"],
+    "svelte-security": ["**/*.svelte"],
+    # IaC skills
+    "terraform-security": ["**/*.tf", "**/*.tfvars", "**/*.hcl"],
+    "pulumi-security": ["**/*.py", "**/*.ts", "**/Pulumi.yaml"],
+    # Container skills
+    "docker-security": ["**/Dockerfile*", "**/docker-compose*.yml", "**/docker-compose*.yaml"],
+    "kubernetes-security": ["**/*.yaml", "**/*.yml"],
+    "helm-security": ["**/Chart.yaml", "**/values*.yaml", "**/templates/**/*.yaml"],
+    # CI/CD skills
+    "github-actions-security": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+    "gitlab-ci-security": [".gitlab-ci.yml", "**/.gitlab-ci.yml"],
+}
+
+
 def derive_paths_glob(skill_name: str) -> list[str]:
-    """Derive `paths:` frontmatter from skill name."""
-    if skill_name == "python-security":
-        return ["**/*.py", "**/*.pyi", "**/pyproject.toml", "**/requirements*.txt"]
-    if skill_name == "javascript-security":
-        return ["**/*.js", "**/*.mjs", "**/*.cjs", "**/package.json"]
-    if skill_name == "typescript-security":
-        return ["**/*.ts", "**/*.tsx", "**/tsconfig*.json"]
-    if skill_name == "go-security":
-        return ["**/*.go", "**/go.mod", "**/go.sum"]
-    if skill_name == "rust-security":
-        return ["**/*.rs", "**/Cargo.toml", "**/Cargo.lock"]
-    if skill_name == "java-security":
-        return ["**/*.java", "**/pom.xml", "**/build.gradle*"]
-    if skill_name == "csharp-security":
-        return ["**/*.cs", "**/*.csproj"]
-    if skill_name == "ruby-security":
-        return ["**/*.rb", "**/Gemfile", "**/Gemfile.lock"]
-    if skill_name == "r-security":
-        return ["**/*.R", "**/*.Rmd", "**/DESCRIPTION"]
-    if skill_name == "cpp-security":
-        return ["**/*.cpp", "**/*.hpp", "**/*.cc", "**/*.h", "**/CMakeLists.txt"]
-    if skill_name == "julia-security":
-        return ["**/*.jl", "**/Project.toml"]
-    if skill_name == "sql-security":
-        return ["**/*.sql"]
-    if skill_name == "fastapi-security":
-        return ["**/*.py", "**/pyproject.toml", "**/requirements*.txt"]
-    if skill_name == "django-security":
-        return ["**/*.py", "**/settings.py", "**/urls.py"]
-    if skill_name == "express-security":
-        return ["**/*.js", "**/*.ts", "**/package.json"]
-    if skill_name == "react-security":
-        return ["**/*.jsx", "**/*.tsx", "**/package.json"]
-    if skill_name == "nextjs-security":
-        return ["**/*.jsx", "**/*.tsx", "**/next.config*"]
-    if skill_name == "terraform-security":
-        return ["**/*.tf", "**/*.tfvars", "**/*.hcl"]
-    if skill_name == "docker-security":
-        return ["**/Dockerfile*", "**/docker-compose*.yml", "**/docker-compose*.yaml"]
-    if skill_name == "kubernetes-security":
-        return ["**/*.yaml", "**/*.yml"]
-    if skill_name == "github-actions-security":
-        return [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    """Derive `paths:` frontmatter from skill name.
+
+    Returns the hard-coded paths for known skills. For applying-* core
+    skills and any unknown skill, returns ["**/*"] (load broadly).
+    """
+    if skill_name in PATHS_BY_SKILL:
+        return PATHS_BY_SKILL[skill_name]
     if skill_name.startswith("applying-"):
         return ["**/*"]
+    if skill_name.startswith("rag-"):
+        return ["**/*.py"]
     return ["**/*"]
 
 
@@ -164,7 +181,7 @@ sigma: 15
 
 # {metadata['title']}
 
-> **Source:** Converted from `{rule_path.as_posix()}` on 2026-05-25.
+> **Source:** Converted from `{rule_path.as_posix()}` on {date.today().isoformat()}.
 > **TODO before v2.0.0:** Hand-edit `description`, `when_to_use`, `sigma`, and the body content per the skill-authoring checklist.
 
 {rule_text}
