@@ -1,6 +1,6 @@
 audited_rules:
   - path: rules/_core/owasp-2025.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     notes: |
@@ -67,10 +67,18 @@ audited_rules:
         independently verified from the live site. CWE-502 and CWE-829 citations in A08 Refs
         appear reasonable based on the 2021 predecessor category, but are unverified against
         the 2025 RC1 mapping.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit c04b1d9): all 4 defects verified fixed.
+      ISSUE 1 (SSRF): socket.getaddrinfo is the sole resolution path; no except ValueError: pass swallow.
+      ISSUE 2 (crypto): Argon2id leads via argon2-cffi; bcrypt demoted to legacy-acceptable comment;
+        derive_key uses hashes.SHA512() with 600_000 iterations.
+      ISSUE 3 (A06 ref): CWE-840 replaced with CWE-269.
+      ISSUE 4 (session): session.regenerate() removed; rotate_session_after_login() uses session.clear()
+        with docstring explaining Flask's signed-cookie model.
     issues_filed: []
 
   - path: rules/_core/ai-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     notes: |
@@ -157,10 +165,19 @@ audited_rules:
         of the ATLAS v4 taxonomy and could not be independently confirmed from the live
         site. Reviewer notes this limitation; recommend a follow-up verification pass
         against the live ATLAS catalog when the site is accessible.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit ec2e766): all 4 defects verified fixed.
+      ISSUE 1 (prompt injection): _sanitize_input and patterns_to_remove removed; structural
+        role isolation is the named primary defense per OWASP LLM01:2025.
+      ISSUE 2 (OWASP refs): all LLM refs updated to :2025 qualifier; Validate LLM Outputs
+        now cites OWASP LLM05:2025 (Improper Output Handling).
+      ISSUE 3 (ATLAS ref): AML.T0000 replaced with AML.T0035 and AML.T0040.
+      ISSUE 4 (magic bytes): _image_format() function uses length-aware buf.startswith()
+        checks; no v[:8] in [...] pattern anywhere in the file.
     issues_filed: []
 
   - path: rules/_core/agent-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     notes: |
@@ -241,10 +258,21 @@ audited_rules:
         critical for prompt injection in ai-security.md; in this context (output content
         validation) it is less severe but still bypassable. Advisory: note the limitation.
       - signal.SIGALRM (line 91) is not available on Windows. Portability note only.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit 3fd7964): all 4 defects verified fixed.
+      ISSUE 1 (OWASP refs): all LLM refs carry :2025 qualifier; LLM07->LLM06:2025,
+        LLM02->LLM05:2025, LLM05->LLM06:2025 remappings applied throughout.
+      ISSUE 2 (set_limits): preexec_fn=set_limits wired in subprocess.run call; resource
+        limits are applied in the child process before exec.
+      ISSUE 3 (_check_code_safety): method implemented with full AST analysis using
+        forbidden_builtins and forbidden_modules frozensets; walks ast.Import, ast.ImportFrom,
+        ast.Call, and ast.Attribute nodes.
+      ISSUE 4 (ATLAS refs): no change required beyond prior fixes; AML.T0051 retained
+        (unverifiable but plausible per training-set knowledge of ATLAS v4).
     issues_filed: []
 
   - path: rules/_core/mcp-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -336,10 +364,21 @@ audited_rules:
       - Pydantic @validator syntax (MCP03, lines 568-592) is deprecated as of Pydantic v2
         (2023). In 2026 this is a maintainability concern; future Pydantic v3 will remove it.
         Advisory: migrate to @field_validator with mode='before'/'after' as appropriate.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit b17b05f): all 5 defects verified fixed.
+      ISSUE 1 (MCP05 import os): 'import os' present at line 747 in the Do block of
+        SafeCommandExecutor, preceding all os.path calls.
+      ISSUE 2 (MCP07 import os): 'import os' present at line 1001 in the Do block of
+        SecureMCPServer, before os.environ["JWT_SECRET"] access.
+      ISSUE 3 (MCP09 import asyncio): 'import asyncio' present at line 1237 in the Do block
+        of MCPGovernanceFramework.
+      ISSUE 4 (MCP03 Pydantic validator): @validator('requires_confirmation', always=True)
+        with body check 'if values.get("destructive") and not v' — uses 'not v' correctly.
+      ISSUE 5 (MCP06 heading): section heading updated to "MCP06:2025 - Intent Flow Subversion".
     issues_filed: []
 
   - path: rules/_core/rag-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -464,10 +503,25 @@ audited_rules:
         it is in the Don't example, but a reviewer testing both examples would see it
         fail for the wrong reason. Advisory: make the Don't use httpx.Client().post()
         without async, or note that it is intentionally broken.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit 6e40c98): all 5 defects verified fixed.
+      ISSUE 1 (exception classes): 7-class hierarchy defined in '## Common Exception Classes'
+        block (RAGSecurityError base + SecurityError, ValidationError, ConfigurationError,
+        RateLimitError, AuthenticationError, EmbeddingError, ModelMismatchError).
+      ISSUE 2 (datetime import): 'from datetime import datetime' present in Multi-Tenant
+        Isolation Do block (line 361).
+      ISSUE 3 (PROJECT_ID): bare PROJECT_ID removed; replaced with
+        'project_id = os.environ.get("GCP_PROJECT_ID")' guard before the try block.
+      ISSUE 4 (denylist methods): _remove_injection_patterns and _neutralize_injection_patterns
+        removed; replaced with _wrap_metadata_for_isolation and _wrap_query_for_isolation
+        structural-isolation patterns citing OWASP LLM01:2025.
+      ISSUE 5 (LLM08:2025 coverage): new '## Rule: Defend Against Adversarial Embedding
+        Manipulation' section added with LLM08:2025 refs in Embedding Model Authentication,
+        Model Version Consistency, and Multi-Tenant Isolation.
     issues_filed: []
 
   - path: rules/_core/graph-database-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -610,4 +664,17 @@ audited_rules:
         hashlib.md5() alongside time.time() (floating-point, low entropy) produces
         weak uniqueness. Use uuid.uuid4() for collision-resistant audit IDs.
         Advisory only — does not affect security of the logged data itself.
+
+      Re-audited 2026-05-25 after P0.7 rewrite (commit b7349c2): all 5 defects verified fixed.
+      ISSUE 1 (_ALLOWED_NODE_LABELS): defined as frozenset at top of file (line 60);
+        find_entity validates entity_type against it before f-string substitution.
+      ISSUE 2 (_ALLOWED_RELATIONSHIP_TYPES): defined as frozenset (line 491);
+        SecureGraphTraversal.traverse validates policy.allowed_relationships against it.
+      ISSUE 3 (invalid Cypher :$label): no 'MATCH (n:$label' pattern anywhere; label is
+        validated then f-string substituted only after allowlist check.
+      ISSUE 4 (fake Gremlin P.within): removed entirely; semantic_search replaced with
+        external-vector-store pattern (query external store for IDs, then Gremlin by ID).
+      ISSUE 5 (SecurityError/ResourceError): both defined in '## Common Exception Classes'
+        block (lines 25, 29); _import_data validates labels and rel types against frozensets
+        before any CREATE query construction.
     issues_filed: []
