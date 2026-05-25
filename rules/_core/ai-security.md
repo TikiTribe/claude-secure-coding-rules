@@ -75,7 +75,7 @@ def train_model(user_uploaded_data):
 
 **Why**: Data poisoning attacks (MITRE ATLAS AML.T0020) corrupt training data to cause model misbehavior. Integrity verification ensures data hasn't been tampered with.
 
-**Refs**: MITRE ATLAS AML.T0020, NIST AI RMF MAP 1.5, ISO/IEC 23894 Annex B, Google SAIF Data Security, OWASP LLM03
+**Refs**: MITRE ATLAS AML.T0020, NIST AI RMF MAP 1.5, ISO/IEC 23894 Annex B, Google SAIF Data Security, OWASP LLM04:2025
 
 ---
 
@@ -204,9 +204,9 @@ model = torch.load('model.pt')  # Could be tampered
 model.save('/public/models/production.pkl')
 ```
 
-**Why**: Model theft (AML.T0000) and tampering can compromise IP and introduce backdoors. Integrity verification detects unauthorized modifications.
+**Why**: Model artifact theft (AML.T0035 — ML Artifact Collection) and tampering can compromise IP and introduce backdoors. Inference-API-based exfiltration (AML.T0040) reconstructs model weights through repeated queries. Integrity verification detects unauthorized modifications.
 
-**Refs**: MITRE ATLAS AML.T0000, NIST AI RMF MANAGE 2.3, Google SAIF Model Security
+**Refs**: MITRE ATLAS AML.T0035, AML.T0040, NIST AI RMF MANAGE 2.3, Google SAIF Model Security
 
 ---
 
@@ -301,6 +301,26 @@ def predict(x):
 import numpy as np
 from pydantic import BaseModel, validator
 
+# Magic-byte signatures for allowed image formats (length-aware match)
+_IMAGE_SIGNATURES = {
+    "PNG":  b"\x89PNG\r\n\x1a\n",  # 8 bytes
+    "JPEG": b"\xff\xd8\xff",        # 3 bytes
+    "GIF":  b"GIF89a",              # 6 bytes; or b"GIF87a"
+    "WEBP": b"RIFF",                # 4 bytes — followed by size + b"WEBP" at offset 8
+}
+
+def _image_format(buf: bytes) -> str | None:
+    """Return the format name if buf starts with a known image signature, else None."""
+    if buf.startswith(_IMAGE_SIGNATURES["PNG"]):
+        return "PNG"
+    if buf.startswith(_IMAGE_SIGNATURES["JPEG"]):
+        return "JPEG"
+    if buf.startswith(b"GIF87a") or buf.startswith(b"GIF89a"):
+        return "GIF"
+    if buf.startswith(_IMAGE_SIGNATURES["WEBP"]) and len(buf) >= 12 and buf[8:12] == b"WEBP":
+        return "WEBP"
+    return None
+
 class ImageInput(BaseModel):
     image_data: bytes
     format: str
@@ -311,8 +331,8 @@ class ImageInput(BaseModel):
         if len(v) > 10 * 1024 * 1024:  # 10MB max
             raise ValueError("Image too large")
 
-        # Format validation
-        if not v[:8] in [b'\x89PNG', b'\xff\xd8\xff']:  # PNG/JPEG magic
+        # Format validation — use length-aware startswith checks, not fixed-slice equality
+        if _image_format(v) is None:
             raise ValueError("Invalid image format")
 
         return v
@@ -457,11 +477,31 @@ class SecureLLMClient:
         self.client = client
 
     def generate(self, system_prompt: str, user_input: str) -> str:
-        """Secure LLM generation with input isolation."""
-        # Sanitize user input
-        sanitized_input = self._sanitize_input(user_input)
+        """Secure LLM generation using structural role isolation.
 
-        # Use structured message format with clear boundaries
+        Primary defense: keep system instructions in the 'system' role and
+        user-supplied content in the 'user' role. The LLM runtime enforces
+        the role boundary; user content is treated as data, not instructions.
+
+        Note: pattern-based filtering (regex denylists) is documented in
+        OWASP LLM01:2025 as ineffective — patterns are trivially bypassed
+        by encoding, paraphrasing, and multilingual injection. Do not use
+        a denylist as the primary defense.
+
+        Complementary defenses layered here:
+          - Output validation: model output is validated before any action is taken.
+          - Least privilege: the LLM's tool/function access is scoped to the minimum
+            needed for the task (not shown — enforce at the API/tool-call layer).
+          - Human-in-the-loop: for high-risk operations, surface the proposed action
+            for human approval rather than executing automatically.
+        """
+        # Enforce a reasonable length limit on user content (not a security control
+        # against injection — purely a resource/cost guard).
+        user_content = user_input[:4000]
+
+        # Structural isolation: system-prompt carries instructions only;
+        # user message carries data only. Never interpolate user_content into
+        # the system message string.
         messages = [
             {
                 "role": "system",
@@ -469,7 +509,7 @@ class SecureLLMClient:
             },
             {
                 "role": "user",
-                "content": sanitized_input
+                "content": user_content
             }
         ]
 
@@ -479,25 +519,10 @@ class SecureLLMClient:
             max_tokens=1000
         )
 
-        # Validate output before use
+        # Validate output before use — do not trust model output for
+        # sensitive actions without independent verification.
         output = response.choices[0].message.content
         return self._validate_output(output)
-
-    def _sanitize_input(self, user_input: str) -> str:
-        """Sanitize user input to prevent injection."""
-        # Remove potential injection patterns
-        patterns_to_remove = [
-            r'ignore previous instructions',
-            r'disregard.*system prompt',
-            r'you are now',
-            r'new instructions:',
-        ]
-        sanitized = user_input
-        for pattern in patterns_to_remove:
-            sanitized = re.sub(pattern, '[FILTERED]', sanitized, flags=re.IGNORECASE)
-
-        # Length limit
-        return sanitized[:4000]
 
     def _validate_output(self, output: str) -> str:
         """Validate LLM output before use."""
@@ -521,9 +546,9 @@ def process_request(user_text):
     return execute_command(result)  # Dangerous if injected
 ```
 
-**Why**: Prompt injection (AML.T0051) manipulates LLM behavior by injecting instructions in user input. Isolation and validation prevent exploitation.
+**Why**: Prompt injection (AML.T0051) manipulates LLM behavior by injecting instructions in user-supplied content. Structural role isolation — keeping instructions in the system role and user content in the user role — is the primary defense recommended by OWASP LLM01:2025. Pattern-based denylists are explicitly de-emphasized in OWASP LLM01:2025 because they are trivially bypassed by encoding, paraphrasing, Unicode substitution, and multilingual variants. Output validation and least-privilege tool access are required complementary controls.
 
-**Refs**: MITRE ATLAS AML.T0051, OWASP LLM01, NIST AI 100-1 §3.2
+**Refs**: MITRE ATLAS AML.T0051, OWASP LLM01:2025, NIST AI 100-1 §3.2
 
 ---
 
@@ -602,7 +627,7 @@ def run_analysis():
 
 **Why**: LLMs can be manipulated to generate malicious content. Output validation prevents XSS, injection, and code execution attacks.
 
-**Refs**: OWASP LLM02, OWASP LLM09, OWASP A03:2025, NIST AI 100-1 §3.2
+**Refs**: OWASP LLM05:2025 (Improper Output Handling), OWASP A03:2025, NIST AI 100-1 §3.2 — Note: OWASP LLM09:2023 (Overreliance) was deprecated in the 2025 taxonomy; user-experience guidance moved out of the security catalog.
 
 ---
 
@@ -770,12 +795,12 @@ logger.info(f"Prediction made")  # No user, no patterns
 |------|-------|-------------|------------------|
 | Validate Training Data | strict | AML.T0020 | NIST AI RMF MAP 1.5 |
 | Protect Sensitive Data | strict | AML.T0024 | ISO/IEC 23894 A.8 |
-| Secure Model Artifacts | strict | AML.T0000 | Google SAIF Model |
+| Secure Model Artifacts | strict | AML.T0035, AML.T0040 | Google SAIF Model |
 | Model Access Controls | strict | AML.T0040 | NIST AI RMF MANAGE 1.3 |
 | Validate Model Inputs | strict | AML.T0043 | ISO/IEC 23894 A.9 |
 | Adversarial Detection | warning | AML.T0015 | NIST AI RMF MEASURE 2.7 |
-| Prevent Prompt Injection | strict | AML.T0051 | OWASP LLM01 |
-| Validate LLM Outputs | strict | - | OWASP LLM02 |
+| Prevent Prompt Injection | strict | AML.T0051 | OWASP LLM01:2025 |
+| Validate LLM Outputs | strict | - | OWASP LLM05:2025 |
 | Isolate Inference | warning | - | Google SAIF Infrastructure |
 | ML Attack Monitoring | warning | AML.T0040 | NIST AI RMF MEASURE 1.1 |
 
