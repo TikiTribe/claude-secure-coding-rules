@@ -801,3 +801,150 @@ audited_rules:
         are configured when they are not. Advisory: either populate the affinity block
         with a practical example or remove the empty section.
     issues_filed: []
+
+  - path: rules/cicd/_core/cicd-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Secret Management - No Hardcoded Secrets
+      - Secret Management - Secret Rotation
+      - Pipeline as Code Security - Immutable Pipeline Definitions
+      - Artifact Integrity - Cryptographic Signing
+      - Artifact Integrity - Software Bill of Materials (SBOM)
+      - Artifact Integrity - Build Provenance Attestation
+      - Supply Chain Security - Dependency Verification
+      - Supply Chain Security - Vulnerability Scanning
+      - Supply Chain Security - Minimal Base Images
+      - Audit Logging - Pipeline Execution Logs
+      - Audit Logging - Secret Access Logging
+      - Pipeline Isolation - Environment Separation
+      - Pipeline Isolation - Runner Security
+      - Network Security - Egress Restrictions
+      - Access Control - Least Privilege Permissions
+      - Input Validation - Workflow Input Sanitization
+      - Code Review - Required Reviews for Pipeline Changes
+      - Monitoring and Alerting - Pipeline Anomaly Detection
+      - Disaster Recovery - Pipeline Backup and Recovery
+    notes: |
+      Audited all 19 rule sections. Six distinct issues found; three are blocking
+      (wrong standards version taxonomy, wrong SSDF task IDs, wrong CICD-SEC category
+      numbers). No OWASP LLM 2023->2025 numbering problem — this file uses OWASP CI/CD
+      Top 10 and OWASP Top 10 (web app) refs, not the LLM taxonomy. CICD-SEC category
+      names are mostly correct but two audit/monitoring rules carry the wrong category
+      number. No Python code bugs (the file is YAML/HCL/bash examples throughout).
+
+      ISSUE 1 — All SLSA refs use deprecated pre-v1.0 Level naming (STANDARDS VERSION)
+        The file cites SLSA using the pre-v1.0 taxonomy across 10 Refs lines:
+        "SLSA Level 1", "SLSA Level 2", "SLSA Level 3", "SLSA Level 4".
+        SLSA v1.0 (2023) and v1.1 (current, pinned in standards-pin.yaml) replaced the
+        flat Level 1-4 model with a track-based model: Build L0, Build L1, Build L2,
+        Build L3. "Level 4" does not exist in SLSA v1.1 at all; line 1734 cites it for
+        the two-party review rule (which in v1.1 is a Build L3 requirement). The
+        descriptions attached to old level names are also wrong for v1.1:
+          - "SLSA Level 3: Hermetic, Reproducible" (line 203): v1.1 Build L3 does not
+            use this language; "hermetic" was dropped as a primary descriptor in v1.0.
+          - "SLSA Level 3: Non-falsifiable Provenance" (line 412): v0.1 terminology,
+            not used in v1.1 which frames this as "unforgeable" provenance under Build L3.
+          - "SLSA Level 3: Dependencies Complete" (line 688): v0.1 phrasing; v1.1 Build
+            L3 addresses this under the Dependencies track, not Build L3.
+          - "SLSA Level 2: Hosted, Build Service" (line 312): v0.1 description; v1.1
+            Build L2 is defined by signed provenance from a hosted build platform.
+        Additionally, line 547 pins slsa-framework/slsa-github-generator to
+        @v1.9.0 (a mutable tag) in a Do example. The generator's own documentation
+        and SLSA's own guidance require SHA pinning to prevent tag-mutation attacks —
+        this directly contradicts the Dependency Verification rule's Do example in the
+        same file (line 624 comment: "# Pin by full SHA, not tag").
+        Fix required: update all SLSA Refs to v1.1 track terminology (Build L1/L2/L3);
+        remove "Level 4" (nonexistent in v1.1); fix all description strings to match
+        v1.1 spec language; SHA-pin the slsa-github-generator reference.
+
+      ISSUE 2 — Three NIST SSDF task IDs are wrong or carry fabricated descriptions (STANDARDS MISMATCH)
+        The file cites NIST SSDF SP 800-218 v1.1 throughout. Three citations are wrong:
+
+        Line 115 — "NIST SSDF PW.6: Configure the Compilation, Interpreter, and Build
+          Processes to Improve Executable Security" cited for "No Hardcoded Secrets."
+          PW.6 addresses compile-time and build-time hardening flags (stack canaries,
+          ASLR, safe linking). It has no relationship to secret management. The correct
+          SSDF task for protecting credentials in build environments is PS.1 ("Protect
+          All Forms of Code from Unauthorized Access and Tampering") or PO.5 ("Implement
+          and Maintain Secure Environments for Software Development").
+          Fix required: replace PW.6 with PS.1 for this rule.
+
+        Lines 413 and 503 — "NIST SSDF PS.3: Maintain Provenance Data for All
+          Components" cited for SBOM and Build Provenance Attestation rules. In SP
+          800-218 v1.1 the actual PS.3 task name is "Archive and Protect Each Software
+          Release." The phrase "Maintain Provenance Data for All Components" does not
+          appear in SSDF v1.1 — it is a fabricated description. PS.3 is the right task
+          (it does cover release archiving and integrity) but the quoted subtitle is not
+          what the standard says.
+          Fix required: update description to "Archive and Protect Each Software
+          Release" on both lines.
+
+        Line 973 — "NIST SSDF PO.4: Implement Audit and Response Mechanisms" cited for
+          "Audit Logging - Pipeline Execution Logs." In SP 800-218 v1.1, PO.4 is
+          "Define and Use Criteria for Checking Developer Verifiability," which covers
+          vetting contributors and toolchain trust, not audit logging. The description
+          "Implement Audit and Response Mechanisms" does not match PO.4. The correct
+          SSDF reference for a logging/audit rule is RV.1 ("Identify and Confirm
+          Vulnerabilities on an Ongoing Basis," already cited in the Monitoring rule at
+          line 1838) or, given the compliance context, NIST SP 800-53 AU-2 (already
+          cited in the Secret Access Logging rule at line 1055).
+          Fix required: replace PO.4 with RV.1 or remove in favor of the SP 800-53
+          AU-2 already present in the adjacent Secret Access Logging rule.
+
+      ISSUE 3 — CICD-SEC-9 mis-cited for both audit/logging rules (CATEGORY MISMATCH)
+        Two rules cite the wrong OWASP CI/CD Top 10 category:
+          Line 971 (Audit Logging - Pipeline Execution Logs): "CICD-SEC-9 Improper
+            Artifact Integrity Validation"
+          Line 1837 (Monitoring and Alerting - Pipeline Anomaly Detection): "CICD-SEC-9
+            Improper Artifact Integrity Validation"
+        CICD-SEC-9 covers artifact integrity and signing verification and maps
+        correctly to the Artifact Integrity rules in this file. It has nothing to do
+        with audit logging or monitoring. The correct category for those two rules is
+        CICD-SEC-10 "Insufficient Logging and Visibility," which is accurately cited
+        at line 1927 (Disaster Recovery rule) — confirming the author knew the correct
+        mapping for CICD-SEC-10 and applied it once but not consistently.
+        Fix required: change both CICD-SEC-9 citations (lines 971 and 1837) to
+        CICD-SEC-10 Insufficient Logging and Visibility.
+
+      ISSUE 4 — OWASP A06:2021 cited instead of A06:2025 (STANDARDS VERSION)
+        Line 788 (Supply Chain Security - Vulnerability Scanning) cites "OWASP
+        A06:2021: Vulnerable and Outdated Components." The project's standards-pin.yaml
+        pins OWASP Top 10 to the 2025 version. Every other OWASP Top 10 ref in this
+        repository uses the :2025 qualifier. This is the same pattern found and fixed
+        in mcp-security.md (A05:2021 corrected to A05:2025 in that audit).
+        Fix required: update "A06:2021" to "A06:2025" on line 788.
+
+      ISSUE 5 — COSIGN_EXPERIMENTAL="true" is a deprecated env var (DEPRECATED MITIGATION)
+        Line 356 in the Artifact Integrity - Cryptographic Signing Do example sets
+        COSIGN_EXPERIMENTAL="true" as an environment variable for keyless Sigstore
+        signing. This was required in cosign v1.x to gate the experimental keyless
+        workflow. cosign v2.0 (released October 2023) promoted keyless signing to
+        stable and removed the experimental gate — the variable is now undocumented
+        and a no-op in cosign v2.x per the official cosign v2 migration guide. The
+        current cosign documentation does not mention COSIGN_EXPERIMENTAL at all.
+        Teaching this as a Do example misleads users on cosign v2+ into thinking they
+        have configured something meaningful when they have not.
+        Fix required: remove "COSIGN_EXPERIMENTAL: 'true'" from the Do example; add
+        a comment noting that cosign v2+ enables keyless signing by default with no
+        environment variable required, and that COSIGN_EXPERIMENTAL was a v1.x flag.
+
+      Non-blocking observations (no status change):
+      - Lines 446, 536, 547, 571, 577, 728: Do examples in the SBOM, Provenance
+        Attestation, and Vulnerability Scanning rules use action tags (@v1, @v4, @v5,
+        @v3) rather than full commit SHAs. This is inconsistent with the Dependency
+        Verification Do example in the same file (line 624 comment: "# Pin by full
+        SHA, not tag") and with all other Do examples that correctly use SHAs. The
+        integrity-verification actions (actions/attest-sbom@v1 at line 446,
+        actions/attest-build-provenance@v1 at line 577) are particularly inconsistent
+        because tag-pinning them contradicts the rule's own subject matter. The runner
+        Kubernetes Do example (line 1252) also uses
+        image: "ghcr.io/actions/actions-runner:latest" — the :latest tag. Advisory:
+        SHA-pin all actions in Do examples, especially in the integrity-focused rules.
+      - The file provides no coverage of CICD-SEC-5 (Insufficient PBAC —
+        Pipeline-Based Access Controls) or CICD-SEC-7 (Insecure System Configuration).
+        These are the only two OWASP CI/CD Top 10 categories not addressed. Advisory
+        for a future v2.1 addition — not a defect in the rules that exist.
+    issues_filed: []
