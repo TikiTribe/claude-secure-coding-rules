@@ -1,0 +1,13 @@
+{
+  "name": "tikitribe-secure-coding-rules",
+  "version": "2.0.0-alpha.0",
+  "description": "Security catalog for Claude Code: ~42 path-scoped skills + permission-rule template + hook-authoring documentation. Catalog teaches; platform enforces.",
+  "author": {
+    "name": "Rock Lambros",
+    "email": "rock@rockcyber.com",
+    "url": "https://github.com/TikiTribe/claude-secure-coding-rules"
+  },
+  "homepage": "https://github.com/TikiTribe/claude-secure-coding-rules",
+  "repository": "https://github.com/TikiTribe/claude-secure-coding-rules",
+  "license": "MIT"
+}
