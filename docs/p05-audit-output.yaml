@@ -678,3 +678,126 @@ audited_rules:
         block (lines 25, 29); _import_data validates labels and rel types against frozensets
         before any CREATE query construction.
     issues_filed: []
+
+  - path: rules/cicd/gitlab-ci/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Protected Variables - Mask and Protect Secrets
+      - Runner Security - Tags and Isolation
+      - Include Security - Trusted Sources Only
+      - Vault Integration - Dynamic Secrets
+      - Security Scanning - SAST/DAST/Container
+      - Merge Request Approvals - Required Reviews
+      - Protected Branches and Tags - Access Control
+      - Artifact Security - Expiration and Signing
+      - Environment-Specific Variables - Scoped Secrets
+      - Pipeline Security - Prevent Override
+      - Secure Files - Sensitive File Storage
+      - Compliance Pipelines - Enforced Security Jobs
+    notes: |
+      Audited all 12 rule sections. Four distinct blocking issues found; two are critical
+      (invalid YAML, wrong-platform API call). Pervasive deprecated-syntax issue affects
+      nearly every Do example.
+
+      ISSUE 1 — Pervasive use of deprecated only/except syntax (DEPRECATED MITIGATION)
+        At least 12 locations across the file use the 'only:' keyword
+        (lines 44, 79, 90, 193, 434, 907, 1016, 1029, and others). GitLab CI/CD
+        deprecated 'only' and 'except' in favour of 'rules:' syntax in GitLab 12.3
+        and formally recommends migration in current docs. The 'only/except' keywords
+        remain functional but are no longer the recommended pattern and will confuse
+        developers following modern GitLab documentation. Security-specific rules
+        (e.g., "deploy only on main" at lines 43-45 and 89-90) need the richer
+        conditional expressions that 'rules:' provides (protected-branch checks,
+        pipeline source constraints). Presenting 'only:' in Do examples actively
+        teaches the deprecated pattern.
+        Fix required: replace all 'only:' and 'except:' keyword usage in Do examples
+        with 'rules: - if:' equivalents; retain 'only:' only in Don't examples if
+        needed to show contrast with the modern form.
+
+      ISSUE 2 — Protected Branches rule: rules: and only: combined in same job (INVALID YAML / CRITICAL)
+        Lines 826-829 of the 'Protected Branches and Tags' Do example contain a single
+        job ('release:') that uses BOTH 'rules:' (lines 826-827) AND 'only:' (line 828).
+        GitLab CI/CD explicitly prohibits mixing these two keywords in the same job;
+        any pipeline attempting to load this configuration raises a YAML validation error:
+          "rules: cannot be used with only/except"
+        The job is entirely skipped (GitLab marks the pipeline as invalid). A Do example
+        that prevents the pipeline from loading at all cannot teach secure practice.
+        Fix required: remove 'only: - tags' (line 828-829); the 'rules: - if:
+        $CI_COMMIT_TAG =~ ...' already restricts the job to matching tags.
+
+      ISSUE 3 — Vault Integration: GitHub Actions ::add-mask:: syntax in GitLab CI Do example (WRONG PLATFORM / CRITICAL)
+        Line 496 inside the 'Alternative: Using Vault CLI in scripts' Do block contains:
+          - echo "::add-mask::$DATABASE_PASS"
+        The '::add-mask::' prefix is a GitHub Actions workflow command (actions/core
+        set-secret). It is not a GitLab CI construct; in a GitLab runner it emits the
+        literal string "::add-mask::$DATABASE_PASS" to stdout without masking anything.
+        The DATABASE_PASS value remains unmasked in the GitLab job log. This is the
+        exact opposite of the intended behavior: a Do example that claims to mask the
+        secret actually fails to mask it in the GitLab context.
+        The GitLab-native approach is to mark the CI variable as Masked in the UI
+        (or via the API), or to avoid ever printing the value. There is no
+        runner-side runtime masking API equivalent to GitHub's ::add-mask:: in GitLab
+        CI at the script level.
+        Fix required: remove the echo "::add-mask::..." line; add a comment explaining
+        that GitLab runtime masking is configured on the variable definition (Masked
+        flag in Settings > CI/CD > Variables), not via a script command; reference
+        GitLab's CI_JOB_TOKEN scoping as the preferred approach for Vault JWT auth
+        rather than script-level log manipulation.
+
+      ISSUE 4 — Artifact Security: SLSA Level 4 citation is stale (STALE REF)
+        Line 761 in 'Merge Request Approvals' Refs cites "SLSA Level 4: Two-person
+        Review." SLSA v1.0 (released 2023) removed Level 4 entirely from the
+        framework; the model now uses Levels 1 through 3. The two-person review
+        requirement that was in the draft Level 4 was not carried forward into the
+        v1.0 specification. Citing a non-existent SLSA level as a normative reference
+        undermines practitioner trust. The closest v1.0 equivalent is the combination
+        of SLSA Build L3 (isolated builds) with the separate "Roles and Personnel"
+        best practice, but SLSA v1.0 does not mandate two-person review as a numbered
+        level requirement.
+        Fix required: replace "SLSA Level 4: Two-person Review" with a reference to the
+        two-person rule concept from NIST SSDF (PW.1.3) or the GitLab-specific
+        "Required approvals" documentation; update any SLSA Level 2/3 citations in
+        Artifact Security to confirm they match SLSA v1.0 track-level language.
+
+      Non-blocking observations (no status change):
+      - Include Security Don't example (lines 376-381): The 'Auto-DevOps.gitlab-ci.yml'
+        built-in template is grouped under a "# VULNERABLE:" code block header alongside
+        a remote URL include and an unpinned external project reference. The inline comment
+        concedes "Built-in templates are generally safe but should be reviewed," which
+        contradicts the VULNERABLE label applied to the entire block. Auto-DevOps is a
+        GitLab-maintained template pinned to the current GitLab release and is not an
+        external or untrusted include. Grouping it with a remote:external-site.com include
+        as equally "VULNERABLE" is misleading and may cause teams to avoid a useful
+        security-relevant feature. Advisory: move the Auto-DevOps note to a separate
+        "Caution" callout or move it to the Do example with qualification; do not label
+        it alongside untrusted remote includes.
+      - Security Scanning rule (line 622): uses 'owasp/zap2docker-stable' Docker image.
+        The OWASP ZAP project retired the 'owasp/' Docker Hub namespace; the current
+        maintained image is 'zaproxy/zap-stable'. Using the retired image will pull
+        an unmaintained version that no longer receives CVE patches. Advisory: update
+        to zaproxy/zap-stable.
+      - Protected Variables Do examples (lines 43-45, 79, 90): use 'only: - main' and
+        'only: - develop'. These are legacy syntax (see ISSUE 1). Additionally, the
+        protected-variable scoping relies solely on the variable's Protected flag in
+        the UI. The YAML alone cannot enforce protection; the advisory comment
+        explaining this requirement is absent from the Do example, which may mislead
+        readers into thinking the YAML 'only: - main' restriction is the protection
+        mechanism. The actual protection comes from marking the branch as Protected AND
+        the variable as Protected in Settings. A comment clarifying this separation
+        would strengthen the Do example.
+      - CICD-SEC references (CICD-SEC-1 through CICD-SEC-7): verified against OWASP
+        CI/CD Security Top 10 published taxonomy. All cited CICD-SEC-N numbers and
+        short names are accurate: CICD-SEC-1 (Insufficient Flow Control Mechanisms),
+        CICD-SEC-3 (Dependency Chain Abuse), CICD-SEC-4 (Poisoned Pipeline Execution),
+        CICD-SEC-6 (Insufficient Credential Hygiene), CICD-SEC-7 (Insecure System
+        Configuration). No numbering errors in the OWASP CI/CD Top 10 refs.
+      - Runner Security Kubernetes config (lines 198-222): The 'read_only_root_filesystem
+        = true' setting is correct; however, the TOML block has an empty
+        '[runners.kubernetes.affinity]' section with only a comment, which is
+        syntactically valid TOML but incomplete. Readers may assume affinity rules
+        are configured when they are not. Advisory: either populate the affinity block
+        with a practical example or remove the empty section.
+    issues_filed: []
