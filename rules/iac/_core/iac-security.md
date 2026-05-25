@@ -28,13 +28,20 @@ terraform {
 ```
 
 ```yaml
-# Pulumi - Encrypted backend
+# Pulumi project file (Pulumi.yaml) — backend URL only; no secrets here
 name: my-project
 runtime: python
 backend:
   url: s3://company-pulumi-state?region=us-east-1&awssdk=v2
+```
+
+```yaml
+# Pulumi.<stackname>.yaml (e.g., Pulumi.dev.yaml) — per-stack config file
+# encryptionsalt MUST live in the per-stack config file, NOT Pulumi.yaml.
+# Placing it in the project file is silently ignored.
+encryptionsalt: v1:abc123...
 config:
-  encryptionsalt: v1:abc123...
+  aws:region: us-east-1
 ```
 
 **Don't**:
@@ -541,7 +548,7 @@ module "eks" {
 
 **Why**: Unpinned modules can change without notice, introducing vulnerabilities, breaking changes, or malicious code. Supply chain attacks target popular modules. Version pinning ensures reproducible builds and allows security review before updates.
 
-**Refs**: CWE-829 (Inclusion of Functionality from Untrusted Control Sphere), NIST 800-53 SA-12 (Supply Chain Protection)
+**Refs**: CWE-829 (Inclusion of Functionality from Untrusted Control Sphere), NIST 800-53 SR-3 (Supply Chain Controls and Processes)
 
 ---
 
@@ -604,7 +611,7 @@ module "risky" {
 
 **Why**: Malicious modules can exfiltrate secrets, create backdoors, or deploy cryptominers. The Terraform registry has verified publishers, but unverified modules could be malicious. Always audit module code before use.
 
-**Refs**: CWE-494 (Download of Code Without Integrity Check), NIST 800-53 SA-12 (Supply Chain Protection)
+**Refs**: CWE-494 (Download of Code Without Integrity Check), NIST 800-53 SR-4 (Provenance)
 
 ---
 
@@ -853,7 +860,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
         with:
           directory: .
           framework: terraform
@@ -861,13 +868,15 @@ jobs:
           soft_fail: false
           skip_check: CKV_AWS_999  # Document any skips
 
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
+      - name: Run Trivy (replaces deprecated tfsec)
+        uses: aquasecurity/trivy-action@<SHA>  # update to current SHA before merge
         with:
-          soft_fail: false
+          scan-type: config
+          hide-progress: false
+          exit-code: '1'
 
       - name: Run Terrascan
-        uses: tenable/terrascan-action@main
+        uses: tenable/terrascan-action@<SHA>  # update to current SHA before merge
         with:
           iac_type: 'terraform'
           policy_type: 'aws'
@@ -876,7 +885,7 @@ jobs:
       - name: Run OPA Policy Check
         uses: open-policy-agent/setup-opa@v2
         with:
-          version: latest
+          version: "0.70.0"
       - run: |
           opa eval --data policies/ --input plan.json "data.terraform.deny[msg]"
 ```
@@ -926,7 +935,7 @@ jobs:
 ```yaml
 # VULNERABLE: Soft fail on all checks
 - name: Run Checkov
-  uses: bridgecrewio/checkov-action@master
+  uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
   with:
     soft_fail: true  # Allows all violations to pass
 ```
@@ -947,7 +956,7 @@ jobs:
 ```yaml
 # Checkov with compliance frameworks
 - name: Run Checkov with CIS compliance
-  uses: bridgecrewio/checkov-action@master
+  uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
   with:
     directory: .
     framework: terraform
@@ -956,7 +965,7 @@ jobs:
     output_file_path: reports/
 
 - name: Run Checkov with SOC2 compliance
-  uses: bridgecrewio/checkov-action@master
+  uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
   with:
     directory: .
     check: SOC2
@@ -994,25 +1003,36 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
 ```
 
 ```rego
-# OPA policy for compliance
-package terraform.compliance
+package compliance.s3
 
-# PCI-DSS: Require encryption for payment data
-deny[msg] {
-  resource := input.resource_changes[_]
-  resource.type == "aws_s3_bucket"
-  resource.change.after.tags.ComplianceScope == "pci"
-  not has_kms_encryption(resource)
-  msg := sprintf("PCI-scoped bucket %s must use KMS encryption", [resource.address])
+import future.keywords.in
+import future.keywords.if
+
+# A bucket has KMS encryption if a server_side_encryption_configuration is present
+# AND the configured SSE algorithm is "aws:kms".
+has_kms_encryption(resource) if {
+    some rule in resource.values.server_side_encryption_configuration[_].rule
+    rule.apply_server_side_encryption_by_default[_].sse_algorithm == "aws:kms"
 }
 
-# HIPAA: Require access logging
-deny[msg] {
-  resource := input.resource_changes[_]
-  resource.type == "aws_s3_bucket"
-  resource.change.after.tags.ComplianceScope == "hipaa"
-  not has_access_logging(resource)
-  msg := sprintf("HIPAA-scoped bucket %s must have access logging enabled", [resource.address])
+# A bucket has access logging if a logging block is present and target_bucket is set.
+has_access_logging(resource) if {
+    resource.values.logging[_].target_bucket != ""
+}
+
+# PCI/HIPAA non-compliance: S3 buckets without KMS encryption.
+deny[msg] if {
+    resource := input.resource_changes[_]
+    resource.type == "aws_s3_bucket"
+    not has_kms_encryption(resource)
+    msg := sprintf("S3 bucket %q lacks KMS encryption (PCI-DSS 3.4, HIPAA 164.312(a)(2)(iv))", [resource.address])
+}
+
+deny[msg] if {
+    resource := input.resource_changes[_]
+    resource.type == "aws_s3_bucket"
+    not has_access_logging(resource)
+    msg := sprintf("S3 bucket %q lacks access logging (PCI-DSS 10.2, HIPAA 164.312(b))", [resource.address])
 }
 ```
 
@@ -1039,7 +1059,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "pci" {
 
 **Why**: Compliance frameworks provide security requirements for regulated data. Automated enforcement prevents accidental violations that lead to audit findings, fines, and breaches. Tags enable policy engines to apply appropriate controls based on data sensitivity.
 
-**Refs**: PCI-DSS 3.2.1, HIPAA Security Rule, NIST 800-53 SA-15 (Development Process)
+**Refs**: PCI-DSS v4.0, HIPAA Security Rule, NIST 800-53 SA-15 (Development Process)
 
 ---
 
@@ -1114,7 +1134,7 @@ terraform {
 
 **Why**: Unpinned providers can introduce breaking changes or vulnerabilities. The lock file ensures reproducible builds and prevents supply chain attacks through compromised provider versions.
 
-**Refs**: CWE-1104 (Use of Unmaintained Third Party Components), NIST 800-53 SA-12 (Supply Chain Protection)
+**Refs**: CWE-1104 (Use of Unmaintained Third Party Components), NIST 800-53 SR-3 (Supply Chain Controls and Processes)
 
 ---
 
@@ -1236,11 +1256,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
+      - name: Trivy (replaces deprecated tfsec)
+        uses: aquasecurity/trivy-action@<SHA>  # update to current SHA before merge
+        with:
+          scan-type: config
+          hide-progress: false
+          exit-code: '1'
 
       - name: Checkov
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
         with:
           output_format: sarif
           output_file_path: results.sarif
