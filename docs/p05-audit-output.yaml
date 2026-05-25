@@ -68,3 +68,93 @@ audited_rules:
         appear reasonable based on the 2021 predecessor category, but are unverified against
         the 2025 RC1 mapping.
     issues_filed: []
+
+  - path: rules/_core/ai-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    notes: |
+      Audited all 10 rule sections across 5 categories (Data Security, Model Security,
+      Inference Security, LLM Security, Infrastructure Security, Monitoring).
+      Four distinct issues found; two are blocking, two are serious but secondary.
+
+      ISSUE 1 — Prevent Prompt Injection: denylist as primary Do mitigation (CRITICAL)
+        The _sanitize_input() method in the "Prevent Prompt Injection" Do example
+        implements a regex denylist (patterns_to_remove = ['ignore previous
+        instructions', 'you are now', ...]) as the primary injection defense.
+        OWASP LLM01:2025 explicitly de-emphasizes simple pattern matching in favor of
+        structural isolation (separate system/user roles in the message array),
+        semantic filters, privilege control, and human-in-the-loop for high-risk
+        actions. The denylist patterns shown are trivially bypassed by encoding,
+        paraphrasing, Unicode substitution, or multilingual injection. Presenting this
+        as a Do example teaches a false sense of security and directly contradicts the
+        current standard. The structural isolation pattern (using the messages array to
+        separate system prompt from user content, as the outer generate() method already
+        does) is the correct primary defense; the denylist should be removed or
+        demoted to a comment noting its severe limitations.
+        Fix required: remove _sanitize_input denylist; make structural role isolation
+        the named defense; add a note referencing OWASP LLM01:2025 recommendation for
+        semantic filtering and privilege reduction as the layered defense.
+
+      ISSUE 2 — Validate LLM Outputs: wrong OWASP category number (STANDARDS MISMATCH)
+        The Refs line cites "OWASP LLM02" for the output handling rule. In the OWASP
+        LLM Top 10 2025 taxonomy, LLM02:2025 is "Sensitive Information Disclosure."
+        Output handling (insufficient validation of LLM-generated outputs before
+        downstream use) maps to LLM05:2025 "Improper Output Handling." The file
+        appears to use the 2023 (v1.1) numbering where LLM02 was "Insecure Output
+        Handling." All OWASP LLM refs in the file omit the year qualifier (:2025),
+        making version ambiguity a file-wide issue.
+        Fix required: update "OWASP LLM02" to "OWASP LLM05:2025" in the Validate
+        LLM Outputs Refs line; add :2025 qualifier to all OWASP LLM refs in the file.
+
+      ISSUE 3 — Secure Model Artifacts: AML.T0000 is not a valid ATLAS technique (REF ERROR)
+        The Refs line cites "MITRE ATLAS AML.T0000" for the model theft / tampering
+        rule. AML.T0000 does not exist in the MITRE ATLAS technique catalog (as of
+        ATLAS v4, techniques begin at AML.T0006 "Active Scanning"). The intent appears
+        to be model theft / exfiltration. The correct ATLAS technique for unauthorized
+        model access / theft is AML.T0000 is likely a placeholder that was never
+        resolved. The nearest applicable techniques are AML.T0040 (ML Model Inference
+        API Access, covering extraction) and AML.T0035 (ML Artifact Collection, covering
+        direct model file theft). MITRE ATLAS live pages returned 404 during this audit,
+        so the exact current technique ID could not be confirmed from the live site;
+        this finding is based on training-set knowledge of the ATLAS v4 taxonomy.
+        Fix required: replace AML.T0000 with the verified ATLAS technique for model
+        artifact theft/collection (AML.T0035 or current equivalent); confirm against
+        the live ATLAS catalog before publishing.
+
+      ISSUE 4 — Validate Model Inputs: broken JPEG magic byte check (CODE BUG)
+        In the "Validate and Sanitize Model Inputs" Do example, the ImageInput validator
+        checks: if not v[:8] in [b'\x89PNG', b'\xff\xd8\xff']. The JPEG magic bytes
+        entry b'\xff\xd8\xff' is 3 bytes. v[:8] yields 8 bytes. A 3-byte bytes literal
+        is never equal to an 8-byte slice, so the JPEG branch of the allowlist never
+        matches. Every JPEG file will be rejected as having an invalid format, making
+        the validator both broken (rejects valid JPEG) and incomplete (fails to
+        demonstrate correct magic byte checking). The PNG entry b'\x89PNG' is also
+        only 4 bytes, not the correct 8-byte PNG signature (b'\x89PNG\r\n\x1a\n').
+        Fix required: use correct full magic byte sequences and match the slice length
+        to the signature length (e.g., check v[:4] == b'\x89PNG' OR v[:3] == b'\xff\xd8\xff').
+
+      Non-blocking observations (no status change):
+      - Rule "Protect Sensitive Training Data" Do example: the apply_differential_privacy()
+        method imports GaussianNB from diffprivlib but then calls dp_preprocessor.transform(),
+        where dp_preprocessor is never defined. This is an undefined-variable bug that
+        would raise NameError at runtime. The GaussianNB import is unused. The method
+        body as written cannot execute. Fix: instantiate dp_preprocessor from a
+        diffprivlib class (e.g., diffprivlib.models.GaussianNB) or use the pipeline
+        pattern; remove the orphaned import.
+      - Rule "Monitor for ML-Specific Attacks" Do example: _analyze_patterns() is called
+        but never defined in the shown code. This is a stub, not a logic error, but
+        it leaves the Do example non-runnable. Advisory: add a note that this is
+        illustrative or provide a minimal implementation.
+      - Rule "Isolate ML Inference Environments" Do example: binds Flask to
+        app.run(host='10.0.0.1', ...) using a hardcoded RFC 1918 address. Production
+        code should use an environment variable or 127.0.0.1; a hardcoded internal IP
+        is deployment-environment-specific and will silently fail on a different host.
+        Advisory only — does not affect security correctness of the example.
+      - MITRE ATLAS live pages (atlas.mitre.org) returned 404 for all technique URLs
+        tried during this audit. ATLAS technique name verification (AML.T0015,
+        AML.T0020, AML.T0024, AML.T0040, AML.T0043) is based on training-set knowledge
+        of the ATLAS v4 taxonomy and could not be independently confirmed from the live
+        site. Reviewer notes this limitation; recommend a follow-up verification pass
+        against the live ATLAS catalog when the site is accessible.
+    issues_filed: []
