@@ -680,7 +680,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/cicd/gitlab-ci/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -800,10 +800,18 @@ audited_rules:
         syntactically valid TOML but incomplete. Readers may assume affinity rules
         are configured when they are not. Advisory: either populate the affinity block
         with a practical example or remove the empty section.
+      Re-audited 2026-05-25 after P0.7 rewrite (commit 4c539d7): all 4 defects verified fixed.
+      ISSUE 1: grep -c "^  only:" returns 0 — all deprecated only/except syntax replaced with rules: blocks.
+      ISSUE 2: release: job at original lines 826-829 now uses only rules: with no mixed only: keyword.
+      ISSUE 3: grep "::add-mask::" returns no output — GitHub Actions syntax removed.
+      ISSUE 4: grep "SLSA Level 4" returns no output — replaced with "SLSA v1.1 Build L3".
+      Carry-over (non-blocking, pre-existed P0.7): SLSA Level 2 at line 972 and PS.3 description
+      "Maintain Provenance Data" at line 973 — these were not blocking defects in the original
+      gitlab-ci audit and are unchanged advisory items.
     issues_filed: []
 
   - path: rules/cicd/_core/cicd-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -947,10 +955,18 @@ audited_rules:
         Pipeline-Based Access Controls) or CICD-SEC-7 (Insecure System Configuration).
         These are the only two OWASP CI/CD Top 10 categories not addressed. Advisory
         for a future v2.1 addition — not a defect in the rules that exist.
+      Re-audited 2026-05-25 after P0.7 rewrite (commit 3bffdd0): all 5 defects verified fixed.
+      ISSUE 1: grep "SLSA Level 4" returns no output — all SLSA refs updated to v1.1 Build L1/L2/L3.
+      ISSUE 2: grep -n "PW.6" returns no output — citation removed entirely; PS.1 and PO.5 used instead.
+      ISSUE 3: grep -n "PS.3" at lines 413 and 503 now shows "Archive and Protect Each Software Release".
+      ISSUE 4: grep -n "PO.4" returns no output — replaced with RV.1.
+      ISSUE 5: grep "OWASP A06:2021" returns no output — updated to A06:2025.
+      COSIGN_EXPERIMENTAL: retained as a single deprecation comment ("The COSIGN_EXPERIMENTAL flag
+      from v1.x is deprecated") explaining the change — acceptable per audit spec.
     issues_filed: []
 
   - path: rules/cicd/github-actions/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -1086,4 +1102,17 @@ audited_rules:
       - CWE-1035 (line 1051): exists and is commonly cited for this rule type, but
         it is an OWASP-2017 category-mapping CWE rather than a base vulnerability
         CWE. More precise child CWEs could be used. Advisory only.
+      Re-audited 2026-05-25 after P0.7 rewrite (commit a9b6d25): all 5 defects verified fixed.
+      ISSUE 1: Dependency Review Do block — all 5 codeql/trivy action refs now use full SHA pins
+        (actions/dependency-review-action@9129d7d, codeql-action/*@3407610a, trivy-action@062f2592).
+      ISSUE 2: Environment Protection Do block — migration input now passed through MIGRATION_NAME
+        env var with case allowlist (up|down|status); no direct ${{ github.event.inputs.* }} in run:.
+      ISSUE 3: CodeQL job — strategy.matrix.language defined as ['javascript', 'python'];
+        matrix.language used consistently in both init and analyze steps.
+      ISSUE 4: grep "SLSA Level 4" returns no output — replaced with "SLSA Build L3: Hardened,
+        isolated build environment (SLSA v1.1 — Level 4 does not exist)".
+      ISSUE 5: NIST SSDF PW.9 description at line 695 now reads "Archive and Protect Each Software Release".
+      Carry-over (non-blocking advisory, pre-existed P0.7): SLSA Level 2/3 at lines 942-943
+      (Artifact Security Refs) — original audit stated "the numbers themselves are correct; advisory
+      to align descriptions." Not a blocking defect; unchanged.
     issues_filed: []
