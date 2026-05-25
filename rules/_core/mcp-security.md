@@ -562,8 +562,10 @@ class ToolDefinition(BaseModel):
     description: str
     method: str  # GET, POST, PUT, DELETE
     endpoint: str
-    destructive: bool
-    requires_confirmation: bool
+    # destructive MUST be declared before requires_confirmation so that
+    # values["destructive"] is populated when the cross-field validator fires.
+    destructive: bool = False
+    requires_confirmation: bool = False
     
     @validator('method')
     def validate_method(cls, v):
@@ -572,12 +574,17 @@ class ToolDefinition(BaseModel):
             raise ValueError(f'Invalid method: {v}')
         return v
     
-    @validator('destructive', 'requires_confirmation')
-    def validate_destructive_operations(cls, v, values):
-        # Enforce policy: destructive operations require confirmation
-        if values.get('destructive') and not values.get('requires_confirmation'):
+    @validator('requires_confirmation', always=True)
+    def _destructive_requires_confirmation(cls, v, values):
+        """Destructive tools MUST have requires_confirmation=True.
+
+        This validator runs only on the `requires_confirmation` field. By that
+        point, `values["destructive"]` is populated (Pydantic v1 builds `values`
+        in field declaration order), so the cross-field check is valid.
+        """
+        if values.get('destructive') and not v:
             raise ValueError(
-                'Destructive operations must require confirmation'
+                'destructive=True tools must also set requires_confirmation=True'
             )
         return v
     
@@ -737,6 +744,7 @@ npm install
 
 **Do**:
 ```python
+import os
 import subprocess
 import shlex
 import re
@@ -845,7 +853,7 @@ async def git_clone_tool(url: str, destination: str) -> dict:
 
 ---
 
-## MCP06:2025 - Prompt Injection via Contextual Payloads
+## MCP06:2025 - Intent Flow Subversion
 
 **Risk Level**: Critical
 **CWE Coverage**: CWE-74, CWE-94
@@ -973,7 +981,7 @@ class InsecureContextManager {
 
 **Why**: Prompt injection allows attackers to override system instructions, extract secrets from context, or manipulate model behavior through crafted payloads in external data.
 
-**Refs**: OWASP MCP06:2025, OWASP LLM01, CWE-74
+**Refs**: OWASP MCP06:2025, OWASP LLM01:2025, CWE-74
 
 ---
 
@@ -990,6 +998,7 @@ class InsecureContextManager {
 
 **Do**:
 ```python
+import os
 import ssl
 import jwt
 from datetime import datetime, timedelta
@@ -1225,6 +1234,7 @@ class InsecureLogging:
 
 **Do**:
 ```python
+import asyncio
 import requests
 from typing import List, Dict
 from dataclasses import dataclass
