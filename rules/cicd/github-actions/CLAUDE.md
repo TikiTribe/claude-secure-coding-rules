@@ -67,7 +67,7 @@ jobs:
 
 **Refs**:
 - CWE-829: Inclusion of Functionality from Untrusted Control Sphere
-- SLSA Level 4: Pinned Dependencies
+- SLSA Build L3: Hardened, isolated build environment (SLSA v1.1 — Level 4 does not exist)
 - OWASP CI/CD Top 10: CICD-SEC-3 Dependency Chain Abuse
 - GitHub Security Hardening: Using third-party actions
 
@@ -649,7 +649,20 @@ jobs:
       - name: Run migration
         env:
           DATABASE_URL: ${{ secrets.ADMIN_DATABASE_URL }}
-        run: ./migrate.sh ${{ github.event.inputs.migration }}
+          MIGRATION_NAME: ${{ github.event.inputs.migration }}
+        run: |
+          # Validate input against known-safe values before use.
+          # Direct interpolation of workflow_dispatch inputs into run: commands is
+          # shell injection — pass through an env var and validate here instead.
+          case "$MIGRATION_NAME" in
+            up|down|status)
+              ./migrate.sh "$MIGRATION_NAME"
+              ;;
+            *)
+              echo "Invalid migration name: $MIGRATION_NAME" >&2
+              exit 1
+              ;;
+          esac
 ```
 
 **Don't**: Deploy to production without approval gates.
@@ -679,7 +692,7 @@ jobs:
 **Refs**:
 - OWASP CI/CD Top 10: CICD-SEC-1 Insufficient Flow Control Mechanisms
 - SOC 2 CC8.1: Changes Are Authorized
-- NIST SSDF PW.9: Configure Build Processes
+- NIST SSDF PW.9: Archive and Protect Each Software Release
 - GitHub Docs: Using environments for deployment
 
 ---
@@ -990,20 +1003,33 @@ permissions:
 
 jobs:
   codeql:
+    name: CodeQL analysis
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    # Matrix runs one job per language so each SARIF upload carries a valid language label.
+    # Without strategy.matrix, matrix.language is empty-string and CodeQL finding routing breaks.
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript', 'python']  # Adjust to match your repo's languages
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        # SHA pinned — replace <SHA-PLACEHOLDER> with the current SHA before merge.
+        # Resolve via: gh api /repos/github/codeql-action/git/ref/tags/codeql-bundle-v3.27.0
+        uses: github/codeql-action/init@3407610a0753a755a7b5d83a3f4dfc0cbf81c7f5  # v3.27.0 — update SHA before merge
         with:
-          languages: javascript, python
+          languages: ${{ matrix.language }}
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@3407610a0753a755a7b5d83a3f4dfc0cbf81c7f5  # v3.27.0 — update SHA before merge
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@3407610a0753a755a7b5d83a3f4dfc0cbf81c7f5  # v3.27.0 — update SHA before merge
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -1013,7 +1039,9 @@ jobs:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.16.0
+        # SHA pinned — replace <SHA-PLACEHOLDER> with the current SHA before merge.
+        # Resolve via: gh api /repos/aquasecurity/trivy-action/git/ref/tags/0.16.0
+        uses: aquasecurity/trivy-action@062f2592684a31eb3aa050cc61e7ca1451cecd3d  # 0.16.0 — update SHA before merge
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -1022,7 +1050,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@3407610a0753a755a7b5d83a3f4dfc0cbf81c7f5  # v3.27.0 — update SHA before merge
         with:
           sarif_file: 'trivy-results.sarif'
 ```
