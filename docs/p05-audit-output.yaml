@@ -242,3 +242,98 @@ audited_rules:
         validation) it is less severe but still bypassable. Advisory: note the limitation.
       - signal.SIGALRM (line 91) is not available on Windows. Portability note only.
     issues_filed: []
+
+  - path: rules/_core/mcp-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    notes: |
+      Audited all 14 rule sections across 10 MCP categories plus 4 operational rules.
+      OWASP MCP Top 10:2025 IDs verified against live OWASP page (fetched during audit).
+      Five distinct blocking issues found; three are code bugs.
+
+      OWASP LLM 2023->2025 NUMBERING: PARTIAL — one instance found.
+        Line 976 cites "OWASP LLM01" without the :2025 qualifier. In 2025, LLM01:2025 is
+        "Prompt Injection," which IS the correct category for the MCP06 rule. The number is
+        right but the year qualifier is missing, consistent with the systemic pattern found
+        in all prior _core/ files. This is less severe than the wrong-number cases in
+        agent-security.md but still non-conformant.
+
+      ISSUE 1 — MCP05 Do example: missing 'import os' (CODE BUG / CRITICAL)
+        The SafeCommandExecutor Do block at lines 739-823 imports subprocess, shlex, re,
+        and typing.List. Methods _resolve_command_path() and _sanitize_argument() use
+        os.path.isfile(), os.access(), and os.path.abspath() — but 'import os' is absent
+        from the Do block. (The only 'import os' in the file, line 829, is inside the
+        VULNERABLE Don't block.) Running the Do example raises NameError: name 'os' is not
+        defined at the first call to _resolve_command_path(). The command executor, which
+        is the primary safe-execution control, fails immediately at runtime.
+        Fix required: add 'import os' to the Do block imports section.
+
+      ISSUE 2 — MCP07 Do example: missing 'import os' (CODE BUG)
+        The SecureMCPServer Do block at lines 992-1067 imports ssl, jwt, datetime,
+        timedelta, and Optional. The __init__ method immediately accesses
+        os.environ["JWT_SECRET"] — but 'import os' is not present. The server cannot
+        initialize; it raises NameError before any authentication logic runs.
+        Fix required: add 'import os' to the MCP07 Do block imports.
+
+      ISSUE 3 — MCP09 Do example: missing 'import asyncio' (CODE BUG)
+        The MCPGovernanceFramework Do block at lines 1227-1320 imports requests, List,
+        Dict, dataclass, and datetime. The _validate_security_baseline() method calls
+        await asyncio.gather(*checks) but 'import asyncio' is absent. This raises
+        NameError when any MCP server registration or shadow-server discovery is attempted.
+        Fix required: add 'import asyncio' to the MCP09 Do block imports.
+
+      ISSUE 4 — MCP03 Pydantic validator: broken cross-field check (CODE BUG / CRITICAL)
+        The ToolDefinition model at line 575 uses @validator('destructive',
+        'requires_confirmation') with the check:
+          if values.get('destructive') and not values.get('requires_confirmation'):
+        In Pydantic v1, @validator receives 'v' (the current field value) and 'values'
+        (all previously validated fields). When the validator runs for 'requires_confirmation',
+        'values' contains 'destructive' but NOT 'requires_confirmation' (that is 'v').
+        The check 'not values.get("requires_confirmation")' is always True (the key is
+        absent from values), so the validator raises ValueError whenever destructive=True
+        regardless of the actual value of requires_confirmation. A tool with
+        destructive=True AND requires_confirmation=True fails validation — the exact
+        configuration the Do example is meant to approve. The policy constraint is
+        inverted: it blocks safe tools and passes unsafe ones.
+        Fix required: change 'not values.get("requires_confirmation")' to 'not v' so the
+        check reads: if values.get('destructive') and not v: raise ValueError(...).
+        Additionally, note that Pydantic @validator is deprecated in v2 (released 2023);
+        production code in 2026 should use @field_validator.
+
+      ISSUE 5 — MCP06 section name does not match OWASP MCP06:2025 (CATEGORY MISMATCH)
+        The file section heading is "MCP06:2025 - Prompt Injection via Contextual Payloads"
+        but OWASP MCP06:2025 is officially named "Intent Flow Subversion" — defined as
+        malicious instructions embedded in context hijacking the intent flow to steer the
+        agent toward an attacker's objective. The file's content (sanitizing external data
+        in prompts, delimiting system instructions) actually covers what OWASP describes
+        as the MCP06 threat, but the section title uses a non-standard name. This creates
+        ambiguity for practitioners cross-referencing the standard.
+        Fix required: update section heading to "MCP06:2025 - Intent Flow Subversion" and
+        note in the rule's Why text that prompt injection is the primary attack vector for
+        intent flow subversion.
+
+      Non-blocking observations (no status change):
+      - Line 976 Refs: "OWASP LLM01" should be "OWASP LLM01:2025" for consistency. The
+        category is correct (Prompt Injection), only the year qualifier is missing.
+      - MCP07 cipher suite (line 1018): 'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM' includes
+        DHE+AESGCM. While less critical because ECDHE suites are listed first and preferred,
+        DHE without explicit group parameters can negotiate weak Diffie-Hellman. Recommend
+        removing DHE+AESGCM from the cipher string to remove any ambiguity.
+      - MCP07 JWT algorithm (lines 1036, 1186): uses HS256 (symmetric HMAC). In an mTLS
+        context where the client has already presented a certificate, RS256/ES256 (asymmetric)
+        is preferred for JWT because it does not require sharing the signing secret with
+        all verifying parties. HS256 with a shared secret is acceptable for single-server
+        scenarios but is a design gap in distributed mTLS deployments.
+      - Operational section (line 1864) Refs: "OWASP A05:2021" — the project targets
+        OWASP Top 10 2025 throughout; this should be updated to A05:2025
+        (Security Misconfiguration, same category) for version consistency.
+      - JSON-RPC injection: no rule explicitly covers JSON-RPC message injection (malformed
+        id/method/params fields designed to escape the JSON-RPC envelope). This is a gap for
+        a file dedicated to MCP security, since MCP transport uses JSON-RPC 2.0. Advisory:
+        add a rule or note under MCP05 for JSON-RPC argument boundary validation.
+      - Pydantic @validator syntax (MCP03, lines 568-592) is deprecated as of Pydantic v2
+        (2023). In 2026 this is a maintainability concern; future Pydantic v3 will remove it.
+        Advisory: migrate to @field_validator with mode='before'/'after' as appropriate.
+    issues_filed: []
