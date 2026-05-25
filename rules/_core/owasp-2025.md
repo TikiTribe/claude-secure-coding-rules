@@ -65,35 +65,47 @@ def get_user(user_id):
 
 **Do**:
 ```python
-from urllib.parse import urlparse
+import socket
 import ipaddress
+from urllib.parse import urlparse
+import requests
 
 ALLOWED_HOSTS = ['api.example.com', 'cdn.example.com']
 
-def validate_url(url):
+def _is_internal_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved
+
+def validate_url(url: str) -> str:
     parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only http/https schemes allowed")
+    host = parsed.hostname
+    if host is None:
+        raise ValueError("URL has no hostname")
+    if host not in ALLOWED_HOSTS:
+        raise ValueError(f"Host {host!r} is not in the allowlist")
 
-    # Check scheme
-    if parsed.scheme not in ['http', 'https']:
-        raise ValueError("Invalid scheme")
-
-    # Check against allowlist
-    if parsed.hostname not in ALLOWED_HOSTS:
-        raise ValueError("Host not allowed")
-
-    # Block internal IPs
+    # Resolve to IP — handles both FQDN and IP-literal hostnames uniformly.
+    # A separate try/except for the IP-literal case would swallow security-critical
+    # raises, so socket.getaddrinfo is the single resolution path for both cases.
     try:
-        ip = ipaddress.ip_address(parsed.hostname)
-        if ip.is_private or ip.is_loopback:
-            raise ValueError("Internal addresses blocked")
-    except ValueError:
-        pass  # hostname, not IP
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve host {host!r}: {exc}") from exc
+
+    for _family, _socktype, _proto, _canon, sockaddr in resolved:
+        ip_str = sockaddr[0]
+        ip_obj = ipaddress.ip_address(ip_str)
+        if _is_internal_ip(ip_obj):
+            raise ValueError(f"Host {host!r} resolves to internal IP {ip_str}; blocked")
 
     return url
 
-def fetch_external_resource(user_url):
+def fetch_external_resource(user_url: str) -> requests.Response:
     validated_url = validate_url(user_url)
-    return requests.get(validated_url, timeout=5)
+    # allow_redirects=False prevents an open-redirect at the allowed host
+    # from bouncing the request to an internal IP.
+    return requests.get(validated_url, timeout=5, allow_redirects=False)
 ```
 
 **Don't**:
@@ -103,7 +115,7 @@ def fetch_resource(url):
     return requests.get(url)
 ```
 
-**Why**: SSRF allows attackers to make requests to internal services, cloud metadata endpoints, or other protected resources.
+**Why**: SSRF allows attackers to make requests to internal services, cloud metadata endpoints, or other protected resources. The broken pattern of catching `ValueError` after an IP-literal private-IP check silently swallows the security raise; uniform DNS resolution via `socket.getaddrinfo` also defends against DNS-rebinding attacks.
 
 **Refs**: OWASP A01:2025, CWE-918, MITRE ATLAS AML.T0024
 
@@ -223,30 +235,58 @@ npm install some-package
 
 **Do**:
 ```python
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-import bcrypt
-import os
+# Primary recommendation: Argon2id via argon2-cffi (OWASP A04:2025 first choice)
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
-# Password hashing with bcrypt
-def hash_password(password: str) -> bytes:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))
+# Defaults follow OWASP A04:2025 guidance: time_cost=2, memory_cost=19MiB, parallelism=1
+_ph = PasswordHasher()
+
+def hash_password(password: str) -> str:
+    """Hash a password for storage. Returns an encoded Argon2id hash string."""
+    return _ph.hash(password)
+
+def verify_password(stored_hash: str, password: str) -> bool:
+    """Verify a password against a stored Argon2id hash. Returns False on any mismatch or malformed hash."""
+    try:
+        _ph.verify(stored_hash, password)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
+    return True
+
+
+# Legacy-acceptable: bcrypt (use only when adding Argon2id is genuinely blocked)
+import bcrypt
+
+def hash_password_bcrypt_legacy(password: str) -> bytes:
+    """Use only when Argon2id is not available. cost=12 is OWASP minimum for bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12))
+
 
 # Symmetric encryption with AES-256
+from cryptography.fernet import Fernet
+
 def encrypt_data(plaintext: bytes, key: bytes) -> bytes:
     f = Fernet(key)
     return f.encrypt(plaintext)
 
-# Key derivation
+
+# Key derivation for encryption keys (not password hashing): PBKDF2-HMAC-SHA-512
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
 def derive_key(password: str, salt: bytes) -> bytes:
+    """Derive an encryption key from a password.
+    Uses PBKDF2-HMAC-SHA-512 with the OWASP A04:2025 minimum 600,000 iterations.
+    SHA-512 is required here; SHA-256 does not meet the current OWASP guidance.
+    """
     kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
+        algorithm=hashes.SHA512(),
         length=32,
         salt=salt,
-        iterations=600000,
+        iterations=600_000,
     )
-    return kdf.derive(password.encode())
+    return kdf.derive(password.encode("utf-8"))
 ```
 
 **Don't**:
@@ -361,7 +401,7 @@ def login():
 
 **Why**: Security flaws in design are expensive to fix later. Building security in from the start is more effective than patching vulnerabilities.
 
-**Refs**: OWASP A06:2025, CWE-840, ISO/IEC 27001, NIST SSDF PW.1.1
+**Refs**: OWASP A06:2025, CWE-269, ISO/IEC 27001, NIST SSDF PW.1.1
 
 ---
 
@@ -377,6 +417,7 @@ def login():
 
 **Do**:
 ```python
+import time
 from flask import session
 import secrets
 
@@ -389,13 +430,25 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=1800,
 )
 
-# Regenerate session on login
+def rotate_session_after_login(user) -> None:
+    """Prevent session fixation by clearing the existing session and starting fresh.
+
+    Flask's built-in session is a signed cookie — there is no server-side session ID
+    to rotate. session.clear() discards all prior session data, and assigning new
+    keys produces a fresh signed cookie. For true server-side session ID rotation,
+    use flask-login's login_user() or a server-side session backend (Flask-Session
+    with Redis/database). Flask has no session.regenerate() method.
+    """
+    session.clear()
+    session["user_id"] = user.id
+    session["authenticated_at"] = time.time()
+    session.permanent = True
+
+# Prevent session fixation on login
 @app.route('/login', methods=['POST'])
 def login():
     if authenticate(request.form['username'], request.form['password']):
-        session.clear()  # Prevent session fixation
-        session['user_id'] = user.id
-        session.regenerate()  # New session ID
+        rotate_session_after_login(user)
         return redirect('/dashboard')
     return "Invalid credentials", 401
 ```
@@ -597,7 +650,7 @@ def handle_error(e):
 | A03 Supply Chain Failures | strict | CWE-829 | Integrity verification |
 | A04 Cryptographic Failures | strict | CWE-327, CWE-328 | Strong algorithms |
 | A05 Injection | strict | CWE-89, CWE-78, CWE-79 | Parameterized queries |
-| A06 Insecure Design | advisory | CWE-840 | Threat modeling |
+| A06 Insecure Design | advisory | CWE-269 | Threat modeling |
 | A07 Authentication Failures | strict | CWE-287, CWE-384 | Secure sessions |
 | A08 Integrity Failures | strict | CWE-502 | Signature verification |
 | A09 Logging Failures | warning | CWE-778 | Comprehensive logging |
