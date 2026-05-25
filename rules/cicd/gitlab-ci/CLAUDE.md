@@ -40,8 +40,8 @@ deploy_production:
     # Reference protected variables
     DATABASE_URL: $PROD_DATABASE_URL
     API_KEY: $PROD_API_KEY
-  only:
-    - main  # Protected branch
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Protected branch
 ```
 
 ```yaml
@@ -75,8 +75,8 @@ deploy_staging:
     DATABASE_URL: $STAGING_DATABASE_URL
   script:
     - ./deploy.sh staging
-  only:
-    - develop
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
 
 deploy_production:
   stage: deploy
@@ -87,9 +87,9 @@ deploy_production:
     DATABASE_URL: $PROD_DATABASE_URL
   script:
     - ./deploy.sh production
-  only:
-    - main
-  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
 ```
 
 **Don't**: Store secrets unprotected or visible in logs.
@@ -189,9 +189,9 @@ deploy_production:
     name: production
   script:
     - ./deploy.sh
-  only:
-    - main
-  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
 ```
 
 ```yaml
@@ -372,12 +372,17 @@ include:
     file: '/template.yml'
     # No ref specified - uses default branch
     # Content can change unexpectedly
+```
 
-# VULNERABLE: Public template without review
+```yaml
+# ADVISORY: Built-in GitLab templates
 include:
   - template: 'Auto-DevOps.gitlab-ci.yml'
-  # Built-in templates are generally safe but should be reviewed
-  # Understand what they do before including
+  # GitLab-maintained templates are hosted in the GitLab instance itself —
+  # they are not fetched from an untrusted external URL. However, Auto-DevOps
+  # enables many jobs by default (including deployment). Review what the
+  # template enables before including it in a production pipeline and disable
+  # any stages you do not need via DISABLE_* variables or overrides.
 ```
 
 **Why**: Included configurations execute with the same permissions as the including pipeline. Malicious includes can exfiltrate secrets, modify artifacts, or inject backdoors. Unpinned references can be modified without the including project's knowledge. Only trusted, versioned sources should be included.
@@ -429,9 +434,9 @@ deploy_production:
     # Secrets are automatically injected
     - echo "Deploying with Vault secrets"
     - ./deploy.sh
-  only:
-    - main
-  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
 ```
 
 ```hcl
@@ -492,8 +497,14 @@ deploy_with_vault:
     - export DATABASE_USER=$(echo $DATABASE_CREDS | jq -r .data.username)
     - export DATABASE_PASS=$(echo $DATABASE_CREDS | jq -r .data.password)
 
-    # Mask in logs
-    - echo "::add-mask::$DATABASE_PASS"
+    # WARNING: Values fetched from Vault at job-runtime cannot be auto-masked by
+    # GitLab. The "Mask variable" flag only applies to pre-configured CI/CD
+    # variables. If you fetch a secret from Vault inside a job, that secret will
+    # appear in logs unless you explicitly avoid echoing it.
+    # Best practice: pre-configure rotation-resistant credentials as masked
+    # GitLab variables (Settings > CI/CD > Variables, "Mask variable" enabled),
+    # or use GitLab's native Vault integration (id_tokens + vault: keyword)
+    # which handles masking automatically. Do NOT echo $DATABASE_PASS.
 
     # Use credentials
     - ./deploy.sh
@@ -620,7 +631,7 @@ deploy_staging:
 # API security testing
 api_security:
   stage: security
-  image: owasp/zap2docker-stable
+  image: zaproxy/zap-stable
   script:
     # OpenAPI/Swagger scanning
     - zap-api-scan.py -t https://staging.example.com/api/openapi.json -f openapi -r api-scan-report.html
@@ -758,7 +769,8 @@ verify_approvals:
 
 **Refs**:
 - OWASP CI/CD Top 10: CICD-SEC-1 Insufficient Flow Control Mechanisms
-- SLSA Level 4: Two-person Review
+- SLSA v1.1 Build L3: Hardened build platform (highest SLSA level as of v1.1)
+- NIST SSDF PO.5: Implement and Maintain Secure Environments for Software Development
 - SOC 2 CC8.1: Changes Are Authorized
 - GitLab Docs: Merge request approvals
 
@@ -824,9 +836,7 @@ release:
     - echo "Creating release for $CI_COMMIT_TAG"
     - ./create-release.sh
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
-  only:
-    - tags
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
 ```
 
 **Don't**: Leave production branches unprotected.
@@ -905,8 +915,8 @@ release:
     paths:
       - dist/
     expire_in: never  # Release artifacts kept indefinitely
-  only:
-    - tags
+  rules:
+    - if: '$CI_COMMIT_TAG'
 ```
 
 ```yaml
@@ -1012,8 +1022,8 @@ deploy_staging:
   script:
     # $DATABASE_URL is staging database
     - ./deploy.sh
-  only:
-    - develop
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
 
 deploy_production:
   stage: deploy
@@ -1025,9 +1035,9 @@ deploy_production:
   script:
     # $DATABASE_URL is production database
     - ./deploy.sh
-  only:
-    - main
-  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
 ```
 
 ```yaml
