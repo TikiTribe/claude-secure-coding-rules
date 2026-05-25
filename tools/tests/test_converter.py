@@ -56,3 +56,64 @@ def test_derive_skill_name(rule_path, expected_name):
     """Skill names follow the documented naming convention."""
     from tools.rule_to_skill_converter import derive_skill_name
     assert derive_skill_name(Path(rule_path)) == expected_name
+
+
+def test_strict_mode_requires_audit_entry(tmp_path):
+    """In strict mode, conversion refuses if the rule is not in the audit output."""
+    rule_file = tmp_path / "rules" / "languages" / "python" / "CLAUDE.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# Python rules\n")
+
+    audit = tmp_path / "audit.yaml"
+    audit.write_text("audited_rules: []\n")  # empty audit
+
+    with pytest.raises(ValueError, match="not in audit"):
+        convert_rule_file(rule_file, tmp_path / "out", strict=True, audit_path=audit)
+
+
+def test_strict_mode_passes_with_audit_entry(tmp_path):
+    """In strict mode, conversion succeeds if the rule is in the audit output."""
+    rule_file = tmp_path / "rules" / "languages" / "python" / "CLAUDE.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# Python rules\n")
+
+    audit = tmp_path / "audit.yaml"
+    audit.write_text(
+        "audited_rules:\n"
+        f"  - path: {rule_file.as_posix()}\n"
+        "    status: passed\n"
+        "    reviewed_by: rock-lambros\n"
+        "    reviewed_on: 2026-05-25\n"
+    )
+
+    skill_md = convert_rule_file(rule_file, tmp_path / "out", strict=True, audit_path=audit)
+    assert skill_md.exists()
+
+
+def test_strict_mode_refuses_failed_status(tmp_path):
+    """In strict mode, even an entry with status=failed is refused."""
+    rule_file = tmp_path / "rules" / "languages" / "python" / "CLAUDE.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# Python rules\n")
+
+    audit = tmp_path / "audit.yaml"
+    audit.write_text(
+        "audited_rules:\n"
+        f"  - path: {rule_file.as_posix()}\n"
+        "    status: failed\n"
+        "    reviewed_by: rock-lambros\n"
+        "    reviewed_on: 2026-05-25\n"
+    )
+
+    with pytest.raises(ValueError, match="not in audit"):
+        convert_rule_file(rule_file, tmp_path / "out", strict=True, audit_path=audit)
+
+
+def test_strict_mode_requires_audit_path(tmp_path):
+    """In strict mode without audit_path, raises an explicit error."""
+    rule_file = tmp_path / "rules" / "languages" / "python" / "CLAUDE.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# Python rules\n")
+
+    with pytest.raises(ValueError, match="strict mode requires audit_path"):
+        convert_rule_file(rule_file, tmp_path / "out", strict=True)

@@ -15,6 +15,7 @@ unaudited conversion (for the P0 scaffolding phase only).
 from __future__ import annotations
 
 import re
+import yaml
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -150,12 +151,46 @@ def parse_frontmatter(rule_text: str) -> dict:
     return {"title": title}
 
 
-def convert_rule_file(rule_path: Path, out_dir: Path, strict: bool = False) -> Path:
+def convert_rule_file(
+    rule_path: Path,
+    out_dir: Path,
+    strict: bool = False,
+    audit_path: Path | None = None,
+) -> Path:
     """Convert a v1 rule file to a v2 SKILL.md.
 
     Returns the path to the created SKILL.md.
-    Raises ValueError in strict mode if the rule is not in the audit output.
+
+    Args:
+        rule_path:   Path to the source v1 rule file.
+        out_dir:     Directory to write the output skill directory into.
+        strict:      When True, refuse to process rules not present in the
+                     audit output with status: passed.
+        audit_path:  Path to the P0.5 audit-output YAML file. Required when
+                     strict=True. The file must contain an ``audited_rules``
+                     sequence whose entries each carry:
+                       - path: <absolute posix path>
+                       - status: passed | failed | skipped
+                       - reviewed_by: <str>
+                       - reviewed_on: <YYYY-MM-DD>
+
+    Raises:
+        ValueError: In strict mode when audit_path is missing, or when the
+                    rule is absent from the audit or does not have
+                    status=passed.
     """
+    if strict:
+        if audit_path is None:
+            raise ValueError("strict mode requires audit_path")
+        audit = yaml.safe_load(audit_path.read_text()) or {}
+        audited = {entry["path"]: entry for entry in audit.get("audited_rules", [])}
+        entry = audited.get(rule_path.as_posix())
+        if entry is None or entry.get("status") != "passed":
+            raise ValueError(
+                f"rule {rule_path.as_posix()} not in audit (or status != passed)"
+                " — refusing under --strict"
+            )
+
     rule_text = rule_path.read_text()
     skill_name = derive_skill_name(rule_path)
     paths_glob = derive_paths_glob(skill_name)
