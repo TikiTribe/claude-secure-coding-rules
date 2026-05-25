@@ -42,8 +42,16 @@ def derive_skill_name(rule_path: Path) -> str:
     parts = rule_path.parts
     if "_core" in parts:
         stem = rule_path.stem.lower()
-        if stem == "owasp-2025":
-            return "applying-owasp-top-10"
+        SPECIAL_CORE_NAMES = {
+            "owasp-2025": "applying-owasp-top-10",
+            "ai-security": "applying-ai-ml-security",
+            "agent-security": "applying-agentic-ai-security",
+            "mcp-security": "applying-mcp-security",
+            "rag-security": "applying-rag-security",
+            "graph-database-security": "applying-graph-db-security",
+        }
+        if stem in SPECIAL_CORE_NAMES:
+            return SPECIAL_CORE_NAMES[stem]
         return f"applying-{stem.replace('-security', '')}-security"
     if "languages" in parts:
         idx = parts.index("languages")

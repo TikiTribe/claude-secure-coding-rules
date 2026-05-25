@@ -1,6 +1,5 @@
 """Tests for tools/rule_to_skill_converter.py."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -39,3 +38,21 @@ This file teaches Python-specific security patterns.
     assert content.startswith("---\n")
     assert "name: python-security" in content
     assert "paths:" in content
+
+
+@pytest.mark.parametrize("rule_path,expected_name", [
+    ("rules/languages/python/CLAUDE.md", "python-security"),
+    ("rules/languages/javascript/CLAUDE.md", "javascript-security"),
+    ("rules/backend/fastapi/CLAUDE.md", "fastapi-security"),
+    ("rules/frontend/react/CLAUDE.md", "react-security"),
+    ("rules/iac/terraform/CLAUDE.md", "terraform-security"),
+    ("rules/containers/docker/CLAUDE.md", "docker-security"),
+    ("rules/cicd/github-actions/CLAUDE.md", "github-actions-security"),
+    ("rules/_core/owasp-2025.md", "applying-owasp-top-10"),
+    ("rules/_core/mcp-security.md", "applying-mcp-security"),
+    ("rules/_core/ai-security.md", "applying-ai-ml-security"),
+])
+def test_derive_skill_name(rule_path, expected_name):
+    """Skill names follow the documented naming convention."""
+    from tools.rule_to_skill_converter import derive_skill_name
+    assert derive_skill_name(Path(rule_path)) == expected_name
