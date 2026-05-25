@@ -1116,3 +1116,141 @@ audited_rules:
       (Artifact Security Refs) — original audit stated "the numbers themselves are correct; advisory
       to align descriptions." Not a blocking defect; unchanged.
     issues_filed: []
+
+  - path: rules/iac/terraform/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    notes: |
+      Audited all 12 rules plus the Additional Best Practices section.
+      Two CRITICAL defects, one HIGH supply-chain defect, four WARNINGs, and two coverage
+      gaps identified.
+
+      ISSUE 1 — Rule 10 backend key: variable interpolation in backend config block (CRITICAL)
+        Line 1259: key = "${var.environment}/infrastructure/terraform.tfstate"
+        Terraform backend blocks explicitly prohibit variable references and expressions.
+        terraform init fails immediately with: "Variables not allowed; Variables may not be
+        used here." This is a broken Do example that cannot run. The correct pattern for
+        per-environment state isolation is either (a) use workspace_key_prefix with
+        terraform.workspace (already shown in the first Do block), or (b) use entirely
+        separate root module directories with hardcoded keys in each directory's backend
+        configuration, or (c) pass the key via -backend-config on the CLI.
+        Fix required: replace the interpolated key with a comment explaining that backend
+        keys must be literals and show the -backend-config flag pattern as an alternative.
+
+      ISSUE 2 — Rule 1 GCS backend: wrong attribute for CMEK (CRITICAL)
+        Line 123: encryption_key = "projects/my-project/locations/us/keyRings/terraform/cryptoKeys/state-key"
+        The code comment says "GCS with Customer-Managed Encryption Key (CMEK)" and the
+        Why text describes CMEK, but the attribute used is encryption_key. In the Terraform
+        GCS backend, encryption_key expects a 32-byte base64-encoded AES-256 Customer-Supplied
+        Encryption Key (CSEK), not a Cloud KMS key resource path. Supplying a KMS key path
+        as this value will fail authentication at runtime because Terraform passes it to GCS
+        as a raw CSEK header. The correct backend attribute for CMEK-backed GCS state is not
+        available as a direct backend argument; CMEK on the GCS bucket itself is configured
+        via google_storage_bucket.encryption.default_kms_key_name (already shown in the
+        bucket resource below). The backend block encryption_key field should either be
+        removed (if relying on bucket-level CMEK) or replaced with a genuine base64 CSEK
+        with an appropriate comment distinguishing CSEK from CMEK.
+        Fix required: remove encryption_key from the backend block or replace it with a
+        genuine CSEK example; add an explanatory comment clarifying that bucket-level CMEK
+        is configured on the google_storage_bucket resource, not in the backend block.
+
+      ISSUE 3 — Rule 12: checkov-action pinned to @master branch (HIGH — supply chain risk)
+        Lines 1454, 1545, 1551: uses: bridgecrewio/checkov-action@master
+        Pinning a GitHub Action to a mutable branch reference (@master) means any push to
+        that branch is immediately trusted by CI without review. This directly contradicts
+        the supply chain guidance in Rule 3 (Provider Version Pinning) and Rule 4 (Module
+        Source Validation) which prohibit branch references. The action should be pinned to
+        a specific version tag (e.g., @v12) or, for maximum supply-chain hardening, a full
+        commit SHA.
+        Fix required: replace @master with a pinned version tag (minimum) or full SHA pin.
+
+      ISSUE 4 — Rule 1 S3 backend: deprecated acl= argument (WARNING)
+        Line 26: acl = "private"
+        The acl argument was removed from the Terraform S3 backend in Terraform 1.4.0.
+        The file requires Terraform >= 1.5.0 (line 399), making this argument invalid in
+        any configuration that follows the version requirement in Rule 3. Running
+        terraform init with this backend block will emit a warning (and in some Terraform
+        versions, an error). The correct way to enforce private access on the state bucket
+        is via the aws_s3_bucket_public_access_block resource (already present on lines
+        65-72), not the backend acl argument.
+        Fix required: remove acl = "private" from the S3 backend block; add a comment
+        pointing to the aws_s3_bucket_public_access_block resource as the correct control.
+
+      ISSUE 5 — Rule 9: timestamp() in final_snapshot_identifier causes perpetual plan diffs (WARNING)
+        Line 1097: final_snapshot_identifier = "production-database-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+        The timestamp() function is evaluated at plan time, not apply time, and produces a
+        different value on every terraform plan run. This means terraform plan will always
+        show a change to final_snapshot_identifier even when nothing else has changed,
+        creating alert fatigue and undermining the plan-review discipline described in
+        Rule 11. The correct pattern is to use a static suffix (e.g., the environment name
+        or a Terraform variable) or to accept the identifier as a variable input when a
+        destroy is explicitly intended.
+        Fix required: replace timestamp() with a static value or variable; add a comment
+        explaining why dynamic identifiers should not be used in static resource attributes.
+
+      ISSUE 6 — Rule 12: tfsec-action is archived (WARNING)
+        Line 1447: uses: aquasecurity/tfsec-action@v1.0.0
+        The aquasecurity/tfsec-action GitHub Action repository was archived in 2023.
+        Aqua Security consolidated scanning into trivy (aquasecurity/trivy-action), which
+        subsumes tfsec's Terraform checks. New CI pipelines that follow the Do example
+        will pin to an unmaintained action with no future security updates.
+        Fix required: replace tfsec-action with trivy-action configured for Terraform
+        scanning (--scanners misconfig, --iac-types terraform).
+
+      ISSUE 7 — Rule 3: ~> 2.24 missing clarifying comment (WARNING)
+        Line 416: version = "~> 2.24"
+        The adjacent ~> 5.31.0 example correctly comments "Allow patch updates only."
+        However, ~> X.Y (two-component form) has different semantics: it allows minor
+        AND patch updates (>= 2.24.0, < 3.0.0), not just patch updates. The missing
+        comment implies both forms behave identically, which will mislead practitioners
+        into believing they have tighter pinning than they do.
+        Fix required: add "# Allow minor and patch updates (>= 2.24.0, < 3.0.0)" comment
+        to make the semantic difference between ~> X.Y and ~> X.Y.Z explicit.
+
+      ISSUE 8 — Rule 10: $Latest in launch_template version (WARNING)
+        Line 1249: version = "$Latest"
+        Using $Latest in a launch template reference means the ASG silently picks up any
+        new launch template version, including ones pushed by an attacker with EC2 write
+        access. This contradicts the rule's own intent of environment isolation and
+        controlled change. The Terraform resource also owns the launch template, so the
+        latest numeric version is available as aws_launch_template.app.latest_version.
+        Fix required: replace "$Latest" with aws_launch_template.app.latest_version and
+        add a comment explaining why $Latest is a security anti-pattern in IaC.
+
+      COVERAGE GAP 1 — No Sentinel policy rule (COVERAGE GAP)
+        The task specification calls out HashiCorp Sentinel policy patterns as a required
+        coverage area. The file contains no Sentinel examples, no rego/Sentinel policy
+        block, and no reference to OPA (Open Policy Agent) as an alternative. Teams using
+        Terraform Cloud or Terraform Enterprise rely on Sentinel (or OPA via the tfplan/v2
+        import) for pre-apply policy gates, blast-radius limits, and resource allow-lists.
+        Recommendation: add Rule 13 covering Sentinel/OPA policy patterns with examples of
+        resource-type restrictions, required-tag enforcement, and CIDR allow-listing.
+
+      COVERAGE GAP 2 — IAM for the Terraform service account not explicitly addressed (COVERAGE GAP)
+        Rule 7 covers IAM for resources provisioned by Terraform (application IAM roles and
+        policies). Neither Rule 7 nor any other rule addresses the IAM policy attached to
+        the Terraform execution identity itself: what permissions the CI runner or human
+        operator needs to run terraform plan and terraform apply, and how to scope that
+        down using permission boundaries or SCPs. This distinction matters because the
+        Terraform role has broad state-bucket and provisioning rights that must be
+        independently hardened.
+        Recommendation: add explicit guidance for the Terraform service account IAM scope
+        with a worked example that separates plan-only permissions from apply permissions,
+        and uses a permission boundary to cap the blast radius.
+
+      Non-blocking observations:
+      - Rule 5 output "database_connection_string" embeds the full connection string
+        (including password) as a sensitive output. While marking it sensitive = true is
+        correct, the Why section does not warn that the value still exists in plaintext in
+        the state file even though it is masked in CLI output. A comment noting this
+        limitation would improve practitioner understanding.
+      - Rule 12 pre-commit rev v1.83.5 (line 1503) is significantly behind the current
+        v1.96+ release series. Not a security defect but recommend updating to avoid
+        using hooks with known issues that were fixed in later versions.
+      - Rule 2 Don't example shows real-looking AWS access key format (AKIAIOSFODNN7EXAMPLE)
+        and secret key pattern. While these are the canonical AWS fake credential examples
+        from their own documentation, some secret scanning tools (gitleaks) will still
+        flag them as potential credentials. This is acceptable for educational material
+        but worth noting.
+    issues_filed: []
