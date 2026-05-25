@@ -112,7 +112,7 @@ deploy:
 - CWE-798: Use of Hard-coded Credentials
 - CWE-259: Use of Hard-coded Password
 - OWASP CI/CD Top 10: CICD-SEC-1 Insufficient Flow Control Mechanisms
-- NIST SSDF PW.6: Configure the Compilation, Interpreter, and Build Processes to Improve Executable Security
+- NIST SSDF PS.1: Protect All Forms of Code from Unauthorized Access and Tampering
 
 ---
 
@@ -200,7 +200,7 @@ jobs:
 **Refs**:
 - CWE-798: Use of Hard-coded Credentials
 - NIST SP 800-63B: Digital Identity Guidelines
-- SLSA Level 3: Hermetic, Reproducible
+- SLSA v1.1 Build L3: Hardened build platform; provenance is non-forgeable
 - OWASP CI/CD Top 10: CICD-SEC-2 Inadequate Identity and Access Management
 
 ---
@@ -309,7 +309,7 @@ deploy:
 
 **Refs**:
 - CWE-94: Improper Control of Generation of Code ('Code Injection')
-- SLSA Level 2: Hosted, Build Service
+- SLSA v1.1 Build L2: Builds run on a hosted build platform that generates and signs provenance
 - OWASP CI/CD Top 10: CICD-SEC-4 Poisoned Pipeline Execution (PPE)
 - NIST SSDF PO.3: Implement Supporting Toolchains
 
@@ -351,9 +351,9 @@ jobs:
 
       - name: Sign container image
         run: |
+          # As of cosign v2.0+ (Oct 2023), keyless signing with sigstore is the default — no env var needed.
+          # The COSIGN_EXPERIMENTAL flag from v1.x is deprecated.
           cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.sha }}
-        env:
-          COSIGN_EXPERIMENTAL: "true"
 ```
 
 ```yaml
@@ -408,9 +408,9 @@ deploy:
 
 **Refs**:
 - CWE-494: Download of Code Without Integrity Check
-- SLSA Level 2: Signed Provenance
-- SLSA Level 3: Non-falsifiable Provenance
-- NIST SSDF PS.3: Maintain Provenance Data for All Components
+- SLSA v1.1 Build L2: Builds run on a hosted build platform that generates and signs provenance
+- SLSA v1.1 Build L3: Hardened build platform; provenance is non-forgeable
+- NIST SSDF PS.3: Archive and Protect Each Software Release
 
 ---
 
@@ -498,9 +498,9 @@ build:
 
 **Refs**:
 - NTIA Minimum Elements for SBOM
-- SLSA Level 1: Documentation
+- SLSA v1.1 Build L1: Build process is documented and produces provenance
 - Executive Order 14028: Improving the Nation's Cybersecurity
-- NIST SSDF PS.3: Maintain Provenance Data for All Components
+- NIST SSDF PS.3: Archive and Protect Each Software Release
 
 ---
 
@@ -596,9 +596,9 @@ build:
 **Why**: Provenance attestations provide cryptographic proof of how, when, and where an artifact was built. This enables consumers to verify artifacts were built from trusted source code using trusted build systems, preventing supply chain attacks where malicious artifacts are injected.
 
 **Refs**:
-- SLSA Level 1: Provenance Exists
-- SLSA Level 2: Hosted Build, Signed Provenance
-- SLSA Level 3: Hardened Builds
+- SLSA v1.1 Build L1: Build process is documented and produces provenance
+- SLSA v1.1 Build L2: Builds run on a hosted build platform that generates and signs provenance
+- SLSA v1.1 Build L3: Hardened build platform; provenance is non-forgeable
 - in-toto Attestation Framework
 
 ---
@@ -685,7 +685,7 @@ jobs:
 
 **Refs**:
 - CWE-829: Inclusion of Functionality from Untrusted Control Sphere
-- SLSA Level 3: Dependencies Complete
+- SLSA v1.1 Build L3: Hardened build platform; provenance is non-forgeable
 - OWASP CI/CD Top 10: CICD-SEC-3 Dependency Chain Abuse
 - NIST SSDF PW.4: Review and Analyze Third-Party Components
 
@@ -785,7 +785,7 @@ security_scan:
 
 **Refs**:
 - CWE-1035: Using Components with Known Vulnerabilities
-- OWASP A06:2021: Vulnerable and Outdated Components
+- OWASP A06:2025: Vulnerable and Outdated Components
 - OWASP CI/CD Top 10: CICD-SEC-3 Dependency Chain Abuse
 - NIST SSDF PW.4: Review and Analyze Third-Party Components
 
@@ -968,9 +968,9 @@ build:
 
 **Refs**:
 - CWE-778: Insufficient Logging
-- OWASP CI/CD Top 10: CICD-SEC-9 Improper Artifact Integrity Validation
+- OWASP CI/CD Top 10: CICD-SEC-10 Insufficient Logging and Visibility
 - SOC 2 Type II: CC7.2 System Operations
-- NIST SSDF PO.4: Implement Audit and Response Mechanisms
+- NIST SSDF RV.2: Assess, Prioritize, and Remediate Vulnerabilities
 
 ---
 
@@ -1731,7 +1731,7 @@ kubernetes/ @devops-team @security-team
 **Refs**:
 - OWASP CI/CD Top 10: CICD-SEC-1 Insufficient Flow Control Mechanisms
 - NIST SSDF PW.7: Review Software to Identify Vulnerabilities
-- SLSA Level 4: Two-party Review
+- SLSA v1.1 Build L3: Hardened build platform; provenance is non-forgeable
 - SOC 2 CC8.1: Change Management
 
 ---
@@ -1834,7 +1834,7 @@ groups:
 
 **Refs**:
 - CWE-778: Insufficient Logging
-- OWASP CI/CD Top 10: CICD-SEC-9 Improper Artifact Integrity Validation
+- OWASP CI/CD Top 10: CICD-SEC-10 Insufficient Logging and Visibility
 - NIST SSDF RV.1: Identify and Confirm Vulnerabilities
 - SOC 2 CC7.2: System Monitoring
 
