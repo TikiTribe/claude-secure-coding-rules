@@ -17,6 +17,10 @@ dev = [
     "pytest-mock==3.14.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tools/tests", "tests/structural", "tests/semantic", "tests/coverage"]
 pythonpath = ["."]
