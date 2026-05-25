@@ -465,3 +465,149 @@ audited_rules:
         fail for the wrong reason. Advisory: make the Don't use httpx.Client().post()
         without async, or note that it is intentionally broken.
     issues_filed: []
+
+  - path: rules/_core/graph-database-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Use Parameterized Cypher Queries (Neo4j)
+      - Use Parameterized Gremlin Queries (Neptune)
+      - Use Parameterized AQL Queries (ArangoDB)
+      - Restrict APOC Procedures
+      - Implement Graph Traversal Controls
+      - Control Graph Algorithm Execution
+      - Implement Tenant Isolation in Graph Databases
+      - Secure Graph Data Export and Import
+      - Implement Graph Database Audit Logging
+    notes: |
+      Audited all 9 rule sections across 7 categories. Five distinct issues found; four
+      are blocking. No OWASP LLM 2023->2025 numbering problem in this file — it uses
+      OWASP Top 10 (web application) refs (A01, A03, A08, A09), not the LLM taxonomy.
+      Those refs use correct 2025 qualifiers throughout. MITRE ATLAS is not cited here.
+
+      ISSUE 1 — Cypher rule Do example: label parameterization is invalid Cypher (CODE BUG / CRITICAL)
+        Line 33: the Do example issues MATCH (n:$label {name: $name}) with label=$entity_type
+        in the parameter map. Cypher does not support parameterized node labels — parameters
+        can only bind property values, not structural elements like label names or relationship
+        types. session.run() with label as a parameter will raise a Neo4j ClientError:
+        "SyntaxError: Invalid input '$': expected an identifier" when it encounters :$label
+        in the query string. The comment on line 36 ("# Note: labels need special handling")
+        acknowledges the issue but the provided code still attempts the invalid syntax and
+        provides no working alternative. The actual secure pattern requires validating the
+        label against a whitelist and then using string formatting (e.g., f"MATCH (n:{label}
+        {{name: $name}})" after whitelist check) — the Do example neither shows this pattern
+        nor uses it. A developer copying this example will get a runtime error every time.
+        Fix required: replace the invalid :$label with a whitelist-validated label interpolated
+        after validation, e.g.:
+          ALLOWED_LABELS = {"Person", "Concept", "Document"}
+          if entity_type not in ALLOWED_LABELS:
+              raise ValueError(...)
+          result = session.run(
+              f"MATCH (n:{entity_type} {{name: $name}}) RETURN n.name, n.embedding, n.content",
+              name=entity_name
+          )
+
+      ISSUE 2 — Graph Traversal Controls Do example: relationship types injected via f-string (CODE BUG / CRITICAL)
+        Lines 453-462: SecureGraphTraversal.traverse() builds the relationship filter with:
+          rel_types = "|".join(policy.allowed_relationships)
+          rel_filter = f":{rel_types}"
+        and then injects rel_filter directly into the Cypher string:
+          f"MATCH path = (start {{id: $start_id}})-[r{rel_filter}*1..$depth]-(end)"
+        The allowed_relationships set in TraversalPolicy has a default of None, but the code
+        never validates the contents of the set against a server-side whitelist of permitted
+        relationship type names. If allowed_relationships is populated from external input
+        (e.g., a user-supplied API request for which relationships to include), the f-string
+        injection opens a Cypher structural injection path. An attacker supplying a relationship
+        value like "RELATES_TO|*" or "X]->(sensitive) MATCH (s" would alter the query structure.
+        The depth and limit parameters are correctly parameterized, making this inconsistency
+        worse: the example teaches mixed-mode safety that developers will not reliably apply.
+        Fix required: add a server-side ALLOWED_RELATIONSHIPS whitelist and validate every
+        element of policy.allowed_relationships against it before constructing rel_filter;
+        document that label and relationship names can never be parameterized in Cypher and
+        must always be whitelisted before interpolation.
+
+      ISSUE 3 — Export/Import _import_data: label and relationship type injected without validation (CODE BUG / CRITICAL)
+        Lines 930-952: SecureGraphExport._import_data() imports nodes using:
+          labels = ":".join(node["labels"])
+          session.run(f"CREATE (n:{labels}) SET n = $props", ...)
+        and imports relationships using:
+          session.run(f"CREATE (s)-[r:{rel['type']}]->(e) SET r = $props", ...)
+        Both labels (from node["labels"] in the import file) and rel['type'] (from the import
+        file) are injected directly into Cypher query strings. Even though the import package
+        is encrypted and integrity-checked, the import file was originally produced by the
+        same export routine which accepts externally-sourced graph data. A malicious node label
+        in the export file such as "Foo) WITH 1 AS x CALL apoc.cypher.run..." would execute
+        arbitrary Cypher during import. This structural injection bug exists in the "Do" example
+        — the code that is supposed to illustrate safe practice.
+        Fix required: validate node["labels"] entries and rel['type'] against an allowed-label
+        and allowed-relationship-type whitelist before constructing the CREATE query, e.g.:
+          ALLOWED_IMPORT_LABELS = {"Entity", "Concept", "Document"}
+          for label in node["labels"]:
+              if label not in ALLOWED_IMPORT_LABELS:
+                  raise SecurityError(f"Disallowed label in import: {label}")
+
+      ISSUE 4 — Multiple undefined exception classes across five rule blocks (CODE BUG)
+        The following custom exception classes are raised in Do examples but never defined
+        or imported anywhere in the file:
+          SecurityError — raised in SecureAPOCUsage.use_apoc_procedure() (line 368),
+            EncryptedPropertyHandler.encrypt_property() (line 764),
+            EncryptedPropertyHandler.decrypt_property() (line 773),
+            SecureGraphExport.import_graph() (lines 904, 910)
+          ResourceError — raised in SecureGraphAlgorithms.run_node2vec() (line 562)
+        Both are undefined Python names. Any code path that triggers these raises
+        NameError rather than the intended exception. In SecureGraphAlgorithms, the
+        ResourceError guard is the only control preventing runaway algorithm execution
+        on oversized graphs — a NameError at that point leaves the execution unchecked.
+        Fix required: add class definitions (e.g., class SecurityError(Exception): pass,
+        class ResourceError(Exception): pass) at the top of each block that uses them,
+        or import them from a shared module; same file-wide pattern seen in rag-security.md.
+
+      ISSUE 5 — Neptune Gremlin semantic_search: fabricated Gremlin predicate (CODE BUG / CRITICAL)
+        Lines 165-172: the semantic_search() method submits a Gremlin traversal that uses:
+          .where(__.values('embedding').is(P.within(embedding).by(similarity)))
+        P.within() in TinkerPop/Gremlin accepts a collection of discrete values for
+        membership testing — it is not a vector similarity function. Calling
+        P.within(embedding).by(similarity) is not valid Gremlin syntax; P predicates do
+        not have a .by() modulator. This traversal will raise a GremlinServerError
+        ("Could not parse the traversal") in all standard Gremlin-compatible engines
+        including Amazon Neptune. Neptune Analytics (the graph DB with vector search
+        support) uses openCypher vector functions or the Neptune ML API — not this
+        fabricated Gremlin predicate. The semantic_search Do example has never worked
+        and cannot be adapted into a working form without replacing the traversal logic.
+        Fix required: replace with a valid Neptune vector search approach, e.g. using
+        the Neptune Analytics openCypher VECTOR_SIMILARITY() function or the Gremlin
+        withSideEffect pattern for k-NN, and verify the syntax compiles against the
+        Neptune or Memgraph Gremlin server before publishing.
+
+      Non-blocking observations (no status change):
+      - APOC Procedure restriction rule: the whitelist in ALLOWED_PROCEDURES contains
+        'apoc.convert.toJson', 'apoc.text.clean', etc. but the allowlist in neo4j.conf
+        (line 348) only covers apoc.coll.*, apoc.convert.*, apoc.text.*, and
+        apoc.cypher.runFirstColumn. The Python-level and conf-level allowlists should
+        agree; apoc.cypher.runFirstColumn in the conf allows dynamic Cypher via a
+        first-column result — this is a meaningful expansion of trust that deserves
+        explicit justification in the Why text.
+      - CWE-200 (Information Exposure) cited in Graph Algorithm Security (line 664)
+        and Quick Reference (line 1207): CWE-200 is the top-level parent; NVD and
+        MITRE now prefer child nodes (CWE-359 for personally identifiable information,
+        CWE-497 for system data exposure). Not blocking but the child CWE is more
+        precise.
+      - MultiTenantGraphClient.traverse_within_tenant() uses WHERE ALL(node IN nodes(path)
+        WHERE node.tenant_id = $tenant_id) which enforces tenant boundary in the path.
+        However, the MATCH clause still allows traversal start nodes to be found
+        from any database (the session does not use the tenant-scoped database).
+        The dual-layer approach (per-tenant DB + tenant_id property filter) is
+        correct only if both layers are active; the example uses only property
+        filtering in this method while the database isolation is shown in a
+        separate method. A code reviewer might incorrectly infer property-only
+        filtering is sufficient. Advisory: add a comment noting that property-
+        based filtering alone is insufficient and must be combined with database-
+        level isolation.
+      - Audit logging rule uses hashlib.md5() for query_id generation (line 1113).
+        MD5 is acceptable for non-cryptographic ID generation but the use of
+        hashlib.md5() alongside time.time() (floating-point, low entropy) produces
+        weak uniqueness. Use uuid.uuid4() for collision-resistant audit IDs.
+        Advisory only — does not affect security of the logged data itself.
+    issues_filed: []
