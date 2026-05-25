@@ -9,6 +9,39 @@ Security rules for graph databases used in RAG knowledge graphs, covering Neo4j,
 
 ---
 
+## Common Exception Classes
+
+All Do examples in this file assume the following exception hierarchy is defined in your application's `graph_db.exceptions` module.
+
+```python
+# graph_db/exceptions.py
+"""Custom exception hierarchy for graph database security guards."""
+
+
+class GraphDBSecurityError(Exception):
+    """Base class for all graph DB security exceptions."""
+
+
+class SecurityError(GraphDBSecurityError):
+    """Generic security violation (default fallback)."""
+
+
+class ResourceError(GraphDBSecurityError):
+    """Operation exceeded a resource limit (graph size, depth, memory, time)."""
+
+
+class TraversalDepthError(GraphDBSecurityError):
+    """Traversal exceeded the configured maximum depth."""
+
+
+class AuthorizationError(GraphDBSecurityError):
+    """Caller is not authorized to read/write the requested graph subset."""
+```
+
+In each Do example below, add `from graph_db.exceptions import SecurityError, ...` at the top of the code block (importing only what that example uses).
+
+---
+
 ## Query Injection Prevention
 
 ### Rule: Use Parameterized Cypher Queries (Neo4j)
@@ -21,21 +54,38 @@ Security rules for graph databases used in RAG knowledge graphs, covering Neo4j,
 ```python
 from neo4j import GraphDatabase
 
+# Whitelist of node labels the application is allowed to query.
+# Cypher does not support label parameterization, so we validate against
+# this allowlist and f-string substitute only after validation.
+_ALLOWED_NODE_LABELS = frozenset({
+    "Person", "Organization", "Document", "Project",
+    "Entity", "Concept",
+    # Add labels your schema actually uses. Anything not in this set is rejected.
+})
+
+
 class SecureNeo4jClient:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def find_entity(self, entity_name: str, entity_type: str):
-        """Secure parameterized query for RAG entity lookup."""
-        with self.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (n:$label {name: $name})
-                RETURN n.name AS name, n.embedding AS embedding, n.content AS content
-                """,
-                label=entity_type,  # Note: labels need special handling
-                name=entity_name
+        """Find a node by label and name. Label is whitelist-validated to prevent injection.
+
+        Cypher's parameter system does not cover node labels (or relationship types
+        or property names) — only property *values*. To safely use a runtime label,
+        validate it against an application-controlled allowlist and only then
+        substitute it into the query string.
+        """
+        if entity_type not in _ALLOWED_NODE_LABELS:
+            raise ValueError(
+                f"Label {entity_type!r} is not in the allowlist. "
+                f"Allowed labels: {sorted(_ALLOWED_NODE_LABELS)}"
             )
+
+        # Label is now safe to substitute. Property value remains parameterized.
+        query = f"MATCH (n:{entity_type} {{name: $name}}) RETURN n.name AS name, n.embedding AS embedding, n.content AS content"
+        with self.driver.session() as session:
+            result = session.run(query, name=entity_name)
             return [record.data() for record in result]
 
     def find_related_concepts(self, concept_id: str, max_depth: int = 3):
@@ -157,29 +207,36 @@ class SecureNeptuneClient:
         result = self.client.submit(query, bindings=bindings)
         return result.all().result()
 
-    def semantic_search(self, embedding: list, threshold: float = 0.8):
-        """Secure vector similarity search in Neptune."""
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("Threshold must be between 0 and 1")
+    def semantic_search(
+        self,
+        vector_store,  # external vector store with .search(embedding, top_k) -> list[node_id]
+        query_embedding: list,
+        top_k: int = 10,
+    ) -> list:
+        """Perform semantic search on a Neptune graph.
 
-        query = """
-            g.V().has('embedding')
-             .where(__.values('embedding')
-                     .is(P.within(embedding).by(similarity)))
-             .order().by('score', desc)
-             .limit(top_k)
-             .project('content', 'source', 'score')
-               .by('content')
-               .by('source')
-               .by('score')
+        Gremlin/TinkerPop does NOT have a vector-similarity predicate. The portable
+        pattern is: query an external vector store (Pinecone, OpenSearch, etc.) to
+        get the top-k node IDs by embedding similarity, then traverse those IDs in
+        Gremlin to fetch the actual graph nodes and any required context.
+
+        For Neptune Analytics specifically, see neptune.algo.vector.topKByNode —
+        available only on the Analytics endpoint, not on standard Neptune.
         """
-        bindings = {
-            'embedding': embedding,
-            'similarity': threshold,
-            'top_k': 10
-        }
+        if top_k < 1 or top_k > 100:
+            raise ValueError("top_k must be between 1 and 100")
 
-        return self.client.submit(query, bindings=bindings).all().result()
+        # Step 1: external vector store returns the top-k node IDs by embedding similarity.
+        candidate_ids = vector_store.search(query_embedding, top_k=top_k)
+
+        if not candidate_ids:
+            return []
+
+        # Step 2: Gremlin traversal fetches the actual nodes by ID.
+        # Note: parameter binding for the ID list, NOT f-string injection.
+        query = "g.V(node_ids).valueMap(true).fold()"
+        result = self.client.submit(query, {"node_ids": candidate_ids}).all().result()
+        return result[0] if result else []
 ```
 
 **Don't**:
@@ -428,6 +485,17 @@ def fetch_external_data(url):
 from dataclasses import dataclass
 from typing import Set
 
+# Server-side allowlist of relationship types. Even if the policy specifies
+# additional types, the server refuses unknown ones — a poisoned policy cannot
+# smuggle arbitrary Cypher fragments into the query.
+_ALLOWED_RELATIONSHIP_TYPES = frozenset({
+    "KNOWS", "WORKS_AT", "OWNS", "PARENT_OF", "CHILD_OF",
+    "MEMBER_OF", "AUTHORED", "LOCATED_IN",
+    "RELATES_TO", "PART_OF", "REFERENCES", "BELONGS_TO",
+    # Whitelist additions go here. Anything not in this set is refused.
+})
+
+
 @dataclass
 class TraversalPolicy:
     max_depth: int = 3
@@ -441,17 +509,29 @@ class SecureGraphTraversal:
         self.driver = driver
 
     def traverse(self, start_id: str, policy: TraversalPolicy):
-        """Secure traversal with comprehensive controls."""
-        # Validate policy
+        """Secure traversal with comprehensive controls.
+
+        Even though the policy specifies which relationship types are allowed,
+        the server independently validates each name against
+        _ALLOWED_RELATIONSHIP_TYPES. This prevents a poisoned policy from
+        smuggling arbitrary Cypher fragments into the query.
+        """
+        # Validate policy bounds.
         if policy.max_depth > 5:
             raise ValueError("Depth limit exceeded maximum allowed (5)")
 
         if policy.max_results > 1000:
             raise ValueError("Result limit exceeded maximum allowed (1000)")
 
-        # Build safe relationship pattern
+        # Validate every relationship type before constructing the query.
         rel_filter = ""
         if policy.allowed_relationships:
+            invalid = [r for r in policy.allowed_relationships if r not in _ALLOWED_RELATIONSHIP_TYPES]
+            if invalid:
+                raise ValueError(
+                    f"Policy specifies disallowed relationship types: {invalid}. "
+                    f"Server allowlist: {sorted(_ALLOWED_RELATIONSHIP_TYPES)}"
+                )
             rel_types = "|".join(policy.allowed_relationships)
             rel_filter = f":{rel_types}"
 
@@ -924,28 +1004,45 @@ class SecureGraphExport:
         return self._import_data(export_data)
 
     def _import_data(self, export_data: dict):
-        """Import validated data into graph."""
+        """Import nodes and relationships from an export payload.
+
+        Every label and relationship type in the payload is validated against
+        server-side allowlists before query construction. Unknown labels or
+        relationship types abort the import — no Cypher is constructed for them.
+        Cypher does not support parameterization for labels or relationship types,
+        so f-string substitution is used only after allowlist validation passes.
+        """
+        # Pre-validate ALL labels and relationship types in the payload.
+        for node in export_data.get("nodes", []):
+            for label in node.get("labels", []):
+                if label not in _ALLOWED_NODE_LABELS:
+                    raise ValueError(
+                        f"Import rejected: node label {label!r} is not in the server allowlist."
+                    )
+
+        for rel in export_data.get("relationships", []):
+            rel_type = rel.get("type")
+            if rel_type not in _ALLOWED_RELATIONSHIP_TYPES:
+                raise ValueError(
+                    f"Import rejected: relationship type {rel_type!r} is not in the server allowlist."
+                )
+
+        # Validation passed. Safe to construct queries using f-string substitution
+        # for labels/types (parameterization not supported for these), while property
+        # values remain parameterized via $props.
         with self.driver.session() as session:
-            # Import nodes with parameterized queries
-            for node in export_data["nodes"]:
-                labels = ":".join(node["labels"])
+            for node in export_data.get("nodes", []):
+                labels_str = ":".join(node["labels"])
                 session.run(
-                    f"""
-                    CREATE (n:{labels})
-                    SET n = $props
-                    """,
+                    f"CREATE (n:{labels_str}) SET n = $props",
                     props=node["props"]
                 )
 
-            # Import relationships
-            for rel in export_data["relationships"]:
+            for rel in export_data.get("relationships", []):
                 session.run(
-                    f"""
-                    MATCH (s) WHERE id(s) = $start_id
-                    MATCH (e) WHERE id(e) = $end_id
-                    CREATE (s)-[r:{rel['type']}]->(e)
-                    SET r = $props
-                    """,
+                    f"MATCH (s) WHERE id(s) = $start_id "
+                    f"MATCH (e) WHERE id(e) = $end_id "
+                    f"CREATE (s)-[r:{rel['type']}]->(e) SET r = $props",
                     start_id=rel["start_id"],
                     end_id=rel["end_id"],
                     props=rel["props"]
