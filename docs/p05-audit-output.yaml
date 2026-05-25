@@ -1117,6 +1117,105 @@ audited_rules:
       to align descriptions." Not a blocking defect; unchanged.
     issues_filed: []
 
+  - path: rules/iac/pulumi/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Rule 1: Stack Secrets Encryption
+      - Rule 2: Config.requireSecret for Sensitive Values
+      - Rule 3: CrossGuard Policy Packs
+      - Rule 4: Automation API Security
+      - Rule 5: State Backend Security
+      - Rule 6: Provider Configuration Security
+      - Rule 7: Resource Options (protect, retainOnDelete)
+      - Rule 8: Stack References Security
+      - Rule 9: Dynamic Providers Validation
+      - Rule 10: ESC Security
+    notes: |
+      Audited all 10 rule sections. Four distinct blocking issues found; three are
+      critical compile/runtime errors (missing imports), one is a wrong import path.
+      No OWASP LLM numbering problem — this file uses CWE and NIST SP 800-53 refs
+      only, all correctly cited. No inline credentials in Do examples; all hardcoded
+      values appear correctly in Don't examples with explicit VULNERABLE labels.
+      Secret-handling patterns (requireSecret / require_secret / RequireSecret /
+      pulumi.secret / fn::secret) are used consistently throughout Do examples.
+      CrossGuard policy SDK usage in TypeScript and Python matches current @pulumi/policy
+      v0.x API. ESC environment definition syntax (fn::open::aws-secrets,
+      fn::open::vault-secrets, fn::secret) is correct per Pulumi ESC documentation.
+      Provider plugin signing is not covered by any rule (noted as a coverage gap).
+
+      ISSUE 1 — Rule 6 Go example: s3.NewBucket called without s3 import (CODE BUG / CRITICAL)
+        Line 953: s3.NewBucket(ctx, "my-bucket", &s3.BucketArgs{}, pulumi.Provider(provider))
+        The import block (lines 933-936) imports only:
+          "github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+        The s3 sub-package "github.com/pulumi/pulumi-aws/sdk/v6/go/aws/s3" is never
+        imported. This is a compile-time error: undefined: s3. A developer copying
+        this example to illustrate provider role assumption with an S3 bucket gets a
+        build failure immediately.
+        Fix required: add "github.com/pulumi/pulumi-aws/sdk/v6/go/aws/s3" to the
+        import block.
+
+      ISSUE 2 — Rule 7 Python example: aws.ec2.Vpc referenced without aws import (CODE BUG / CRITICAL)
+        Line 1081: vpc = aws.ec2.Vpc("production-vpc", cidr_block="10.0.0.0/16", ...)
+        The Python import block (line 1061) is: from pulumi_aws import rds, s3, kms
+        The name 'aws' is not defined in this scope. This raises NameError: name 'aws'
+        is not defined at runtime. The rds.Instance protect example above it (line 1066)
+        is correct and importable; only the retainOnDelete Vpc example is broken.
+        Fix required: replace aws.ec2.Vpc with ec2.Vpc and add 'from pulumi_aws import
+        ec2' to the import block, or use 'import pulumi_aws as aws' instead of the
+        selective from-import for the whole block.
+
+      ISSUE 3 — Rule 6 Python example: ProviderAssumeRoleArgs used without import (CODE BUG)
+        Line 895: assume_role=ProviderAssumeRoleArgs(role_arn=..., session_name=..., external_id=...)
+        The import block (line 888) is: from pulumi_aws import Provider, s3
+        ProviderAssumeRoleArgs is not imported. This raises NameError: name
+        'ProviderAssumeRoleArgs' is not defined when the provider is instantiated.
+        In the pulumi_aws SDK, ProviderAssumeRoleArgs is exported from the top-level
+        package. The correct import is:
+          from pulumi_aws import Provider, ProviderAssumeRoleArgs
+        Fix required: add ProviderAssumeRoleArgs to the from-import line.
+
+      ISSUE 4 — Rule 4 TypeScript Automation API: import shadows main SDK (CODE BUG / CRITICAL)
+        Line 489: import * as pulumi from "@pulumi/pulumi/automation";
+        This binds the automation sub-module to the name 'pulumi', making the identifier
+        'pulumi' refer to the automation module rather than the main @pulumi/pulumi SDK.
+        Any code in the same module scope that needs main SDK exports (pulumi.Config,
+        pulumi.Output, pulumi.secret, pulumi.interpolate) would get the automation
+        module's exports instead and fail. The outer deployInfrastructure() function
+        works because it only uses pulumi.LocalWorkspace (which IS exported from the
+        automation sub-module), but the import pattern is incorrect per the official
+        Pulumi Automation API documentation, which shows the two-import pattern:
+          import * as pulumi from "@pulumi/pulumi";
+          import { LocalWorkspace, LocalWorkspaceOptions, ConfigValue } from "@pulumi/pulumi/automation";
+        The current single import precludes correct usage of other Pulumi SDK features
+        in the same file and is a portability defect that will cause confusion in practice.
+        Fix required: split into the two-import pattern shown above and replace
+        pulumi.LocalWorkspace with LocalWorkspace throughout the Automation API example.
+
+      Non-blocking observations (no status change):
+      - Rule 2 TypeScript: finalSnapshotIdentifier uses Date.now() (line 160).
+        Date.now() at program evaluation time means each 'pulumi up' invocation produces
+        a different snapshot identifier. Advisory: use pulumi.getStack() + static suffix
+        for a deterministic but stack-scoped value, e.g.:
+          finalSnapshotIdentifier: pulumi.interpolate`production-db-final-${pulumi.getStack()}`
+      - Provider plugin signing coverage gap: the audit task listed provider plugin
+        signing as a target area. No rule covers Pulumi provider plugin checksum
+        verification or supply chain integrity of provider binaries. A future Rule 11
+        covering plugin signing and --exact-version install patterns is warranted.
+        Advisory only.
+      - Rule 3 CrossGuard Python: args.resource_type string "aws:s3/bucket:Bucket" targets
+        the classic Bucket resource. The current recommended resource is BucketV2
+        (type "aws:s3/bucketv2:BucketV2"). The TypeScript example already references
+        aws.s3.BucketVersioningV2 correctly; the Python example's type-string check
+        lags behind. Advisory for future update.
+      - Rule 3 CrossGuard: org-wide policy enforcement requires Pulumi Cloud Business
+        or Enterprise. The file shows the commands (pulumi policy publish / enable)
+        but does not note this tier requirement. Advisory.
+    issues_filed: []
+
   - path: rules/iac/terraform/CLAUDE.md
     status: failed
     reviewed_by: rocklambros
