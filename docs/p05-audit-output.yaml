@@ -158,3 +158,87 @@ audited_rules:
         site. Reviewer notes this limitation; recommend a follow-up verification pass
         against the live ATLAS catalog when the site is accessible.
     issues_filed: []
+
+  - path: rules/_core/agent-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    notes: |
+      Audited all 8 rule sections across 5 categories (Tool Use, Code Execution,
+      Input/Output, Session, Monitoring). Four distinct issues found; two are blocking
+      (wrong OWASP numbers + code bugs), two are secondary but important.
+
+      OWASP LLM 2023->2025 NUMBERING: YES — applies to this file.
+        All OWASP LLM refs omit the :2025 qualifier and use 2023 v1.1 IDs.
+        Three refs cite wrong numbers (LLM07->LLM06, LLM02->LLM05, LLM05->LLM03).
+        Detailed in ISSUE 1, ISSUE 2, ISSUE 3 below.
+
+      ISSUE 1 — Three OWASP LLM refs use wrong 2023 numbers and names (STANDARDS MISMATCH)
+        Line 114: "OWASP LLM07 (Insecure Plugin Design)" — In 2025, LLM07 is "System
+          Prompt Leakage." "Insecure Plugin Design" was the 2023 v1.1 LLM07.
+          Tool/plugin security now maps to LLM06:2025 (Excessive Agency).
+          Fix: change to "OWASP LLM06:2025 (Excessive Agency)."
+        Line 514: "OWASP LLM02 (Insecure Output Handling)" — In 2025, LLM02 is
+          "Sensitive Information Disclosure." Improper/Insecure Output Handling is
+          LLM05:2025. This ref is doubly wrong (number and name).
+          Fix: change to "OWASP LLM05:2025 (Improper Output Handling)."
+        Line 708: "OWASP LLM05 (Supply Chain Vulnerabilities)" — In 2025, LLM05 is
+          "Improper Output Handling." Supply Chain is LLM03:2025. This appears on the
+          "Isolate Agent Sessions" rule where neither Supply Chain nor Output Handling
+          is the right category; the rule is about session data leakage (CWE-200).
+          Fix: remove the mismatched LLM ref; cite LLM06:2025 (Excessive Agency)
+          for agent scope control, or rely on the CWE-200 ref already present.
+        Additional: Lines 309 and 415 cite "OWASP LLM06 (Excessive Agency)" with
+          correct names but missing :2025 qualifier. Not wrong, but inconsistent.
+          Fix: add :2025 qualifier throughout.
+
+      ISSUE 2 — set_limits() defined but never called in _execute_sandboxed (CODE BUG / CRITICAL)
+        In Rule "Validate Tool Calls Before Execution", the _execute_sandboxed() method
+        defines an inner function set_limits() that calls resource.setrlimit() to cap
+        CPU time (30s) and virtual memory (512MB). This function is defined at line 83
+        but is never invoked anywhere. The resource limits that the comment claims are
+        applied are silently not applied. An agent task can run indefinitely and consume
+        unlimited memory. The code creates a false impression of resource isolation that
+        does not exist at runtime.
+        Fix required: add set_limits() call inside _execute_sandboxed before executing
+        the tool, or use resource.setrlimit() inline without the dead inner function.
+
+      ISSUE 3 — _check_code_safety() called but never defined (UNDEFINED METHOD BUG)
+        In Rule "Implement Tool Permission Boundaries", check_permission() calls
+        self._check_code_safety(params.get('code'), policy) at line 178 when
+        tool_name == 'execute_code'. No _check_code_safety method is defined anywhere
+        in the ToolPermissionPolicy class. Calling check_permission() for execute_code
+        raises AttributeError at runtime, making the permission check for the highest-
+        risk tool silently fail with an uncaught exception. In a framework that catches
+        exceptions broadly and defaults to allow, this is a security bypass.
+        Fix required: implement _check_code_safety() with at minimum a check that
+        the code string does not contain blocked_imports entries; or inline the logic
+        into the elif branch.
+
+      ISSUE 4 — MITRE ATLAS AML.T0051 cannot be verified (UNVERIFIABLE REF)
+        Line 114 cites "MITRE ATLAS AML.T0051" for the tool call validation rule.
+        The ATLAS live site (atlas.mitre.org) returned HTTP 404 for all technique URLs
+        during this audit — same failure seen in the ai-security.md audit. From training-
+        set knowledge of ATLAS v4, AML.T0051 is a plausible technique ID (approximate
+        name: LLM Prompt Injection), which is relevant to tool manipulation via
+        injection. Unlike AML.T0000 in ai-security.md (definitively non-existent),
+        AML.T0051 cannot be confirmed or refuted from the live site. Flagged as
+        unverifiable rather than definitively wrong. Recommend verifying against the
+        live ATLAS catalog before publishing.
+
+      Non-blocking observations (no status change):
+      - Rule "Sandbox Agent-Generated Code" Do example: "import RestrictedPython" on
+        line 228 is unused (the module is accessed via "from RestrictedPython import
+        ..."). Minor redundancy; does not affect logic.
+      - Rule "Implement Tool Permission Boundaries" Do example: blocked_domains includes
+        '*.internal' (glob wildcard). Python's str.startswith() does not interpret glob
+        patterns, so '*.internal' only blocks domains literally starting with that
+        string. Additionally, the web_request domain check is never invoked from
+        check_permission() (falls through to "return True"). The domain blocking is
+        documented but not implemented in the shown code. Advisory only.
+      - Rule "Validate Agent Outputs Before Action" Do example: file content validation
+        uses a regex denylist (dangerous_patterns). Same anti-pattern flagged as
+        critical for prompt injection in ai-security.md; in this context (output content
+        validation) it is less severe but still bypassable. Advisory: note the limitation.
+      - signal.SIGALRM (line 91) is not available on Windows. Portability note only.
+    issues_filed: []
