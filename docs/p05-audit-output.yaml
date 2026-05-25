@@ -337,3 +337,131 @@ audited_rules:
         (2023). In 2026 this is a maintainability concern; future Pydantic v3 will remove it.
         Advisory: migrate to @field_validator with mode='before'/'after' as appropriate.
     issues_filed: []
+
+  - path: rules/_core/rag-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Document Source Validation
+      - Metadata Sanitization
+      - Multi-Tenant Isolation
+      - Query Input Validation
+      - Context Window Poisoning Prevention
+      - PII Filtering in Results
+      - Embedding Model Authentication
+      - Model Version Consistency
+    notes: |
+      Audited all 8 rule sections. Five distinct issues found; three are blocking.
+      The file cites "OWASP LLM Top 10 v1.1 (2023)" in its References section (line 1492),
+      which is unambiguous evidence that it was authored against the 2023 taxonomy. All
+      OWASP LLM category numbers are wrong for 2025 and no :2025 qualifiers are present.
+
+      OWASP LLM 2023->2025 NUMBERING: YES — applies throughout this file.
+        The References section (line 1492) explicitly cites "OWASP LLM Top 10 v1.1 (2023)."
+        All six OWASP LLM inline citations use 2023 (v1.1) numbers without :2025 qualifiers.
+        Three refs carry the wrong number when read as 2025:
+          - LLM06 (Sensitive Information Disclosure) at lines 153, 465, 999:
+            In 2025, LLM06:2025 = "Excessive Agency." The correct 2025 ref is LLM02:2025.
+          - LLM08 (Excessive Agency) at line 1228:
+            In 2025, LLM08:2025 = "Vector and Embedding Weaknesses." LLM06:2025 is the
+            correct 2025 ref for Excessive Agency.
+        LLM08:2025 (Vector and Embedding Weaknesses) — the category that most directly
+        covers RAG attack surfaces (adversarial queries, embedding model poisoning,
+        cross-tenant vector leakage, mixed-model inconsistency) — is absent from all
+        rule Refs sections despite being explicitly in scope for this file's topic.
+        Fix required: update all OWASP LLM citations to 2025 numbering; update the
+        References section to cite "OWASP LLM Top 10 2025"; add LLM08:2025 citations
+        to Embedding Model Authentication, Model Version Consistency, and Query Input
+        Validation rules.
+
+      ISSUE 1 — Custom exceptions undefined in every rule block (CODE BUG / BLOCKING)
+        All Do code examples raise custom exceptions (SecurityError, ValidationError,
+        ConfigurationError, RateLimitError, AuthenticationError, EmbeddingError,
+        ModelMismatchError) that are never defined or imported anywhere in the file.
+        Every rule's Do example raises NameError at the first exception path encountered.
+        This is a file-wide bug: seven distinct custom exception classes are used across
+        all eight rules, none with a definition or an import statement referencing an
+        external package. A rule teaching "do this securely" cannot have code that
+        fails immediately when the security guard trips.
+        Fix required: add exception class definitions at the top of each Do block
+        (e.g., class SecurityError(Exception): pass) or add an imports comment
+        referencing a shared exceptions module; the classes must be defined before
+        they can be raised.
+
+      ISSUE 2 — Multi-Tenant Isolation Do example: missing 'datetime' import (CODE BUG)
+        The TenantIsolation/SecureVectorStore Do block (lines 312-430) imports
+        Optional, hashlib, hmac, and functools.wraps. At line 368 it calls
+        datetime.utcnow().isoformat() — but 'from datetime import datetime' is absent
+        from the block. This raises NameError at the first document ingestion.
+        Additionally, 'from functools import wraps' is imported but @wraps is never
+        applied to any function in the block; it is an orphaned import.
+        Fix required: add 'from datetime import datetime' to the block imports;
+        remove the unused 'from functools import wraps'.
+
+      ISSUE 3 — Embedding Model Authentication: PROJECT_ID undefined (CODE BUG)
+        The load_embedding_credentials() function at lines 1174-1195 references
+        PROJECT_ID in the f-string on line 1184 to build the GCP Secret Manager path.
+        PROJECT_ID is never defined, imported, or obtained from os.environ in this
+        function or its enclosing scope. This raises NameError when the GCP path is
+        taken. Because the function silently falls through to Option 2 (env var) on any
+        exception, the bug masks itself at runtime — the code appears to work but the
+        "preferred for production" path is dead code.
+        Fix required: add PROJECT_ID = os.environ.get("GCP_PROJECT_ID") before the
+        try block, or use os.environ["GCP_PROJECT_ID"] and let KeyError propagate so
+        the missing config is visible.
+
+      ISSUE 4 — Denylist as primary prompt-injection defense (DEPRECATED MITIGATION)
+        Two rules use regex denylist filtering as their primary injection control:
+          - Metadata Sanitization: _remove_injection_patterns() at lines 240-257
+          - Query Input Validation: _neutralize_injection_patterns() at lines 506-534
+          - Context Window Poisoning: ContentFilter.filter() at lines 755-790
+        All three implement substring/regex pattern matching against known injection
+        phrases. OWASP LLM01:2025 explicitly de-emphasizes pattern matching in favor
+        of structural role isolation, privilege reduction, and semantic filtering.
+        The patterns shown are trivially bypassed by encoding, paraphrasing, Unicode
+        substitution, or zero-width characters. These denylists are presented as the
+        named security control rather than as a secondary defense-in-depth layer.
+        Metadata Sanitization and Query Input Validation make no mention of structural
+        isolation (separating system/user roles in the message array) as the primary
+        control. Context Window Poisoning Prevention does correctly add structural
+        delimiters and instruction text in _format_context(), making it better.
+        Fix required: in Metadata Sanitization and Query Input Validation, demote the
+        denylist to a defense-in-depth note; name structural isolation (message-role
+        separation at inference time) as the primary control and reference LLM01:2025.
+
+      ISSUE 5 — LLM08:2025 (Vector and Embedding Weaknesses) not covered (COVERAGE GAP)
+        LLM08:2025 is the new 2025 category that directly describes attacks on RAG
+        vector infrastructure: adversarial embedding manipulation, cross-tenant
+        similarity leakage, embedding model substitution, and dimensional mismatch
+        attacks used to defeat retrieval. This file covers RAG security but contains
+        no rule or Ref section entry for LLM08:2025. The Model Version Consistency
+        rule is the closest in scope but cites AML.T0019 (Publish Poisoned Datasets)
+        and says nothing about adversarial embedding inputs or vector store integrity
+        attacks. An embedding-specific adversarial attack rule (adversarial query
+        crafting to force retrieval of attacker-chosen documents) is entirely absent.
+        Fix required: add LLM08:2025 to Refs in Embedding Model Authentication,
+        Model Version Consistency, and Multi-Tenant Isolation; add a new rule covering
+        adversarial embedding manipulation and dimensional integrity validation.
+
+      Non-blocking observations (no status change):
+      - MITRE ATLAS AML.T0051 (line 825, Context Window Poisoning) is the same
+        unverifiable technique cited in agent-security.md. The ATLAS live site
+        returned 404 during the prior audits; plausibility is affirmed from training
+        knowledge but cannot be confirmed from the live catalog. Same caveat applies.
+      - AML.T0019 (line 1427, Model Version Consistency) is cited for the model
+        version tracking rule. "Publish Poisoned Datasets" is tangentially related
+        to model version drift but is not the tightest fit. AML.T0054 (LLM Jailbreak)
+        or AML.T0040 (ML Model Inference API Access) would be closer for the version
+        consistency attack scenario. Advisory only.
+      - The file header (Version History, line 1485) shows version 1.0.0 with date
+        "2024-01" and the References section cites the 2023 OWASP taxonomy, confirming
+        the file pre-dates the 2025 OWASP LLM Top 10 and has not been updated since.
+      - InsecureEmbeddingClient.embed() at line 1210 is declared 'async def' but
+        calls self.client.post() on a synchronous httpx.Client (not AsyncClient). This
+        is an await mismatch; await on a non-coroutine raises TypeError. Minor because
+        it is in the Don't example, but a reviewer testing both examples would see it
+        fail for the wrong reason. Advisory: make the Don't use httpx.Client().post()
+        without async, or note that it is intentionally broken.
+    issues_filed: []
