@@ -27,3 +27,10 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local agent state (not part of v2 work)
+.claude/
+.serena/
+SESSION_SUMMARY.md
+
+# uv (lockfile IS committed — see below)
