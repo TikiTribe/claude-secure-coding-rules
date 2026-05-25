@@ -1353,3 +1353,153 @@ audited_rules:
         flag them as potential credentials. This is acceptable for educational material
         but worth noting.
     issues_filed: []
+
+  - path: rules/iac/_core/iac-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-25
+    audit_coverage: full
+    rules_audited:
+      - Encrypt State Files at Rest
+      - Restrict State File Access
+      - Enable State Locking
+      - Never Hardcode Credentials
+      - Mark Sensitive Variables
+      - Use Secret Management Services
+      - Pin Module Versions
+      - Verify Module Sources
+      - Audit Module Code Before Use
+      - Implement Continuous Drift Detection
+      - Prevent Manual Infrastructure Changes
+      - Implement Pre-Deployment Policy Checks
+      - Enforce Compliance Standards
+      - Pin Provider Versions
+      - Secure Provider Authentication
+      - Integrate Security Scanning in CI/CD
+      - Review Plan Output Before Apply
+      - Use Workspaces for Environment Isolation
+      - Document Security Decisions
+    notes: |
+      Audited all 19 rule sections across 8 categories (State Security, Secrets
+      Management, Module Supply Chain, Drift Detection, Policy as Code, Provider
+      Security, Security Testing, Additional Practices). Five distinct issues found;
+      three are blocking (wrong control IDs, non-functional Rego policy, retired
+      standard citation). Two are significant but secondary (mutable action pins,
+      incorrect Pulumi config placement). No OWASP LLM numbering issues — this file
+      uses NIST 800-53, CIS Benchmarks, and PCI-DSS/HIPAA, not the LLM taxonomy.
+
+      ISSUE 1 — Three SA-12 citations carry Rev 4 control ID and description (STANDARDS VERSION / BLOCKING)
+        Lines 544, 607, and 1117 cite "NIST 800-53 SA-12 (Supply Chain Protection)."
+        In NIST SP 800-53 Revision 5 (published September 2020, current version), SA-12
+        no longer exists as "Supply Chain Protection." SA-12 in Rev 5 is "Memory
+        Protection" (hardware/firmware side-channel mitigations). Supply chain controls
+        moved to the new SR (Supply Chain Risk Management) family: SR-3 (Supply Chain
+        Controls and Processes), SR-4 (Provenance), SR-5 (Acquisition Strategies,
+        Tools, and Methods). Citing SA-12 as "Supply Chain Protection" teaches Rev 4
+        taxonomy superseded in 2020. A reviewer cross-referencing the current NIST
+        catalog finds SA-12 maps to something entirely unrelated.
+        Fix required: replace "SA-12 (Supply Chain Protection)" with the appropriate
+        Rev 5 SR-family control — SR-3 for supply chain process controls (lines 544
+        and 607, module supply chain rules) and SR-3/SR-5 for provider supply chain
+        (line 1117); update descriptions to match Rev 5 language.
+
+      ISSUE 2 — OPA compliance Rego calls two undefined helper rules (CODE BUG / BLOCKING)
+        The "Enforce Compliance Standards" Do example (lines 996-1017) contains a Rego
+        policy in package terraform.compliance with two deny rules:
+          deny[msg] { ... not has_kms_encryption(resource) ... }
+          deny[msg] { ... not has_access_logging(resource) ... }
+        Neither has_kms_encryption nor has_access_logging is defined anywhere in the
+        shown code block or elsewhere in the file. In OPA/Rego, calling an undefined
+        rule produces an undefined result (falsy). The consequence:
+          - not has_kms_encryption(resource) is always TRUE
+          - not has_access_logging(resource) is always TRUE
+        The policy denies every PCI-scoped and every HIPAA-scoped S3 bucket regardless
+        of whether encryption or logging is configured. The compliance guard is inverted
+        and non-functional: it blocks compliant configurations and provides no actual
+        compliance signal. A practitioner using this policy will either see all resources
+        blocked or — if OPA evaluates the whole rule as undefined — have no enforcement.
+        Fix required: define both helper rules within the same package block, e.g.:
+          has_kms_encryption(resource) {
+            rule := resource.change.after.server_side_encryption_configuration[_].rule[_]
+            rule.apply_server_side_encryption_by_default.sse_algorithm == "aws:kms"
+          }
+          has_access_logging(resource) {
+            resource.change.after.logging[_].target_bucket != ""
+          }
+
+      ISSUE 3 — PCI-DSS 3.2.1 cited at line 1042 — standard retired March 31, 2024 (STALE REF / BLOCKING)
+        The "Enforce Compliance Standards" Refs line cites "PCI-DSS 3.2.1." PCI-DSS
+        v3.2.1 was formally retired by the PCI Security Standards Council on March 31,
+        2024 and superseded by PCI-DSS v4.0 (released March 2022, mandatory since
+        April 2024). As of the audit date (2026-05-25), v3.2.1 has been retired for
+        over 14 months. PCI-DSS v4.0 introduced updated requirements for
+        authentication (Req 8), software security (Req 6), and monitoring (Req 10)
+        not present in v3.2.1. Citing a retired version tells practitioners to target
+        a superseded compliance baseline.
+        Fix required: update "PCI-DSS 3.2.1" to "PCI-DSS v4.0" on line 1042; note
+        specific v4.0 requirements if sub-requirement precision is intended (e.g.,
+        Req 3.5 for encryption, Req 10.2 for access logging).
+
+      ISSUE 4 — Multiple mutable action pins and a deprecated IaC scanner in Do examples (DEPRECATED MITIGATIONS)
+        Four categories of mutable or deprecated tool references appear in Do examples:
+        a) bridgecrewio/checkov-action@master at lines 856, 929, 950, 959, and 1243.
+           "@master" is a mutable branch pin that changes silently on every push to
+           the checkov-action repo. This is the exact vulnerable pattern flagged as
+           CRITICAL in github-actions/CLAUDE.md (ISSUE 1) and cicd-security.md
+           (ISSUE 1). A Do example must not teach the pattern the file's own strict
+           Pin-by-SHA rules prohibit.
+        b) tenable/terrascan-action@main at line 870 — same mutable branch pin.
+        c) open-policy-agent/setup-opa@v2 with "version: latest" at lines 877-879.
+           "version: latest" for the OPA binary is an unpinned runtime dependency
+           that changes with each OPA release, contradicting the file's own provider
+           and module version-pinning rules.
+        d) aquasecurity/tfsec-action@v1.0.0 at lines 865 and 1240. AquaSecurity
+           deprecated tfsec in October 2023 and officially recommends migration to
+           aquasecurity/trivy-action, which provides IaC scanning alongside container
+           and dependency scanning. tfsec no longer receives CVE signature updates
+           and the tfsec-action repository is in maintenance-only mode.
+        Fix required: SHA-pin all action references in Do examples (checkov-action,
+        terrascan-action, setup-opa); replace tfsec-action with trivy-action;
+        replace "version: latest" in setup-opa with a specific pinned OPA version.
+
+      ISSUE 5 — Pulumi backend example places encryptionsalt in the project file (CONFIG BUG)
+        Lines 30-38 show encryptionsalt in a config: stanza of what is formatted as
+        the project-level Pulumi.yaml:
+          name: my-project / runtime: python / backend: url: s3://...
+          config: encryptionsalt: v1:abc123...
+        In the Pulumi configuration model, encryptionsalt is a stack-level property
+        stored in the stack configuration file (Pulumi.<stackname>.yaml), not in the
+        project-level Pulumi.yaml. The project file does not accept encryptionsalt as
+        a config key; placing it there has no effect and the passphrase encryption is
+        silently not applied. A developer copying this example believes they have
+        configured passphrase encryption when they have not. The encryptionsalt value
+        is auto-generated by Pulumi when "pulumi stack init" is run with
+        PULUMI_CONFIG_PASSPHRASE set; it appears in the stack file automatically.
+        Fix required: remove encryptionsalt from the Pulumi.yaml example; show the
+        correct stack file (e.g., Pulumi.dev.yaml) where encryptionsalt belongs, or
+        document that PULUMI_CONFIG_PASSPHRASE drives passphrase encryption and the
+        salt is managed automatically in the stack config.
+
+      Non-blocking observations (no status change):
+      - OPA CI step (line 881): "opa eval --data policies/ --input plan.json
+        'data.terraform.deny[msg]'" produces output but does not exit non-zero when
+        violations exist. Without "--fail-defined" or a non-empty check, the CI step
+        passes even when policy violations are returned. The conftest command shown
+        at line 1268 handles this correctly. Advisory: replace the opa eval invocation
+        with "conftest test plan.json -p policies/" or add "--fail-defined".
+      - SA-11 cited as "Developer Security Testing" at lines 658, 936, and 1292. In
+        NIST 800-53 Rev 5, SA-11 was renamed to "Developer Testing and Evaluation."
+        The control ID is correct; only the description string is marginally off.
+        Advisory: update description to "Developer Testing and Evaluation."
+      - CWE-1188 (Insecure Default Initialization of Resource) cited at line 739 for
+        the drift detection rule. CWE-1188 is a hardware/firmware-focused weakness
+        about insecure defaults; it is a stretch for configuration drift and change
+        control. CWE-284 (Improper Access Control) would map more precisely. Not
+        blocking — NIST CM-3 in the same Refs line is the load-bearing reference.
+      - CWE-829 at line 544 (module pinning rule) creates inconsistency with lines
+        658 and 1117 where CWE-1104 is used for equivalent supply chain rules in
+        the same file. Advisory: replace CWE-829 with CWE-1104 at line 544.
+      - Terraform required_version ">= 1.5.0, < 2.0.0" at line 1057 uses a three-
+        year-old lower bound. The pinning pattern is correct; the specific version
+        number is stale. Advisory only.
+    issues_filed: []
