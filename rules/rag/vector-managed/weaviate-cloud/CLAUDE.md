@@ -1336,7 +1336,9 @@ def insert_object(collection, content):
 ## Additional Resources
 
 - [Weaviate Security Documentation](https://weaviate.io/developers/weaviate/configuration/authentication)
+- [Weaviate RBAC Configuration](https://weaviate.io/developers/weaviate/configuration/authorization)
 - [Weaviate Multi-Tenancy Guide](https://weaviate.io/developers/weaviate/concepts/data#multi-tenancy)
+- [Weaviate Cloud API Key Tiers](https://weaviate.io/developers/weaviate-cloud/authentication)
 - [OWASP Top 10 2025](https://owasp.org/Top10/)
 - [OWASP LLM Top 10:2025](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 - [Weaviate GraphQL API Security](https://weaviate.io/developers/weaviate/api/graphql)
