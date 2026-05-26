@@ -2542,7 +2542,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/languages/python/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2582,10 +2582,14 @@ audited_rules:
       - All OWASP 2025 category mappings verified correct (A01, A02, A03, A05, A07,
         A08, A10). All CWE IDs valid and correctly mapped. No fabricated identifiers.
         yaml.safe_load vs yaml.load(Loader=yaml.Loader) distinction is correct.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (import re): 'import re' present at line 58 of the Use Subprocess Safely
+        Do block, before the re.match() call on the shell=True fallback path.
     issues_filed: []
 
   - path: rules/languages/csharp/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2630,6 +2634,11 @@ audited_rules:
       - EF Core LINQ and Dapper @params in Do examples are syntactically correct.
       - IExceptionHandler in error handling Do example is correct for ASP.NET Core 8+.
       - All CWE IDs and OWASP 2025 category citations are valid.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (CipherMode.GCM): replaced with AesGcm class; Do block uses
+        'new AesGcm(key, tagSizeInBytes: 16)' with NonceByteSizes.MaxSize (12 bytes);
+        CipherMode.GCM no longer appears anywhere in the file.
     issues_filed: []
 
   - path: rules/languages/java/CLAUDE.md
@@ -3020,4 +3029,82 @@ audited_rules:
         Fix required: add file.mimetype check alongside extension check in the Do
         example; add advisory comment that magic-byte verification is recommended for
         high-assurance contexts.
+    issues_filed: []
+
+  - path: rules/backend/nestjs/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Class-Validator for DTOs
+      - Implement JWT Guards Properly
+      - Implement Role-Based Access Control
+      - Implement Rate Limiting
+      - Use TypeORM Safely
+      - Use Helmet for Security Headers
+      - Configure CORS Restrictively
+      - Use Exception Filters
+    notes: |
+      Audited all 8 rule sections. One blocking defect found: the rate-limiting
+      examples use ThrottlerModule v4 API that is broken under @nestjs/throttler v5,
+      which ships with NestJS 10.
+
+      Standards refs: OWASP 2025 category numbers correct (A01:2025, A03:2025,
+      A05:2025, A07:2025). All CWE IDs valid: CWE-20, CWE-347, CWE-862, CWE-307,
+      CWE-89, CWE-942, CWE-209.
+
+      NestJS-specific checklist:
+      - @Body with class-validator DTOs: present and correct (lines 22-46).
+      - @Param: used at line 166 in the resource-ownership example.
+      - Guards (CanActivate / @UseGuards): RolesGuard implements CanActivate (line 146);
+        @UseGuards(JwtAuthGuard, RolesGuard) applied at controller level (line 100).
+        Pattern is correct for NestJS 10.
+      - ValidationPipe with whitelist:true and forbidNonWhitelisted:true: present at
+        lines 42-46.
+      - ConfigService: injected into JwtStrategy constructor (line 80); used via
+        configService.get('JWT_SECRET') without type parameter or getOrThrow. Advisory
+        only (see non-blocking below).
+      - Helmet via main.ts: correct (lines 308-329).
+      - Interceptors: not covered in this file; checklist notes they are not a security
+        boundary, so absence is not a defect.
+      - Don't examples reflect real vulns: hardcoded secret, ignoreExpiration:true,
+        no ownership check (IDOR), raw SQL concatenation, wildcard CORS, stack trace
+        exposure. All accurate.
+
+      ISSUE 1 — Rate Limiting Do example: @Throttle positional args and forRoot flat
+      config broken in @nestjs/throttler v5 / NestJS 10 (BREAKING API / BLOCKING)
+        Line 207: ThrottlerModule.forRoot({ ttl: 60, limit: 10 }) uses the flat-object
+        shape from @nestjs/throttler v4. In v5 (released alongside NestJS 10.x),
+        forRoot() requires the throttlers array with TTL in milliseconds:
+          ThrottlerModule.forRoot({ throttlers: [{ ttl: 60000, limit: 10 }] })
+        Using the v4 flat shape in v5 raises a runtime error (throttler config is not
+        iterable), making rate limiting non-functional.
+
+        Line 225: @Throttle(5, 60) uses the v4 positional-argument form. In v5 the
+        decorator takes a named-throttler object:
+          @Throttle({ default: { limit: 5, ttl: 60000 } })
+        Calling @Throttle(5, 60) in a v5 app either silently ignores the override or
+        throws a type error, meaning the per-route tightening is not applied and the
+        endpoint falls back to global limits only.
+
+        Fix required: update both the module registration and the per-endpoint decorator
+        to the v5 API shape shown above; add a comment noting the TTL unit change
+        (milliseconds in v5, seconds in v4).
+
+      Non-blocking observations (no status change):
+      - configService.get('JWT_SECRET') (line 83) returns string | undefined unless
+        typed as configService.get<string>('JWT_SECRET'). Prefer
+        configService.getOrThrow<string>('JWT_SECRET') to fail fast on missing config
+        rather than passing undefined to passport-jwt. Advisory only.
+      - No CSRF rule present. csurf is officially archived (last release 2022) and
+        incompatible with Express 5 middleware; the correct NestJS 10 recommendation
+        is csrf-csrf or nestjs-csrf. Absence is a coverage gap, not a self-contradiction.
+        Advisory.
+      - ConfigService schema validation via registerAs / Joi / class-validator at
+        ConfigModule level is not demonstrated. configService.get() is used correctly
+        but no validation schema is shown to catch misconfigured secrets at startup.
+        Advisory only.
+      - Quick Reference table (lines 450-460): matches inline rule levels and CWE IDs
+        throughout. Helmet row correctly has no CWE listed.
     issues_filed: []
