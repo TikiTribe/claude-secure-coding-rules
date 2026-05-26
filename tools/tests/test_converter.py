@@ -117,3 +117,63 @@ def test_strict_mode_requires_audit_path(tmp_path):
 
     with pytest.raises(ValueError, match="strict mode requires audit_path"):
         convert_rule_file(rule_file, tmp_path / "out", strict=True)
+
+
+# ---------------------------------------------------------------------------
+# CLI tests
+# ---------------------------------------------------------------------------
+
+
+def test_cli_invocation_writes_skill_md(tmp_path):
+    """`python -m tools.rule_to_skill_converter` writes SKILL.md."""
+    from tools.rule_to_skill_converter import main
+
+    rule_file = tmp_path / "rules" / "languages" / "python" / "CLAUDE.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# Python Security Rules\n\nBody.\n")
+
+    out_dir = tmp_path / "skills"
+    exit_code = main([str(rule_file), "--out", str(out_dir)])
+
+    assert exit_code == 0
+    assert (out_dir / "python-security" / "SKILL.md").exists()
+
+
+def test_cli_strict_without_audit_returns_nonzero(tmp_path):
+    """--strict without --audit prints an error and returns nonzero."""
+    from tools.rule_to_skill_converter import main
+
+    rule_file = tmp_path / "rules" / "_core" / "owasp-2025.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# OWASP\n\nBody.\n")
+
+    out_dir = tmp_path / "skills"
+    exit_code = main([str(rule_file), "--out", str(out_dir), "--strict"])
+
+    assert exit_code == 2
+
+
+def test_cli_strict_with_passed_audit_writes_skill(tmp_path):
+    """--strict succeeds when the rule is in the audit YAML with status=passed."""
+    from tools.rule_to_skill_converter import main
+
+    rule_file = tmp_path / "rules" / "_core" / "owasp-2025.md"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("# OWASP\n\nBody.\n")
+
+    audit_file = tmp_path / "audit.yaml"
+    audit_file.write_text(
+        "audited_rules:\n"
+        f"  - path: {rule_file.as_posix()}\n"
+        "    status: passed\n"
+        "    reviewed_by: rocklambros\n"
+        "    reviewed_on: 2026-05-26\n"
+    )
+
+    out_dir = tmp_path / "skills"
+    exit_code = main(
+        [str(rule_file), "--out", str(out_dir), "--strict", "--audit", str(audit_file)]
+    )
+
+    assert exit_code == 0
+    assert (out_dir / "applying-owasp-top-10" / "SKILL.md").exists()
