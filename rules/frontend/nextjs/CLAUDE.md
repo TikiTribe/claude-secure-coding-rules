@@ -137,7 +137,7 @@ export async function POST(request: Request) {
 
 **Why**: Unvalidated input enables injection attacks and business logic bypass.
 
-**Refs**: CWE-20, OWASP A03:2025
+**Refs**: CWE-20, OWASP A05:2025
 
 ---
 
@@ -150,12 +150,12 @@ export async function POST(request: Request) {
 **Do**:
 ```typescript
 // app/api/admin/route.ts
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+// Auth.js v5 (next-auth v5): import auth() from your project's auth config
+import { auth } from '@/auth';
 import { NextResponse } from 'next/server';
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
 
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -199,7 +199,8 @@ export async function GET() {
 'use server';
 
 import { z } from 'zod';
-import { getServerSession } from 'next-auth';
+// Auth.js v5 (next-auth v5): import auth() from your project's auth config
+import { auth } from '@/auth';
 import { revalidatePath } from 'next/cache';
 
 const updateProfileSchema = z.object({
@@ -208,7 +209,7 @@ const updateProfileSchema = z.object({
 });
 
 export async function updateProfile(formData: FormData) {
-  const session = await getServerSession();
+  const session = await auth();
   if (!session) {
     throw new Error('Unauthorized');
   }
@@ -309,17 +310,21 @@ module.exports = {
 
 **Do**:
 ```typescript
-// middleware.ts
+// middleware.ts (Next.js <=15)
+// Next.js 16+: rename this file to proxy.ts and export function proxy() instead.
+// Run: npx @next/codemod@canary middleware-to-proxy
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getToken } from 'next-auth/jwt';
+// Auth.js v5 (next-auth v5): use auth() as middleware directly;
+// getToken from 'next-auth/jwt' is removed in v5.
+import { auth } from '@/auth';
 
 export async function middleware(request: NextRequest) {
   // Protected routes
   if (request.nextUrl.pathname.startsWith('/dashboard')) {
-    const token = await getToken({ req: request });
+    const session = await auth();
 
-    if (!token) {
+    if (!session) {
       return NextResponse.redirect(new URL('/login', request.url));
     }
   }
@@ -338,14 +343,41 @@ export const config = {
 };
 ```
 
-**Don't**:
 ```typescript
-// No middleware = no centralized security
+// proxy.ts (Next.js 16+) — same logic, new file name and export name
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { auth } from '@/auth';
+
+export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith('/dashboard')) {
+    const session = await auth();
+    if (!session) {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
+  }
+
+  const response = NextResponse.next();
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  return response;
+}
+
+export const config = {
+  matcher: ['/dashboard/:path*', '/api/:path*'],
+};
 ```
 
-**Why**: Middleware provides centralized authentication and security headers.
+**Don't**:
+```typescript
+// No middleware/proxy = no centralized security
+```
 
-**Refs**: OWASP A05:2025
+**Why**: Middleware (Next.js <=15) and proxy (Next.js 16+) provide centralized authentication and security headers. Using `getToken` from `next-auth/jwt` or `getServerSession` with `authOptions` causes runtime import errors in Auth.js v5.
+
+**Refs**: OWASP A02:2025
 
 ---
 
@@ -393,7 +425,7 @@ module.exports = {
 
 **Why**: Unrestricted image domains enable SSRF and hosting of malicious content.
 
-**Refs**: CWE-918, OWASP A10:2025
+**Refs**: CWE-918, OWASP A02:2025 (SSRF is not a standalone category in OWASP Top 10 2025; maps to Security Misconfiguration)
 
 ---
 
