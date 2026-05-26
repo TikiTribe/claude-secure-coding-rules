@@ -3233,3 +3233,159 @@ audited_rules:
         but redundant and may create the impression that login() does not already handle
         session fixation. Advisory only.
     issues_filed: []
+
+  - path: rules/backend/vllm/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 6 rules. Four blocking defects: one removed API parameter, one dead import,
+      one Pydantic v1 validator that silently disappears under Pydantic v2, and OWASP LLM
+      Top 10 2025 category mismatches across three rules.
+
+      ISSUE 1 — disable_log_requests removed in vLLM 0.6.x (BLOCKING)
+        The parameter disable_log_requests=True is passed to the LLM() constructor in
+        four places (lines 33, 118, 392, and the Don't example at line 77) as a privacy
+        control against logging sensitive prompts. This kwarg was removed from EngineArgs
+        and AsyncEngineArgs in vLLM 0.6.x (GitHub issues #9708 and #23283 confirm
+        TypeError at runtime). Passing it to LLM() fails with an unexpected keyword
+        argument error. The correct approach for 0.6.x is the CLI flag
+        --disable-log-requests or the environment variable VLLM_DISABLE_LOG_REQUESTS=1.
+        Fix required: remove the constructor kwarg from all Do examples and add the
+        env-var/CLI approach for the OpenAI-compatible server path.
+
+      ISSUE 2 — from vllm.config import CacheConfig is a dead import (BLOCKING)
+        Line 96 imports CacheConfig from vllm.config but the symbol is never referenced
+        anywhere in the file. In vLLM 0.6.x the config submodule was reorganised and
+        CacheConfig is not guaranteed to be importable from vllm.config on all 0.6.x
+        patch releases. The import misleads practitioners and may raise ImportError.
+        Fix required: remove the unused import line.
+
+      ISSUE 3 — @validator is Pydantic v1 syntax; silently inert under Pydantic v2 (BLOCKING)
+        The FastAPI API-security Do example uses @validator("prompt") (line 376), which
+        is Pydantic v1. With FastAPI >= 0.100.0 and Pydantic v2 (the current default),
+        @validator is not invoked during model validation — the prompt injection-pattern
+        check disappears silently with no error or warning. The correct Pydantic v2
+        syntax is @field_validator("prompt", mode="before"). Because the validator's
+        purpose is injection detection, its silent failure is a security defect.
+        Fix required: replace @validator with @field_validator and add field_validator
+        to the pydantic import line.
+
+      ISSUE 4 — OWASP LLM Top 10 2025 category mismatches across three rules (BLOCKING)
+        The file references 2024-edition LLM category numbers that map to different
+        risks in the 2025 edition:
+        - Rule "Isolate KV Cache Per Request" (Refs line 83) cites OWASP LLM06 for
+          information disclosure across requests. In 2025 LLM06 = Excessive Agency.
+          Correct ref: LLM02 (Sensitive Information Disclosure).
+        - Rules "Validate PagedAttention Configuration" (line 151) and "Implement
+          Request Isolation in Batches" (line 254) cite OWASP LLM04 for resource
+          exhaustion/DoS. In 2025 LLM04 = Data and Model Poisoning.
+          Correct ref: LLM10 (Unbounded Consumption).
+        - Rule "Secure Model Source Verification" (line 345) cites OWASP LLM05 for
+          supply chain. In 2025 LLM05 = Improper Output Handling.
+          Correct ref: LLM03 (Supply Chain Vulnerabilities).
+        All three mismatches are in normative Refs fields and direct practitioners to
+        the wrong OWASP categories.
+        Fix required: update LLM06->LLM02, LLM04->LLM10, LLM05->LLM03.
+
+      ADVISORY — OpenAI-compatible server --api-key coverage gap
+        No rule covers the vllm serve / vllm.entrypoints.openai.api_server deployment
+        path where --api-key or VLLM_API_KEY is the auth mechanism. The existing API
+        Security rule demonstrates a custom FastAPI wrapper but not the built-in server.
+        Note that --api-key only protects /v1 endpoints; internal management endpoints
+        on the same HTTP server are unauthenticated. Advisory: add a rule or note
+        covering vllm serve --api-key and that limitation.
+    issues_filed: []
+
+  - path: rules/backend/autogen/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Sandbox Code Execution
+      - Validate Generated Code
+      - Require Human Approval for Dangerous Operations
+      - Protect Conversation Context
+      - Secure Agent LLM Configuration
+      - Restrict File Access
+    notes: |
+      Audited all 6 rule sections. Four distinct blocking issues found: three are
+      autogen 0.4.x API incompatibilities in Do examples, one is an OWASP LLM 2023->2025
+      numbering error. CWE IDs are all valid. GroupChat trust boundary and conversation
+      history isolation are covered. DockerCommandLineCodeExecutor is the preferred
+      executor (shown first). human_input_mode="ALWAYS" is present for high-impact ops.
+
+      OWASP LLM 2023->2025 NUMBERING: YES — one wrong-number instance and all refs
+      missing :2025 qualifiers.
+
+      ISSUE 1 — Human Approval rule: OWASP LLM08 maps to wrong 2025 category (STANDARDS MISMATCH / BLOCKING)
+        Lines 240 and 474 cite "OWASP LLM08" for the human-in-the-loop / oversight rule.
+        In the OWASP LLM Top 10 2025 taxonomy, LLM08:2025 is "Vector and Embedding
+        Weaknesses." Human oversight deficiency / autonomous agent scope is LLM06:2025
+        "Excessive Agency." The file uses the 2023 (v1.1) numbering where LLM08 was
+        "Excessive Agency." The Sandbox rule (line 89) and Quick Reference (line 470)
+        cite "OWASP LLM06" for excessive agency — correct category, wrong year label —
+        making the file internally inconsistent: LLM06 is right for code execution and
+        wrong for human oversight, both pointing at the same concept.
+        Fix required: change "OWASP LLM08" to "OWASP LLM06:2025 (Excessive Agency)"
+        in the human approval rule Refs and Quick Reference. Add :2025 qualifier to
+        all OWASP LLM references throughout the file.
+
+      ISSUE 2 — Sandbox rule Do example: execution_policies parameter does not exist in
+      LocalCommandLineCodeExecutor 0.4.x (BROKEN Do / BLOCKING)
+        Lines 38-45 instantiate LocalCommandLineCodeExecutor with:
+          execution_policies={"python": True, "bash": False, "javascript": False}
+        The autogen 0.4.x LocalCommandLineCodeExecutor class accepts timeout and
+        work_dir but has no execution_policies parameter. Passing this dict raises
+        TypeError at instantiation ("unexpected keyword argument 'execution_policies'").
+        The comment "Restricted execution" implies this parameter enforces a sandbox,
+        but the restriction is silently not applied even if the TypeError were caught.
+        Fix required: remove execution_policies; document that LocalCommandLineCodeExecutor
+        has no built-in language restriction; note that restricting execution languages
+        requires a custom executor subclass or relying solely on DockerCommandLineCodeExecutor.
+
+      ISSUE 3 — Sandbox rule Do example: docker_network parameter does not exist in
+      DockerCommandLineCodeExecutor 0.4.x (BROKEN Do / BLOCKING)
+        Lines 27-33 pass docker_network="none" to DockerCommandLineCodeExecutor.
+        This parameter does not exist in the 0.4.x API. The constructor accepts image,
+        timeout, and work_dir (among others) but not docker_network. The call raises
+        TypeError at instantiation, and the network isolation the comment claims is not
+        applied. Network isolation in autogen 0.4.x requires passing a pre-configured
+        docker.DockerClient with the target network set on the container host_config,
+        or using a custom DockerCommandLineCodeExecutor subclass.
+        Fix required: remove docker_network="none"; add a comment that network isolation
+        requires a custom Docker client configured before passing to the executor, or
+        link to the autogen 0.4.x docs for custom container configuration.
+
+      ISSUE 4 — File System rule Do example: bind_dir uses Docker volume-mount string
+      syntax; autogen 0.4.x bind_dir takes a Path object (BROKEN Do / BLOCKING)
+        Line 439 passes:
+          bind_dir="/app/data:/sandbox/data:ro"
+        The autogen 0.4.x DockerCommandLineCodeExecutor.bind_dir parameter accepts a
+        pathlib.Path (or str path) pointing to the host directory to bind-mount into
+        the container. It does not parse a Docker-style "src:dst:mode" string. Passing
+        the colon-delimited string causes the executor to treat the entire string as a
+        host path, which does not exist, resulting in a FileNotFoundError or silent bind
+        failure depending on Docker daemon version.
+        Fix required: replace bind_dir="/app/data:/sandbox/data:ro" with a valid path
+        such as bind_dir=Path("/app/data"); note that 0.4.x mounts bind_dir as
+        read-write inside the container and that read-only enforcement requires a custom
+        Docker container configuration.
+
+      Non-blocking observations (no status change):
+      - All OWASP LLM refs (LLM01, LLM06, LLM08) lack the :2025 version qualifier.
+        The file reads as using 2023 numbering throughout. ISSUE 1 fixes LLM08; a
+        sweep to add :2025 to LLM01 and LLM06 citations is also needed.
+      - MITRE ATLAS AML.T0051 (line 89) cited for code execution sandbox rule. ATLAS
+        live site returned 404 during this audit cycle (same as prior audits). From
+        training-set knowledge AML.T0051 is plausible (LLM Prompt Injection leading to
+        code execution). Retained with same caveat as agent-security.md.
+      - CodeValidator.DANGEROUS_IMPORTS denylist (lines 105-113) omits ctypes, mmap,
+        importlib, and cffi — all of which can load native libraries or execute arbitrary
+        code. DockerCommandLineCodeExecutor is the primary control; the validator is
+        defense-in-depth. Advisory only.
+      - ConversableAgent system_message security rules (lines 347-354) are prompt-level
+        controls. Per OWASP LLM01:2025, system-prompt instructions are bypassable via
+        injection. These should be noted as advisory, not primary controls. Advisory only.
+    issues_filed: []
