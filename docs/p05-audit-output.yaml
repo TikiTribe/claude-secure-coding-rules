@@ -3108,3 +3108,128 @@ audited_rules:
       - Quick Reference table (lines 450-460): matches inline rule levels and CWE IDs
         throughout. Helmet row correctly has no CWE listed.
     issues_filed: []
+
+  - path: rules/backend/fastapi/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Pydantic for Request Validation
+      - Validate Path Parameters
+      - Implement Secure JWT Handling
+      - Implement Rate Limiting
+      - Implement Resource-Level Authorization
+      - Use ORM with Parameterized Queries
+      - Don't Expose Sensitive Data in Responses
+      - Use Custom Exception Handlers
+      - Configure CORS Restrictively
+      - Secure LLM API Endpoints
+      - Secure Model Loading in FastAPI
+      - Implement AI-Specific Rate Limiting
+    notes: |
+      Audited all 12 rule sections across 8 categories. Four blocking defects found:
+      two OWASP LLM category mismatches, one deprecated primary mitigation, and
+      pervasive Pydantic v1 API usage. Two additional issues are non-blocking.
+
+      ISSUE 1 — Pydantic v1 API throughout (DEPRECATED API / BLOCKING)
+        Three locations use Pydantic v1-only APIs:
+          Line 30: @validator('password') — deprecated in Pydantic v2 (2023), removed in v3.
+          Line 305: class Config: orm_mode = True — v1 pattern; v2 uses
+            model_config = ConfigDict(from_attributes=True).
+          Line 439: @validator("prompt") in LLMRequest — same deprecation.
+        Checklist item 3 requires Pydantic v2 with model_config and field_validator.
+        Presenting @validator and class Config in strict-level Do examples teaches the
+        deprecated API and will generate DeprecationWarnings in FastAPI projects using
+        Pydantic v2 (the default since FastAPI 0.100+).
+        Fix required: replace @validator with @field_validator (with mode='before' or
+        'after' as appropriate); replace class Config: orm_mode = True with
+        model_config = ConfigDict(from_attributes=True); add 'from pydantic import
+        ConfigDict, field_validator' to the relevant import lines.
+
+      ISSUE 2 — Denylist as primary prompt injection defense (DEPRECATED MITIGATION / BLOCKING)
+        Lines 439-450: LLMRequest.validate_prompt() implements a substring denylist
+        ("ignore previous instructions", "system:", "admin:", "forget your instructions")
+        as the primary injection defense in a strict-level Do example. OWASP LLM01:2025
+        explicitly de-emphasizes pattern matching in favor of structural role isolation
+        (separate system/user message roles at inference time), semantic filtering, and
+        privilege reduction. This anti-pattern was flagged as blocking in ai-security.md,
+        rag-security.md, and agent-security.md audits. The patterns shown are trivially
+        bypassed by encoding, paraphrasing, Unicode substitution, or multilingual injection.
+        Fix required: remove the denylist validator; name structural role isolation as the
+        primary Do defense (pass user content in the user message role, not by string
+        concatenation into the system prompt); reference OWASP LLM01:2025; note denylist
+        limitations if retained as a defense-in-depth layer.
+
+      ISSUE 3 — OWASP LLM04 misapplied to resource exhaustion (WRONG CATEGORY / BLOCKING)
+        Line 706: "Implement AI-Specific Rate Limiting" Refs cite "OWASP LLM04" for
+        resource exhaustion / DoS protection. In OWASP LLM Top 10 2025, LLM04:2025 is
+        "Data and Model Poisoning" — not resource exhaustion. The correct 2025 category
+        for unbounded consumption and resource DoS is LLM10:2025 (Unbounded Consumption),
+        confirmed against the live OWASP LLM Top 10 page during this audit.
+        Fix required: replace "OWASP LLM04" with "OWASP LLM10:2025 (Unbounded Consumption)".
+        Also add :2025 qualifier to all OWASP LLM refs in the file (lines 540, 614, 706)
+        to resolve the systemic version-ambiguity pattern.
+
+      ISSUE 4 — OWASP LLM02 misapplied to output validation (WRONG CATEGORY / BLOCKING)
+        Line 540: "Secure LLM API Endpoints" Refs cite "OWASP LLM02" for the output
+        validation control. In OWASP LLM Top 10 2025, LLM02:2025 is "Sensitive Information
+        Disclosure" — not output handling. The correct 2025 ref for improper output handling
+        and insufficient output validation is LLM05:2025 (Improper Output Handling).
+        This is the same 2023-v1.1 numbering error found in ai-security.md and
+        agent-security.md.
+        Fix required: replace "OWASP LLM02" with "OWASP LLM05:2025 (Improper Output
+        Handling)" in the Secure LLM API Endpoints Refs line.
+
+      Non-blocking observations (no status change):
+      - Line 79: Path(..., regex=r'...') deprecated in FastAPI 0.110+ in favor of
+        pattern=. Generates DeprecationWarning in current versions. Advisory: rename
+        regex= to pattern=.
+      - Line 121: datetime.utcnow() deprecated in Python 3.12+ (PEP 615). Use
+        datetime.now(timezone.utc). Advisory only; functional but triggers DeprecationWarning.
+      - Line 113: python-jose is effectively unmaintained (last release 2022; open CVEs).
+        The audit checklist accepts PyJWT or python-jose; both named as valid. Advisory:
+        add a comment recommending PyJWT as the actively maintained alternative.
+      - Line 614: "OWASP LLM05" for Secure Model Loading — in 2025, model artifact
+        supply-chain risk maps to LLM03:2025 (Supply Chain) or LLM04:2025 (Data and
+        Model Poisoning) more precisely. Missing :2025 qualifier. Advisory.
+    issues_filed: []
+
+  - path: rules/backend/django/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules: production settings, CSRF, SQL/ORM, XSS/templates, authentication,
+      authorization, file uploads, and session security. Django 5.x API compatibility
+      confirmed throughout — all ORM patterns, decorators, middleware, session settings,
+      and file validators are current. OWASP 2025 category refs and CWE IDs verified:
+      CWE-215/A05, CWE-352/A01, CWE-89/A03, CWE-79/A03, CWE-916/A07, CWE-862/A01,
+      CWE-434/A04, CWE-384/A07 — all correct. ORM rule covers raw(), extra() with user
+      input, and parameterized cursor.execute() — complete. CSRF middleware assumed enabled
+      by middleware list; template autoescape ON by default with |safe and autoescape-off
+      Don't examples present. ALLOWED_HOSTS and SECURE_* settings covered. One blocking
+      defect found.
+
+      ISSUE 1 — XSS rule Do example: bleach is a deprecated/archived library (BLOCKING)
+        Lines 174-184 recommend mozilla/bleach as the HTML sanitization library in both
+        the template snippet ({% load bleach_tags %} / {{ user_html|bleach }}) and the
+        view example (import bleach; bleach.clean(user_html, tags=allowed_tags)). Mozilla
+        archived the bleach repository on 2023-01-23 and explicitly advises migration to
+        nh3 (a Rust-backed Ammonia binding) or html-sanitizer. An archived library
+        receives no security patches; presenting it in a Do block directs practitioners
+        to an unmaintained dependency whose own maintainers flagged as end-of-life.
+        Fix required: replace bleach with nh3 (import nh3; nh3.clean(user_html,
+        tags={...})) or html-sanitizer; remove the bleach_tags template tag reference;
+        add a note that bleach is archived.
+
+      Non-blocking observations (no status change):
+      - make_password imported but never used (line 217): The authentication Do block
+        imports make_password from django.contrib.auth.hashers but does not call it.
+        Misleading but not a security defect — Django's authenticate() handles
+        password verification internally. Advisory only.
+      - cycle_key() after login() is redundant (lines 372-373): Django's login() has
+        called cycle_key() internally since Django 1.4. The explicit call is harmless
+        but redundant and may create the impression that login() does not already handle
+        session fixation. Advisory only.
+    issues_filed: []
