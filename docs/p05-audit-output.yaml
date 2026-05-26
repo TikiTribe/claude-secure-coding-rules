@@ -3390,6 +3390,102 @@ audited_rules:
         injection. These should be noted as advisory, not primary controls. Advisory only.
     issues_filed: []
 
+  - path: rules/backend/triton/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Secure Model Repository Configuration
+      - Enforce GPU and Memory Isolation
+      - Validate Ensemble Pipeline Security
+      - Secure gRPC and HTTP Endpoints
+      - Sandbox Custom Backend Code
+    notes: |
+      Audited all 5 rule sections. Three blocking issues found: one fabricated API call
+      in the Do example, two wrong OWASP LLM 2025 category numbers. All CWE IDs are
+      valid. gRPC TLS flags (--grpc-use-ssl, --grpc-server-cert, --grpc-server-key,
+      --grpc-root-cert) are correct for Triton 23.x and 24.x. GPU isolation via
+      instance_group.gpus[] pinning is valid at the config level. BLS input validation
+      pattern is correct. Symlink traversal check via os.path.realpath() present in
+      custom backend rule. Model repository validation lacks a symlink check, but the
+      Docker :ro volume mount in the GPU isolation rule provides a complementary control.
+
+      OWASP LLM 2023->2025 NUMBERING: YES — two wrong numbers, all refs missing :2025.
+        LLM04, LLM05, LLM06 are cited without :2025 qualifiers throughout. Two refs carry
+        the wrong number when read as 2025:
+          - LLM05 (model repository rule, Refs line 131): In 2025, LLM05:2025 =
+            "Improper Output Handling." Model repository security (unsafe pickle
+            deserialization, untrusted model artifact loading) maps to LLM03:2025
+            (Supply Chain Vulnerabilities), not LLM05.
+          - LLM06 (custom backend rule, Refs line 613): In 2025, LLM06:2025 =
+            "Excessive Agency." Custom backend arbitrary code execution (exec, pickle,
+            subprocess) maps to LLM05:2025 (Improper Output Handling) or more precisely
+            to CWE-94/CWE-78 which are already cited; LLM06 as written is the wrong
+            category.
+          - LLM04 (ensemble rule, Refs line 398): In 2025, LLM04:2025 = "Data and
+            Model Poisoning." Ensemble pipeline security (unpinned versions, circular
+            deps, missing BLS validation) is more accurately LLM03:2025 (Supply Chain
+            Vulnerabilities). LLM04 is tangentially relevant but not the primary mapping.
+
+      ISSUE 1 — Secure gRPC Do example: grpcclient.ssl_context_for_root_certs() is a
+      fabricated API and ssl_context variable is never used (CODE BUG / CRITICAL)
+        The create_secure_client() function (lines 436-450) calls:
+          ssl_context = grpcclient.ssl_context_for_root_certs(cert_path + "/ca.crt")
+        The function ssl_context_for_root_certs() does not exist in tritonclient.grpc.
+        This call raises AttributeError at runtime. Additionally, ssl_context is assigned
+        but never used anywhere in the function — the InferenceServerClient is initialized
+        with root_certificates= directly (the correct pattern). The two lines (grpcclient
+        import ssl and the ssl_context assignment) are dead code built on a nonexistent API.
+        'import ssl' at the top of the block is also unused.
+        Fix required: remove the grpcclient.ssl_context_for_root_certs() call and the
+        ssl_context variable; remove 'import ssl'; the InferenceServerClient constructor
+        parameters (root_certificates, private_key, certificate_chain) are already the
+        correct tritonclient mTLS pattern.
+
+      ISSUE 2 — OWASP LLM05 cited for model repository rule is wrong for 2025
+      (STANDARDS MISMATCH / BLOCKING)
+        Refs line 131: "OWASP LLM05, CWE-502, CWE-400"
+        LLM05:2025 = "Improper Output Handling." The model repository rule covers unsafe
+        deserialization (pickle) and untrusted model artifact loading, which maps to
+        LLM03:2025 (Supply Chain Vulnerabilities), not LLM05.
+        Fix required: replace "OWASP LLM05" with "OWASP LLM03:2025"; add :2025 qualifier.
+
+      ISSUE 3 — OWASP LLM06 cited for custom backend rule is wrong for 2025
+      (STANDARDS MISMATCH / BLOCKING)
+        Refs line 613: "CWE-94, CWE-78, OWASP LLM06"
+        LLM06:2025 = "Excessive Agency." The custom backend rule covers arbitrary code
+        execution via exec(), subprocess.run(), and pickle.loads() in Python backends.
+        This maps to LLM05:2025 (Improper Output Handling) not Excessive Agency.
+        Fix required: replace "OWASP LLM06" with "OWASP LLM05:2025"; add :2025 qualifier.
+
+      Non-blocking observations (no status change):
+      - LLM04 (ensemble rule, line 398): LLM04:2025 is "Data and Model Poisoning."
+        Ensemble pipeline integrity (unpinned model versions, circular deps) maps more
+        precisely to LLM03:2025 (Supply Chain). LLM04 is not wrong enough to block
+        but LLM03 is the tighter fit. Recommend updating to "OWASP LLM03:2025".
+      - Docker image tag 'nvcr.io/nvidia/tritonserver:23.10-py3' in GPU isolation
+        Do example. Audit requires 24.x compatibility; 24.x config.pbtxt syntax and
+        CLI flags are unchanged from 23.x so functional correctness is unaffected, but
+        the example should reference a 24.x tag for version alignment.
+      - @validator usage in API security Do example (lines 461-473): Pydantic v1 syntax,
+        deprecated in Pydantic v2 (2023). Recommend migrating to @field_validator with
+        mode='before'. Advisory only.
+      - No per-tenant CUDA stream isolation shown in GPU isolation rule. The rule correctly
+        demonstrates GPU-level pinning via instance_group.gpus[], which is the configurable
+        Triton isolation mechanism. CUDA stream isolation at the driver level requires MIG
+        (Multi-Instance GPU) or process isolation outside Triton config. A note explaining
+        this distinction would strengthen the Why text. Advisory only.
+      - No symlink traversal check in validate_model_repository() (lines 70-96). The
+        iterator checks file suffixes but does not detect symlinks pointing outside
+        /models. The custom backend sandbox rule (line 539) does use os.path.realpath().
+        A corresponding check in validate_model_repository() would close the gap.
+        Advisory only — the Docker :ro mount in the GPU isolation rule provides a
+        complementary defense.
+      - All CWE IDs verified valid: CWE-502, CWE-400, CWE-770, CWE-269, CWE-20,
+        CWE-306, CWE-319, CWE-94, CWE-78. No fabricated or retired CWE IDs.
+    issues_filed: []
+
   - path: rules/backend/langchain/CLAUDE.md
     status: failed
     reviewed_by: rocklambros
