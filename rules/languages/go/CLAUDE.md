@@ -1,6 +1,6 @@
 # Go Security Rules
 
-Security rules for Go development in Claude Code.
+Security rules for Go development in Claude Code. Targets Go 1.22+.
 
 ## Prerequisites
 
@@ -19,6 +19,7 @@ Security rules for Go development in Claude Code.
 **Do**:
 ```go
 import (
+    "errors"
     "regexp"
     "unicode/utf8"
 )
@@ -114,7 +115,12 @@ db.Query("SELECT * FROM users WHERE id = " + userID)
 
 **Do**:
 ```go
-import "os/exec"
+import (
+    "errors"
+    "os/exec"
+    "regexp"
+    "strings"
+)
 
 func listFiles(dir string) ([]byte, error) {
     // Validate input
@@ -162,6 +168,8 @@ exec.Command("sh", "-c", fmt.Sprintf("grep %s file.txt", pattern))
 **Do**:
 ```go
 import (
+    "errors"
+    "os"
     "path/filepath"
     "strings"
 )
@@ -209,6 +217,7 @@ func readFile(filename string) ([]byte, error) {
 import (
     "crypto/rand"
     "encoding/base64"
+    "fmt"
 )
 
 func generateToken(length int) (string, error) {
@@ -399,6 +408,273 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 ---
 
+### Rule: Wrap and Unwrap Errors with errors.Is / errors.As
+
+**Level**: `warning`
+
+**When**: Comparing, wrapping, or inspecting errors at any call depth.
+
+**Do**:
+```go
+import (
+    "errors"
+    "fmt"
+)
+
+// Sentinel error defined once
+var ErrNotFound = errors.New("record not found")
+
+// Wrap with context while preserving the chain
+func fetchRecord(id int) error {
+    if id <= 0 {
+        return fmt.Errorf("fetchRecord: %w", ErrNotFound)
+    }
+    return nil
+}
+
+// Unwrap correctly — works at any depth in the chain
+func handleRecord(id int) {
+    err := fetchRecord(id)
+    if errors.Is(err, ErrNotFound) {
+        // Handle the specific sentinel
+        return
+    }
+
+    // Inspect the concrete type anywhere in the chain
+    var valErr *ValidationError
+    if errors.As(err, &valErr) {
+        log.Printf("validation failed: field=%s", valErr.Field)
+    }
+}
+```
+
+**Don't**:
+```go
+// VULNERABLE: == breaks as soon as the error is wrapped
+err := fetchRecord(id)
+if err == ErrNotFound { // fails when err is wrapped
+    return
+}
+
+// VULNERABLE: type assertion fails on wrapped errors
+if e, ok := err.(*ValidationError); ok { // fails when wrapped
+    _ = e
+}
+```
+
+**Why**: Direct `==` comparison and type assertions ignore the error chain produced by `fmt.Errorf("%w", ...)`. Any caller that wraps the error — a common pattern in layered Go code — makes the comparison silently false. `errors.Is` traverses the full `Unwrap` chain; `errors.As` finds the first matching type at any depth.
+
+**Refs**: CWE-390, OWASP A05:2025
+
+---
+
+## Concurrency
+
+### Rule: Protect Shared State with sync.Mutex; Check for Data Races
+
+**Level**: `strict`
+
+**When**: Sharing mutable state across goroutines or using channels for coordination.
+
+**Do**:
+```go
+import (
+    "sync"
+)
+
+// Mutex guards all reads and writes to the shared field
+type SafeCounter struct {
+    mu    sync.Mutex
+    count int
+}
+
+func (c *SafeCounter) Increment() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.count++
+}
+
+func (c *SafeCounter) Value() int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.count
+}
+
+// Channel-based coordination: send ownership, never share pointers
+func producer(ch chan<- []byte) {
+    data := make([]byte, 64)
+    // populate data ...
+    ch <- data // transfer ownership; do not read data after this send
+}
+```
+
+**Don't**:
+```go
+// VULNERABLE: Data race — concurrent reads and writes without a lock
+type UnsafeCounter struct {
+    count int
+}
+
+func (c *UnsafeCounter) Increment() {
+    c.count++ // race condition
+}
+
+// VULNERABLE: Sharing a pointer through a channel without exclusive ownership
+func badProducer(shared *[]byte, ch chan<- *[]byte) {
+    ch <- shared
+    (*shared)[0] = 0 // race: receiver may be reading concurrently
+}
+```
+
+**Why**: Data races produce undefined behavior: silent corruption, crashes, or exploitable memory states. Go's memory model does not guarantee that unsynchronized reads see any particular write. A race on a map or slice can cause a panic that crashes the whole process.
+
+Run `go test -race ./...` in CI to detect races before they reach production. The race detector adds ~5-10x overhead but is the authoritative tool; `go vet` alone does not find data races.
+
+**Refs**: CWE-362, OWASP A04:2025
+
+---
+
+## Context Propagation
+
+### Rule: Propagate context.Context and Respect Cancellation
+
+**Level**: `warning`
+
+**When**: Writing functions that perform I/O, call downstream services, or run long-lived operations.
+
+**Do**:
+```go
+import (
+    "context"
+    "database/sql"
+    "errors"
+    "net/http"
+)
+
+// Accept ctx as the first parameter; pass it through every blocking call
+func fetchUser(ctx context.Context, db *sql.DB, id int) (*User, error) {
+    var u User
+    err := db.QueryRowContext(ctx,
+        "SELECT id, name FROM users WHERE id = $1", id,
+    ).Scan(&u.ID, &u.Name)
+    if err != nil {
+        return nil, fmt.Errorf("fetchUser: %w", err)
+    }
+    return &u, nil
+}
+
+// Check ctx.Done() in tight loops or before expensive work
+func processItems(ctx context.Context, items []string) error {
+    for _, item := range items {
+        select {
+        case <-ctx.Done():
+            // Return the cancellation reason (context.Canceled or
+            // context.DeadlineExceeded) so callers can distinguish them
+            return fmt.Errorf("processItems: %w", ctx.Err())
+        default:
+        }
+        if err := process(ctx, item); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+// Set deadlines at the entry point; let the context flow from there
+func handler(w http.ResponseWriter, r *http.Request) {
+    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+    defer cancel()
+
+    user, err := fetchUser(ctx, db, userID)
+    if errors.Is(err, context.DeadlineExceeded) {
+        http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+        return
+    }
+    // ...
+}
+```
+
+**Don't**:
+```go
+// VULNERABLE: Ignores cancellation — goroutine leaks and resource exhaustion
+func fetchUserBad(db *sql.DB, id int) (*User, error) {
+    // db.QueryRow has no deadline; runs until the DB responds or the process dies
+    row := db.QueryRow("SELECT id, name FROM users WHERE id = $1", id)
+    // ...
+}
+
+// VULNERABLE: Stores context in a struct — violates the Go context contract
+type BadService struct {
+    ctx context.Context
+}
+```
+
+**Why**: A goroutine that ignores `ctx.Done()` keeps running after the caller has given up, holding DB connections, file handles, or locks until the process exits. Leaked goroutines accumulate under load and cause resource exhaustion (CWE-400). Storing a context in a struct hides its lifetime from callers and breaks cancellation propagation across API boundaries.
+
+**Refs**: CWE-400, OWASP A04:2025
+
+---
+
+## Template Security
+
+### Rule: Use html/template, Not text/template, for HTML Output
+
+**Level**: `strict`
+
+**When**: Rendering HTML responses or generating any output that will be interpreted by a browser.
+
+**Do**:
+```go
+import (
+    "html/template"
+    "net/http"
+)
+
+var tmpl = template.Must(template.New("page").Parse(`
+<!DOCTYPE html>
+<html>
+<body>
+  <h1>Hello, {{.Name}}!</h1>
+  <p>Your message: {{.Message}}</p>
+</body>
+</html>
+`))
+
+// html/template escapes Name and Message automatically based on context
+func renderPage(w http.ResponseWriter, name, message string) {
+    data := struct {
+        Name    string
+        Message string
+    }{name, message}
+
+    if err := tmpl.Execute(w, data); err != nil {
+        http.Error(w, "render error", http.StatusInternalServerError)
+    }
+}
+```
+
+**Don't**:
+```go
+import "text/template" // VULNERABLE: No HTML escaping
+
+var tmpl = template.Must(template.New("page").Parse(`
+<h1>Hello, {{.Name}}!</h1>
+`))
+
+// If Name is `<script>alert(1)</script>`, it renders as-is
+func renderPage(w http.ResponseWriter, name string) {
+    tmpl.Execute(w, map[string]string{"Name": name})
+}
+```
+
+**Why**: `text/template` performs no context-aware escaping. An attacker who controls any template variable can inject arbitrary HTML or JavaScript, producing stored or reflected XSS. `html/template` applies context-sensitive escaping automatically: values in HTML element content, attribute values, URL parameters, and JavaScript contexts are each escaped with the correct encoding for that position. The only legitimate use of `text/template` is for non-HTML output (plain text, Markdown, configuration files) where browser interpretation is impossible.
+
+Do not bypass escaping with `template.HTML(userInput)` or `template.JS(userInput)` unless the value was produced by the application itself and its content is fully controlled.
+
+**Refs**: CWE-79, OWASP A03:2025
+
+---
+
 ## Quick Reference
 
 | Rule | Level | CWE |
@@ -412,9 +688,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 | HTTP timeouts | warning | CWE-400 |
 | TLS validation | strict | CWE-295 |
 | Safe error handling | warning | CWE-209 |
+| errors.Is / errors.As | warning | CWE-390 |
+| Mutex / data race prevention | strict | CWE-362 |
+| Context propagation | warning | CWE-400 |
+| html/template for HTML | strict | CWE-79 |
 
 ---
 
 ## Version History
 
-- **v1.0.0** - Initial Go security rules
+- **v2.0.0** - Added concurrency, context propagation, template XSS, and error wrapping rules; fixed missing imports in validateUsername and safeReadFile
