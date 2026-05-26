@@ -3389,3 +3389,88 @@ audited_rules:
         controls. Per OWASP LLM01:2025, system-prompt instructions are bypassable via
         injection. These should be noted as advisory, not primary controls. Advisory only.
     issues_filed: []
+
+  - path: rules/backend/langchain/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Sanitize User Input in Prompts
+      - Validate LLM Outputs Before Use
+      - Implement Tool Allowlists
+      - Validate Tool Parameters
+      - Sanitize Memory Contents
+      - Implement Chain Safety Controls
+      - Validate Retrieved Documents
+      - Secure Graph Execution
+      - Secure LLM API Credentials
+    notes: |
+      Audited all 9 rule sections. Multiple blocking defects across nearly every code block.
+      The file targets a pre-0.3 LangChain API surface throughout.
+
+      ISSUE 1 — Pervasive deprecated imports (BLOCKING)
+        Every rule block imports from the monolithic `langchain.*` namespace, which was
+        split into partner packages in 0.2.x and made the primary interface in 0.3.x.
+        Failing imports across the file:
+          from langchain.llms import OpenAI              → langchain_openai.OpenAI
+          from langchain.schema import HumanMessage      → langchain_core.messages
+          from langchain.agents import Tool              → langchain_core.tools.Tool
+          from langchain.tools import BaseTool           → langchain_core.tools.BaseTool
+          from langchain.memory import ConversationBufferWindowMemory
+                                                         → deprecated; use langgraph
+                                                           checkpointer or langchain_community
+          from langchain.chains import LLMChain, SequentialChain → deprecated in 0.3.x
+          from langchain.vectorstores import Chroma      → langchain_chroma.Chroma
+          from langchain.callbacks import BaseCallbackHandler → langchain_core.callbacks
+          from langchain.callbacks import get_openai_callback → langchain_community.callbacks
+          from langgraph.checkpoint import MemorySaver   → langgraph.checkpoint.memory.MemorySaver
+        Practitioners copy-pasting these will receive ImportError on langchain 0.3.x.
+        Fix required: update all imports to current package locations.
+
+      ISSUE 2 — chain.run() and LLMChain/SequentialChain throughout (BLOCKING)
+        The Chain Security rule uses chain.run(input), LLMChain, and SequentialChain.
+        chain.run() was deprecated in 0.2.x and removed in 0.3.x; the current pattern is
+        chain.invoke({"key": value}). LLMChain and SequentialChain are deprecated in favour
+        of LCEL (prompt | llm piping). No LCEL syntax appears anywhere in the file.
+        Fix required: replace LLMChain/SequentialChain/chain.run() with LCEL equivalents
+        using the pipe operator and .invoke().
+
+      ISSUE 3 — Pydantic v1 @validator in Validate Tool Parameters (BLOCKING)
+        The Do example uses:
+          @validator('query')
+          def sanitize_query(cls, v):
+        @validator is Pydantic v1 syntax. LangChain 0.3.x requires Pydantic v2, where the
+        equivalent is @field_validator('query', mode='before'). Running this against a
+        current LangChain 0.3.x environment raises an error under strict V2 mode.
+        Fix required: replace @validator with @field_validator with explicit mode argument.
+
+      ISSUE 4 — Substring denylist as primary prompt injection mitigation (BLOCKING)
+        Both Memory Sanitization and RAG Validate Retrieved Documents use regex substring
+        denylist patterns as the primary injection defense:
+          re.sub(r'(SYSTEM:|ADMIN:|IGNORE PREVIOUS)', '[FILTERED]', ...)
+          re.sub(r'(SYSTEM:|IGNORE|NEW INSTRUCTIONS:)', '', ...)
+        Substring denylists are a deprecated mitigation per OWASP LLM01:2025: trivially
+        bypassed by encoding, spacing, or paraphrase. Current recommended mitigations are
+        structured outputs, privilege segregation (system vs. user message roles), and
+        input allowlists. The denylist should be advisory/defense-in-depth, not the Do
+        pattern.
+        Fix required: replace denylist as primary Do pattern with structured output
+        segregation or allowlist approach; retain denylist only as supplementary control.
+
+      ISSUE 5 — OWASP LLM refs lack year suffix (BLOCKING for consistency)
+        All OWASP LLM refs appear without year: OWASP LLM01, LLM02, LLM04, LLM07, LLM08.
+        Other files in this repo use OWASP LLM01:2025. Category numbering differs between
+        the 2023 v1.1 and 2025 v2.0 lists; ambiguity is not purely cosmetic.
+        Fix required: append :2025 to all OWASP LLM ref numbers.
+
+      Non-blocking observations (no status change):
+      - MITRE ATLAS AML.T0051 is a valid ID format (AML.TXXXX). Confirm current technique
+        name against ATLAS catalogue ("LLM Prompt Injection"). Advisory.
+      - RAG rule references LLM01 but should also cite LLM06:2025 (Sensitive Information
+        Disclosure) for the sensitive-data-in-retrieved-docs vector. Advisory.
+      - LangGraph interrupt_before=["tools"] is valid in langgraph 0.2.x+ for human-in-
+        the-loop checkpoints. Correct pattern; no defect.
+      - All CWE IDs are valid: CWE-20, CWE-22, CWE-77, CWE-78, CWE-79, CWE-94, CWE-200,
+        CWE-359, CWE-400, CWE-532, CWE-798. No fake or retired IDs.
+    issues_filed: []
