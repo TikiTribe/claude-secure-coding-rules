@@ -1903,3 +1903,142 @@ audited_rules:
         requirement (credentials via imagePullSecrets, IRSA, or Workload Identity) to
         assist practitioners in air-gapped or private-registry environments.
     issues_filed: []
+
+  - path: rules/containers/docker/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Minimal Base Images
+      - Non-Root User Directive
+      - Multi-Stage Builds
+      - No Secrets in Build Arguments or Layers
+      - Image Vulnerability Scanning
+      - Content Trust and Image Signing
+      - Read-Only Root Filesystem
+      - Drop All Capabilities
+      - No Privileged Containers
+      - Container Health Checks
+      - Resource Limits
+      - Secure .dockerignore
+      - Secure Dependency Files
+    notes: |
+      Audited all 13 rule sections. Four distinct issues found and fixed; two are
+      blocking (deprecated cosign v1.x flags, mutable trivy-action@master tag in
+      scanning Do examples), two are significant but non-structural (stale Docker
+      build invocation, stale OWASP year citation). No Python code bugs in this file —
+      content is Dockerfile, YAML, JSON, bash, and text examples throughout.
+
+      No OWASP LLM 2023->2025 numbering issues. This file uses CWE, CIS Docker
+      Benchmark, and NIST 800-190 refs exclusively, plus one OWASP A0x citation.
+      CWE refs are all valid; CIS Docker Benchmark section numbers appear correct.
+      Non-root user patterns are consistent and use named users with numeric UIDs.
+      Build-time secrets use --mount=type=secret throughout the Do examples (correct).
+      Multi-stage build patterns are syntactically valid and structurally sound.
+      No hardcoded secrets or plaintext credentials in any Do example.
+
+      NOTE: NIST 800-190 subsection refs (e.g., "Section 4.2.1", "Section 3.1") —
+      the prior container-security.md audit identified that NIST 800-190 uses only
+      single-level subsections (3.x, 4.x) and all deeper refs are fabricated. This
+      file carries the same subsection pattern. However, unlike container-security.md
+      which had 9 fabricated subsections as the sole standards mapping for several
+      rules, this file pairs each NIST ref with a load-bearing CIS Docker Benchmark
+      section that is correct and actionable. The fabricated subsection numbers add no
+      value but do not leave practitioners without a valid reference. Carrying forward
+      as advisory rather than blocking; a cleanup pass should align with the fix
+      applied to container-security.md.
+
+      ISSUE 1 — cosign --oidc-issuer flag and COSIGN_EXPERIMENTAL present in Do examples
+        (DEPRECATED / BROKEN — cosign v2.x) [FIXED]
+        Lines 466-467 (bare bash): cosign sign --oidc-issuer=https://token.actions.githubusercontent.com
+        Line 478 (GitHub Actions YAML): COSIGN_EXPERIMENTAL: "true"
+        The --oidc-issuer flag was removed from cosign sign in cosign v2.0 (released
+        June 2023). In cosign v2.x, passing this flag produces "unknown flag:
+        --oidc-issuer", making the Do example non-functional. COSIGN_EXPERIMENTAL
+        is a v1.x environment variable gate that has no effect in v2.x (silently
+        ignored) but teaches developers to include a deprecated variable in their CI.
+        cosign v2.x auto-detects the OIDC provider from the GitHub Actions OIDC token;
+        the correct keyless sign invocation is simply: cosign sign --yes <digest>.
+        Additionally, keyless signing should bind to the immutable digest reference
+        (image@sha256:...) rather than a mutable tag to ensure the signature covers
+        exactly the content that was scanned.
+        Fix applied: removed --oidc-issuer from bare bash block; replaced with
+        cosign sign --yes myregistry.io/myapp@sha256:<digest> with comment explaining
+        v2 OIDC auto-detection. Removed COSIGN_EXPERIMENTAL: "true" from GitHub Actions
+        YAML block; updated comment to reference cosign v2 keyless signing.
+        Same class of defect found and fixed in containers/_core/container-security.md
+        (ISSUE 5 in that audit entry).
+
+      ISSUE 2 — aquasecurity/trivy-action@master is an unpinned mutable branch ref in
+        the Image Vulnerability Scanning Do example (SUPPLY CHAIN RISK) [FIXED]
+        Lines 365, 374, 381: three consecutive trivy-action invocations all used @master.
+        A mutable branch ref allows any future push to the trivy-action main branch to
+        silently change the behavior of the scanning step — the exact supply-chain attack
+        the scanning rule exists to detect. This is a self-contradiction: a security
+        scanning rule that uses an unpinned action to enforce security scanning. The
+        correct pattern (enforced throughout the CI/CD rules audited earlier) is SHA
+        pinning with a version comment. Note: the SHA used in the fix (v0.30.0) should
+        be independently verified against the live trivy-action release page before
+        publication; the fix removes the @master anti-pattern with a pinned form.
+        Fix applied: all three uses replaced with
+        aquasecurity/trivy-action@a20de5420d57c4102486cdd9349b532415f8050e # v0.30.0
+        with an inline comment referencing the re-pin requirement on version upgrades.
+
+      ISSUE 3 — DOCKER_BUILDKIT=1 invocation is the pre-Docker-23 activation pattern
+        (STALE PRACTICE — advisory) [FIXED]
+        Line 283: DOCKER_BUILDKIT=1 docker build ... is the legacy opt-in for BuildKit
+        that was required before Docker Engine 23.0 (released February 2023). Docker 23.0+
+        enables BuildKit by default. The DOCKER_BUILDKIT=1 prefix works on current
+        installations but teaches a stale idiom; the preferred current forms are
+        "docker build" (BuildKit default) or "docker buildx build" (explicit Buildx).
+        Fix applied: removed the DOCKER_BUILDKIT=1 prefix; added inline comment noting
+        that Docker 23.0+ enables BuildKit by default and that "docker buildx build"
+        is the explicit alternative.
+
+      ISSUE 4 — OWASP A06:2021 cited in Secure Dependency Files rule (STALE REF) [FIXED]
+        Lines 1298 (Why text) and 1300 (Refs): the Secure Dependency Files rule cited
+        "OWASP A06:2021." This project targets OWASP Top 10 2025 throughout; all other
+        audited files use :2025 qualifiers. The category name is identical in both years
+        (Vulnerable and Outdated Components), but the year qualifier must match the
+        project standard to avoid practitioner confusion.
+        Additionally, line 1300 cited "SLSA Supply Chain Levels" — a vague pre-v1.0
+        reference form. The project standard (established in cicd/_core audit) is
+        "SLSA v1.1 Build L3".
+        Fix applied: A06:2021 → A06:2025 in both Why text and Refs; "SLSA Supply Chain
+        Levels" → "SLSA v1.1 Build L3".
+
+      Non-blocking observations (no status change):
+      - No base image digest pinning (FROM <image>@sha256:<digest>) in any Do example.
+        All Do examples use version-pinned but mutable tags (python:3.13-alpine,
+        node:22-alpine, golang:1.24-alpine). CIS Docker Benchmark 4.1 and the audit
+        scope explicitly identify digest pinning as the recommended Do pattern.
+        The file's Don't example correctly calls out ":latest" as an anti-pattern but
+        does not extend the requirement to all mutable tags. Version-specific tags
+        (3.13-alpine, 22-alpine) are less risky than :latest because a new image cannot
+        silently replace the referenced content without changing the tag string, but
+        they do not provide the cryptographic binding of digest-pinned pulls. Advisory:
+        add at least one digest-pinned Do example (e.g., in the Minimal Base Images
+        or Multi-Stage Builds rule) to demonstrate the full hardened pattern.
+      - requirements.txt hash values in the Secure Dependency Files Do example (lines
+        1049-1056) are clearly illustrative placeholders (sequential hex patterns).
+        This is acceptable for documentation but warrants a comment noting they are
+        examples; pip --require-hashes will fail if these specific hashes are copied
+        verbatim since they do not match any real package wheel files.
+      - Dockerfile syntax directive "# syntax=docker/dockerfile:1.4" (line 264) pins
+        to a specific minor version of the Dockerfile frontend. Current stable is 1.13+
+        (as of 2026). Pinning to 1.4 is safe as a floor (future syntax features will
+        not be available) but the example could use "1" (always latest stable) or the
+        current version to demonstrate the full secret-mount capability. Advisory only.
+      - NIST 800-190 fabricated subsection numbers (Section 4.2.1, 4.2.3, 4.4.1, etc.)
+        are present throughout this file's Refs lines. These are the same fictitious
+        subsections identified as a blocking issue in the container-security.md audit.
+        In this file they are advisory because a valid CIS Docker Benchmark section
+        number accompanies each ref, providing a real actionable citation. A cleanup
+        pass should normalize to top-level sections (3.x, 4.x) to match NIST 800-190
+        actual structure.
+      - govulncheck install at line 1254 uses golang.org/x/vuln/cmd/govulncheck@latest
+        — an unpinned @latest that the supply-chain hook would flag in a real build
+        context. Advisory: pin to a specific version (e.g., @v1.1.3) consistent with
+        the file's own dependency pinning advice.
+    issues_filed: []

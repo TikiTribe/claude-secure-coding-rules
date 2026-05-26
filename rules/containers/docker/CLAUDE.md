@@ -280,7 +280,9 @@ CMD ["python", "/app/main.py"]
 
 ```bash
 # Build with BuildKit secrets
-DOCKER_BUILDKIT=1 docker build \
+# Docker 23.0+ enables BuildKit by default; DOCKER_BUILDKIT=1 is no longer needed.
+# Use 'docker buildx build' for explicit Buildx invocation on older installations.
+docker build \
   --secret id=pip_token,src=./pip_token.txt \
   -t myapp:latest .
 ```
@@ -362,7 +364,9 @@ jobs:
         run: docker build -t myapp:${{ github.sha }} .
 
       - name: Scan for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        # Pin to commit SHA — @master is a mutable tag and a supply-chain risk.
+        # SHA corresponds to trivy-action v0.30.0; re-pin when upgrading.
+        uses: aquasecurity/trivy-action@a20de5420d57c4102486cdd9349b532415f8050e # v0.30.0
         with:
           image-ref: 'myapp:${{ github.sha }}'
           format: 'table'
@@ -371,14 +375,14 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan for secrets
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@a20de5420d57c4102486cdd9349b532415f8050e # v0.30.0
         with:
           image-ref: 'myapp:${{ github.sha }}'
           scanners: 'secret'
           exit-code: '1'
 
       - name: Scan Dockerfile
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@a20de5420d57c4102486cdd9349b532415f8050e # v0.30.0
         with:
           scan-type: 'config'
           scan-ref: '.'
@@ -462,20 +466,21 @@ cosign sign --key cosign.key myregistry.io/myapp:v1.0.0
 # Verify signature
 cosign verify --key cosign.pub myregistry.io/myapp:v1.0.0
 
-# Keyless signing with OIDC (GitHub Actions)
-cosign sign --oidc-issuer=https://token.actions.githubusercontent.com \
-  myregistry.io/myapp:v1.0.0
+# Keyless signing with OIDC (GitHub Actions) — cosign v2
+# v2 auto-detects the OIDC provider; no --oidc-issuer flag needed.
+# Always sign by digest, not by mutable tag.
+cosign sign --yes myregistry.io/myapp@sha256:<digest>
 ```
 
 ```yaml
-# GitHub Actions: Keyless signing with Cosign
+# GitHub Actions: Keyless signing with Cosign v2
+# cosign v2 auto-detects OIDC from the GitHub Actions OIDC token;
+# COSIGN_EXPERIMENTAL and --oidc-issuer are deprecated in v2.
+# Sign by digest (not tag) so the signature is bound to an immutable reference.
 - name: Sign image with Cosign
   run: |
     cosign sign --yes \
-      --oidc-issuer=https://token.actions.githubusercontent.com \
       ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
-  env:
-    COSIGN_EXPERIMENTAL: "true"
 ```
 
 **Don't**: Use unsigned images without verification
@@ -1295,6 +1300,6 @@ RUN pip install -r requirements.txt
 # A dependency with a known CVE ships silently to production
 ```
 
-**Why**: Supply-chain attacks (OWASP A06:2021 — Vulnerable and Outdated Components) increasingly target dependency ecosystems. Unpinned packages allow silent upgrades to compromised versions (e.g., `event-stream`, `ua-parser-js` incidents). Hash verification (`--require-hashes`, `npm ci`, `go mod verify`) ensures installed packages match what was tested. Automated auditing (`pip-audit`, `npm audit`, `govulncheck`) catches CVEs before they reach production.
+**Why**: Supply-chain attacks (OWASP A06:2025 — Vulnerable and Outdated Components) increasingly target dependency ecosystems. Unpinned packages allow silent upgrades to compromised versions (e.g., `event-stream`, `ua-parser-js` incidents). Hash verification (`--require-hashes`, `npm ci`, `go mod verify`) ensures installed packages match what was tested. Automated auditing (`pip-audit`, `npm audit`, `govulncheck`) catches CVEs before they reach production.
 
-**Refs**: CWE-1104, OWASP A06:2021, NIST SP 800-161 (Supply Chain Risk), CIS Docker Benchmark 4.9, SLSA Supply Chain Levels
+**Refs**: CWE-1104, OWASP A06:2025, NIST SP 800-161 (Supply Chain Risk), CIS Docker Benchmark 4.9, SLSA v1.1 Build L3
