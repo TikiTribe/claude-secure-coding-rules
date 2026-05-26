@@ -3175,6 +3175,9 @@ audited_rules:
         Fix required: add file.mimetype check alongside extension check in the Do
         example; add advisory comment that magic-byte verification is recommended for
         high-assurance contexts.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Do example gates on allowedMimes.includes(file.mimetype) alongside ext check; advisory magic-byte comment references file-type package.
     issues_filed: []
 
   - path: rules/backend/nestjs/CLAUDE.md
@@ -3253,6 +3256,9 @@ audited_rules:
         Advisory only.
       - Quick Reference table (lines 450-460): matches inline rule levels and CWE IDs
         throughout. Helmet row correctly has no CWE listed.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: ThrottlerModule.forRoot updated to v5 throttlers array with TTL in milliseconds; @Throttle uses named-throttler object form { default: { limit, ttl } }.
     issues_filed: []
 
   - path: rules/backend/fastapi/CLAUDE.md
@@ -3339,6 +3345,12 @@ audited_rules:
       - Line 614: "OWASP LLM05" for Secure Model Loading — in 2025, model artifact
         supply-chain risk maps to LLM03:2025 (Supply Chain) or LLM04:2025 (Data and
         Model Poisoning) more precisely. Missing :2025 qualifier. Advisory.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: @validator replaced with @field_validator throughout; class Config: orm_mode replaced with model_config = ConfigDict(from_attributes=True).
+      - ISSUE 2: Denylist removed as primary injection defense; structural role isolation is the Do pattern; denylist noted as supplementary only.
+      - ISSUE 3: AI rate limiting Refs updated to OWASP LLM10:2025 (Unbounded Consumption).
+      - ISSUE 4: Output validation Refs updated to OWASP LLM05:2025 (Improper Output Handling).
     issues_filed: []
 
   - path: rules/backend/django/CLAUDE.md
@@ -3378,6 +3390,9 @@ audited_rules:
         called cycle_key() internally since Django 1.4. The explicit call is harmless
         but redundant and may create the impression that login() does not already handle
         session fixation. Advisory only.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: bleach replaced with nh3 in XSS Do example; bleach_tags template tag removed; archived note present.
     issues_filed: []
 
   - path: rules/backend/vllm/CLAUDE.md
@@ -3441,6 +3456,12 @@ audited_rules:
         Note that --api-key only protects /v1 endpoints; internal management endpoints
         on the same HTTP server are unauthenticated. Advisory: add a rule or note
         covering vllm serve --api-key and that limitation.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: disable_log_requests constructor kwarg removed; VLLM_DISABLE_LOG_REQUESTS=1 env-var approach documented.
+      - ISSUE 2: Dead CacheConfig import removed.
+      - ISSUE 3: @validator replaced with @field_validator(mode='before') for prompt injection check.
+      - ISSUE 4: OWASP LLM category refs updated: LLM06->LLM02, LLM04->LLM10, LLM05->LLM03 with :2025 qualifiers.
     issues_filed: []
 
   - path: rules/backend/autogen/CLAUDE.md
@@ -3534,6 +3555,12 @@ audited_rules:
       - ConversableAgent system_message security rules (lines 347-354) are prompt-level
         controls. Per OWASP LLM01:2025, system-prompt instructions are bypassable via
         injection. These should be noted as advisory, not primary controls. Advisory only.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP LLM08 changed to LLM06:2025 for human approval rule; :2025 qualifiers added throughout.
+      - ISSUE 2: execution_policies removed from LocalCommandLineCodeExecutor; docker_network removed from DockerCommandLineCodeExecutor.
+      - ISSUE 3: bind_dir updated to accept Path object; Docker-style volume-mount string syntax removed.
+      - ISSUE 4: bind_dir value fixed to bind_dir=Path("/app/data"); read-only enforcement limitation noted.
     issues_filed: []
 
   - path: rules/backend/triton/CLAUDE.md
@@ -3630,6 +3657,11 @@ audited_rules:
         complementary defense.
       - All CWE IDs verified valid: CWE-502, CWE-400, CWE-770, CWE-269, CWE-20,
         CWE-306, CWE-319, CWE-94, CWE-78. No fabricated or retired CWE IDs.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Fabricated grpcclient.ssl_context_for_root_certs() call and dead ssl_context variable removed.
+      - ISSUE 2: OWASP LLM05 for model repository replaced with LLM03:2025; :2025 qualifier added.
+      - ISSUE 3: OWASP LLM06 for custom backend replaced with LLM05:2025; :2025 qualifier added.
     issues_filed: []
 
   - path: rules/backend/langchain/CLAUDE.md
@@ -3715,6 +3747,13 @@ audited_rules:
         the-loop checkpoints. Correct pattern; no defect.
       - All CWE IDs are valid: CWE-20, CWE-22, CWE-77, CWE-78, CWE-79, CWE-94, CWE-200,
         CWE-359, CWE-400, CWE-532, CWE-798. No fake or retired IDs.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Deprecated imports updated: langchain_openai, langchain_core.messages/tools/callbacks replace monolithic langchain.* namespace.
+      - ISSUE 2: chain.run()/LLMChain/SequentialChain replaced with LCEL pipe operator and chain.invoke().
+      - ISSUE 3: @validator replaced with @field_validator(mode='before') in tool parameter validation.
+      - ISSUE 4: Denylist demoted to supplementary defense-in-depth; structural segregation is the Do pattern.
+      - ISSUE 5: All OWASP LLM refs updated with :2025 qualifiers.
     issues_filed: []
 
   - path: rules/backend/bentoml/CLAUDE.md
@@ -3795,6 +3834,11 @@ audited_rules:
         the operational limitation and suggest secrets-manager lookup with refresh.
       - verify_bento() hashes service.py only. Complete provenance should cover the
         full bento directory or use bentoml's content-address hash. Advisory only.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP LLM05 replaced with LLM03:2025 (Supply Chain) in Bento Packaging Refs; LLM04 replaced with LLM01:2025 (Prompt Injection) in Service Security Refs.
+      - ISSUE 2: @validator replaced with @field_validator(mode='before') for PredictionInput; import updated to field_validator.
+      - ISSUE 3: /docs Swagger UI exposure rule added; BENTOML_HTTP_SWAGGER_ENABLED note and proxy-layer gating pattern present.
     issues_filed: []
 
   - path: rules/backend/mlflow/CLAUDE.md
@@ -3855,6 +3899,11 @@ audited_rules:
         An advisory note that the flag must be explicitly set would strengthen the rule.
       - Kubernetes example (line 506): image: mlflow-server:latest uses a mutable tag,
         contradicting the posture required by the containers/ rules. Advisory only.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP LLM05 replaced with LLM03:2025 (Supply Chain) in model loading rule; :2025 qualifier added.
+      - ISSUE 2: Deprecated stage API (get_latest_versions, current_stage, transition_model_version_stage) replaced with alias-based API (get_model_version_by_alias, set_registered_model_alias); import time added.
+      - ISSUE 3: Pickle/RCE warning comment added above load_model() call; Why section updated to reference CVE-2023-30172.
     issues_filed: []
 
   - path: rules/backend/torchserve/CLAUDE.md
@@ -3939,6 +3988,11 @@ audited_rules:
         this audit (same 404 pattern seen in prior audits). From training-set knowledge
         of ATLAS v4, AML.T0010 is plausibly "ML Supply Chain Compromise." Flagged as
         unverifiable from the live catalog, not definitively wrong.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Deprecation/EOL notice added prominently at file top; TorchServe archived in 2024; Triton, vLLM, Ray Serve, BentoML named as alternatives.
+      - ISSUE 2: OWASP LLM05 for MAR file rule replaced with LLM03:2025; LLM04 for inference DoS replaced with LLM10:2025; :2025 qualifiers added.
+      - ISSUE 3: DANGEROUS_PATTERNS denylist removed as primary control; MAR signing and OS-level sandboxing named as primary mitigations; denylist retained as defense-in-depth note only.
     issues_filed: []
 
   - path: rules/backend/flask/CLAUDE.md
@@ -3991,6 +4045,10 @@ audited_rules:
       - OWASP A04:2025 (Insecure Design) for file uploads is an unusual mapping;
         A08:2025 (Software and Data Integrity Failures) or A03:2025 (Injection) are
         closer. Current mapping is not wrong enough to block but worth revisiting.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: session.regenerate() fictional call removed; comment explains Flask-Login's login_user() handles session rotation under session_protection='strong'.
+      - ISSUE 2: bleach replaced with nh3 (import nh3; nh3.clean()) in XSS Prevention Do example.
     issues_filed: []
 
   - path: rules/backend/modal/CLAUDE.md
@@ -4066,6 +4124,11 @@ audited_rules:
         keys anywhere. Correct pattern.
       - All Do examples include explicit timeout= and concurrency_limit= values.
         Cost caps adequately covered.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - MODAL API: All modal.Stub() replaced with modal.App(); all @stub decorators updated to @app; Stub removed from imports.
+      - ISSUE 1: LLM04 replaced with LLM01:2025 (trust_remote_code RCE) and LLM06:2025 (resource exhaustion); :2025 qualifiers added throughout.
+      - ISSUE 2 (self-contradiction): .apt_install() call pins libgomp1 to a specific version; advisory comment added.
     issues_filed: []
 
   - path: rules/backend/ray-serve/CLAUDE.md
@@ -4144,6 +4207,11 @@ audited_rules:
         per-actor resource option. The key is silently ignored at runtime.
         Non-blocking because the surrounding serve.start(namespace=...) pattern is
         correct; the stray key in ray_actor_options is a misleading artifact.
+
+      RE-AUDIT 2026-05-26: Already marked passed (rewrite agent flipped correctly). Independently verified:
+      - ISSUE 1: OWASP LLM04->LLM10:2025 and LLM05->LLM04:2025/LLM10:2025 on lines 133/607/374; :2025 qualifiers added.
+      - ISSUE 2 (coverage gap): Ray dashboard auth rule added (port 8265, dashboard token config).
+      - ISSUE 3 (coverage gap): runtime_env pip supply-chain rule added (pinned hashes, internal registry, no VCS refs).
     issues_filed: []
 
   - path: rules/backend/transformers/CLAUDE.md
@@ -4231,6 +4299,10 @@ audited_rules:
       - Untrusted tokenizer.json source check is not explicitly addressed; the
         trust_remote_code=False coverage is correct but does not discuss the
         tokenizer.json attack surface independently.
+
+      RE-AUDIT 2026-05-26: Already marked passed (rewrite agent flipped correctly). Independently verified:
+      - ISSUE 1: OWASP LLM04/LLM05 refs updated to LLM03:2025 (supply chain), LLM10:2025 (tokenizer DoS), LLM05:2025 (output handling); :2025 qualifiers throughout.
+      - ISSUE 2: info.security_status dead guard removed; replaced with info.disabled, info.gated, info.tags checks.
     issues_filed: []
 
   - path: rules/backend/crewai/CLAUDE.md
@@ -4418,6 +4490,13 @@ audited_rules:
         deduplication. Non-blocking.
       - MITRE ATLAS AML.T0020 cited in three rules. ATLAS live site inaccessible;
         citations are consistent with prior audit decisions. Retained as plausible.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: human_input moved to Task level; Agent() no longer accepts human_input kwarg.
+      - ISSUE 2: Process imported in Do block (from crewai import Crew, Process, Task).
+      - ISSUE 3: Path imported; args_schema = InputSchema wired as class attribute on SecureFileReadTool.
+      - ISSUE 4: memory_config removed from Crew(); per-instance isolation documented via new Crew per session.
+      - ISSUE 5: parse_raw() replaced with model_validate_json(); pydantic.ValidationError catch added.
     issues_filed: []
 
   - path: rules/rag/chunking/CLAUDE.md
@@ -5510,4 +5589,75 @@ audited_rules:
       - Query key vs admin key separation: covered.
       - Semantic ranker auth and configuration validation: covered.
       - Document-level security trimming via allowed_groups OData filter: covered.
+    issues_filed: []
+
+  - path: rules/rag/vector-selfhosted/chroma/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 5 Chroma rules: Persistence Security, Client-Server Authentication,
+      Collection Isolation, Embedding Function Security, Migration Security.
+      Also audited 3 Vespa rules (YQL security, ranking expression, app package).
+      Three blocking issues found.
+
+      ISSUE 1 — Auth rule: Settings keys removed in chromadb 0.5.x (BLOCKING / API COMPAT)
+        The "Chroma Client-Server Authentication" Do example passes auth and TLS
+        configuration via Settings() keyword arguments:
+          chroma_server_auth_provider="chromadb.auth.token.TokenAuthServerProvider"
+          chroma_server_auth_credentials_file="/etc/chroma/tokens.json"
+          chroma_server_auth_token_transport_header="Authorization"
+          chroma_server_ssl_enabled=True
+          chroma_server_ssl_certfile="/etc/chroma/server.crt"
+          chroma_server_ssl_keyfile="/etc/chroma/server.key"
+        None of these keyword arguments exist in chromadb.config.Settings in 0.5.x.
+        In 0.5.x the server reads auth and TLS from environment variables
+        (CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER, CHROMA_SERVER_AUTH_CREDENTIALS,
+        CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER, CHROMA_SERVER_SSL_CERTFILE, etc.)
+        or from the chroma.yaml configuration file, not from the Python Settings object.
+        Passing unrecognised kwargs to Settings raises a Pydantic ValidationError at
+        startup. The Do example is broken on 0.5.x and teaches the wrong configuration
+        surface. BasicAuth is also absent; the file covers only token auth, omitting the
+        CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=chromadb.auth.basic_authn.BasicAuthenticationServerProvider
+        pattern that is the other supported auth mechanism in 0.5.x.
+        Fix required: replace Settings() auth/TLS kwargs with env var / chroma.yaml
+        pattern; add BasicAuth variant alongside token auth.
+
+      ISSUE 2 — OWASP LLM ref missing :2025 year suffix (BLOCKING / STANDARDS)
+        Line 269 cites "OWASP LLM06 Sensitive Information Disclosure" without the
+        mandatory :2025 year qualifier required by the audit standard.
+        Fix required: update to "OWASP LLM06:2025 Sensitive Information Disclosure".
+
+      ISSUE 3 — Missing Chroma-specific coverage required by audit spec (BLOCKING / GAPS)
+        The following topics in the P0.5 audit checklist have no corresponding rule or
+        advisory note:
+        a) Metadata filter injection via the `where` clause: Chroma's query() accepts
+           arbitrary JSON in where=; unsanitised user input enables attacker-controlled
+           filter logic analogous to NoSQL injection. No rule exists.
+        b) SQLite vs Postgres backend: the embedded SQLite backend is single-writer and
+           unsuitable for multi-process deployments; the Postgres backend requires
+           connection-string secret management. No guidance exists.
+        c) CORS for the HTTP server: chroma-server exposes CORS via
+           CHROMA_SERVER_CORS_ALLOW_ORIGINS; unset defaults to * in some versions,
+           allowing cross-origin reads from browser-based attackers. No rule exists.
+        d) Rate limiting at proxy layer: Chroma has no built-in rate limiting; the
+           Additional Considerations section mentions network segmentation but provides
+           no proxy-layer rate-limit pattern (nginx limit_req, Envoy, etc.).
+        e) Volume encryption for the data directory: the Backup Encryption section shows
+           gpg on tarballs but does not address at-rest encryption of the live data
+           directory via dm-crypt/LUKS, encrypted volume mounts, or KMS-managed storage.
+        Fix required: add rules or advisory blocks for each of a-e above.
+
+      Non-blocking observations (no status change):
+      - All 14 Python code blocks parse successfully (verified with ast.parse).
+      - Collection isolation rule is present and correct: SHA-256 namespace prefix
+        prevents enumeration; result-count cap at 100 is appropriate.
+      - Embedding function validation (dimension check, NaN/Inf guard, length cap) is
+        thorough and correct.
+      - Migration rule: backup-before-migrate with size verification and auto-restore
+        on failure is a solid pattern.
+      - Vespa rules are syntactically and logically sound.
+      - chromadb.Client used as a type hint on line 145; valid in 0.5.x as a typing alias.
+      - anonymized_telemetry=False and allow_reset=False in Settings remain valid
+        0.5.x Settings fields.
     issues_filed: []
