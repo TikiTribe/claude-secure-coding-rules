@@ -154,7 +154,12 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
       - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: >-
+          {{- if .Values.image.digest -}}
+          {{ .Values.image.repository }}@{{ .Values.image.digest }}
+          {{- else -}}
+          {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          {{- end }}
         securityContext:
           {{- toYaml .Values.securityContext | nindent 12 }}
         volumeMounts:
@@ -860,8 +865,11 @@ helm dependency update ./myapp
 # Generates Chart.lock — commit this file
 
 # Verify chart provenance with Cosign (if chart registry supports OCI signing)
+# --certificate-identity-regexp is required in cosign v2.0+ when --certificate-oidc-issuer is set.
+# Replace the regexp value with the actual signing workflow identity for the chart publisher.
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "https://github.com/bitnami/.*" \
   registry-1.docker.io/bitnamicharts/postgresql:16.4.5
 
 # Scan packaged chart for vulnerabilities
@@ -869,7 +877,9 @@ helm package ./myapp -d /tmp/charts
 trivy config /tmp/charts/myapp-1.2.3.tgz --exit-code 1 --severity HIGH,CRITICAL
 
 # Use OCI registries for charts (preferred over HTTP repos — integrity built in)
-helm pull oci://myregistry.io/charts/myapp --version 1.2.3 --verify
+# Note: --verify applies only to classic HTTP repos with GPG .prov files, not OCI registries.
+# For OCI charts, use cosign verify (shown above) to confirm signature before pulling.
+helm pull oci://myregistry.io/charts/myapp --version 1.2.3
 ```
 
 ```yaml
