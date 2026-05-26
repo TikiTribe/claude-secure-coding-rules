@@ -40,8 +40,8 @@ def save_secure_model(model, name: str, version: str):
             "framework": "pytorch",
             "safe_serialization": True
         },
-        # Use safe serialization
-        external_modules=[]  # Don't include arbitrary modules
+        # Do not include arbitrary modules
+        external_modules=[]
     )
 
     return saved_model
@@ -133,7 +133,7 @@ bento = bentoml.import_bento(untrusted_path)
 
 **Why**: Unverified bentos can contain malicious code, compromised dependencies, or exposed secrets that enable supply chain attacks.
 
-**Refs**: OWASP LLM05, CWE-502, CWE-200
+**Refs**: OWASP LLM03:2025 (Supply Chain Vulnerabilities), CWE-502, CWE-200
 
 ---
 
@@ -148,16 +148,16 @@ bento = bentoml.import_bento(untrusted_path)
 **Do**:
 ```python
 import bentoml
-from bentoml.io import JSON, NumpyNdarray
-from pydantic import BaseModel, Field, validator
 import numpy as np
+from pydantic import BaseModel, Field, field_validator
 
-# Safe: Input validation with Pydantic
+# Safe: Input validation with Pydantic v2
 class PredictionInput(BaseModel):
-    data: list[float] = Field(..., max_items=10000)
-    options: dict = Field(default={})
+    data: list[float] = Field(..., max_length=10000)
+    options: dict = Field(default_factory=dict)
 
-    @validator("data")
+    @field_validator("data", mode="before")
+    @classmethod
     def validate_data(cls, v):
         if len(v) == 0:
             raise ValueError("Empty data")
@@ -165,7 +165,8 @@ class PredictionInput(BaseModel):
             raise ValueError("Invalid data type")
         return v
 
-    @validator("options")
+    @field_validator("options", mode="before")
+    @classmethod
     def validate_options(cls, v):
         allowed_keys = {"threshold", "top_k"}
         if not set(v.keys()).issubset(allowed_keys):
@@ -176,14 +177,14 @@ class PredictionOutput(BaseModel):
     result: list[float]
     confidence: float
 
-# Safe: Service with validation and resource limits
+# Safe: Service with validation and resource limits (BentoML v1.x API)
 runner = bentoml.pytorch.get("secure_model:latest").to_runner()
 
 svc = bentoml.Service("secure_service", runners=[runner])
 
 @svc.api(
-    input=JSON(pydantic_model=PredictionInput),
-    output=JSON(pydantic_model=PredictionOutput),
+    input=bentoml.io.JSON.from_sample(PredictionInput(data=[0.0])),
+    output=bentoml.io.JSON.from_sample(PredictionOutput(result=[0.0], confidence=0.0)),
     route="/predict"
 )
 async def predict(input_data: PredictionInput) -> PredictionOutput:
@@ -203,7 +204,7 @@ async def predict(input_data: PredictionInput) -> PredictionOutput:
     )
 
 # Safe: Health check endpoint
-@svc.api(input=JSON(), output=JSON(), route="/health")
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON(), route="/health")
 async def health():
     return {"status": "healthy"}
 
@@ -226,35 +227,36 @@ runners:
 **Don't**:
 ```python
 # VULNERABLE: No input validation
-@svc.api(input=JSON(), output=JSON())
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON())
 async def predict(input_data: dict):
     # Accept any structure
     return await runner.predict.async_run(input_data)
 
-# VULNERABLE: Arbitrary code execution
-@svc.api(input=JSON(), output=JSON())
+# VULNERABLE: Arbitrary code execution via user-controlled input
+# LLM01:2025 — prompt/input injection leads to eval/exec
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON())
 async def execute(input_data: dict):
     code = input_data.get("code")
     return eval(code)  # Never do this
 
 # VULNERABLE: File access
-@svc.api(input=JSON(), output=JSON())
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON())
 async def read_file(input_data: dict):
     path = input_data.get("path")
     return open(path).read()  # Path traversal
 
 # VULNERABLE: No size limits
 @svc.api(
-    input=NumpyNdarray(),  # Any size array
-    output=NumpyNdarray()
+    input=bentoml.io.NumpyNdarray(),  # Any size array
+    output=bentoml.io.NumpyNdarray()
 )
 async def process(arr):
     return runner.run(arr)  # Could be huge
 ```
 
-**Why**: Services without input validation enable injection attacks, denial of service, and unauthorized data access.
+**Why**: Services without input validation enable injection attacks, denial of service, and unauthorized data access. Accepting unsanitized text that reaches model inference or downstream code paths is an LLM01:2025 (Prompt Injection) risk.
 
-**Refs**: CWE-20, CWE-94, OWASP LLM04
+**Refs**: CWE-20, CWE-94, OWASP LLM01:2025 (Prompt Injection)
 
 ---
 
@@ -269,6 +271,7 @@ async def process(arr):
 **Do**:
 ```python
 import bentoml
+import numpy as np
 
 # Safe: Runner with resource limits
 model_ref = bentoml.pytorch.get("model:latest")
@@ -535,8 +538,6 @@ volumes:
 **Do**:
 ```python
 import bentoml
-from bentoml.io import JSON
-from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -597,6 +598,7 @@ class RateLimitMiddleware:
         await self.app(scope, receive, send)
 
 # Safe: Service with security middleware
+runner = bentoml.pytorch.get("secure_model:latest").to_runner()
 svc = bentoml.Service(
     "secure_api",
     runners=[runner]
@@ -617,7 +619,7 @@ import logging
 
 logger = logging.getLogger("bentoml.security")
 
-@svc.api(input=JSON(), output=JSON())
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON())
 async def predict(input_data: dict, ctx: bentoml.Context) -> dict:
     # Log request for audit
     logger.info(
@@ -636,7 +638,7 @@ async def predict(input_data: dict, ctx: bentoml.Context) -> dict:
 **Don't**:
 ```python
 # VULNERABLE: No authentication
-@svc.api(input=JSON(), output=JSON())
+@svc.api(input=bentoml.io.JSON(), output=bentoml.io.JSON())
 async def predict(data: dict):
     return await runner.run(data)  # Public access
 
@@ -661,18 +663,86 @@ svc.add_asgi_middleware(
 
 ---
 
+## OpenAPI Docs Exposure
+
+### Rule: Gate or Disable the /docs Swagger UI in Production
+
+**Level**: `strict`
+
+**When**: Deploying any BentoML service accessible outside a trusted network.
+
+**Do**:
+```python
+# Safe option 1: Disable docs at serve time (BentoML 1.2+)
+# bentoml serve service:svc --port 3000 --no-docs
+
+# Safe option 2: Block /docs at the reverse proxy before the request
+# reaches the BentoML process. Nginx example:
+"""
+# nginx.conf
+server {
+    listen 443 ssl;
+
+    # Require a shared secret header to reach /docs
+    location /docs {
+        # Deny public access entirely in production
+        deny all;
+        # Or restrict to internal CIDR
+        # allow 10.0.0.0/8;
+        # deny all;
+    }
+
+    location / {
+        proxy_pass http://bentoml:3000;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+"""
+
+# Safe option 3: Traefik middleware to strip /docs
+"""
+# traefik labels (docker-compose)
+labels:
+  - "traefik.http.middlewares.strip-docs.redirectregex.regex=^.*/docs.*"
+  - "traefik.http.middlewares.strip-docs.redirectregex.replacement=/"
+  - "traefik.http.routers.bentoml.middlewares=strip-docs"
+"""
+```
+
+**Don't**:
+```python
+# VULNERABLE: Default BentoML serve exposes /docs publicly
+# bentoml serve service:svc --port 3000
+# Any caller can reach http://host:3000/docs and inspect all routes,
+# schemas, and parameter names without authentication.
+
+# VULNERABLE: ASGI auth middleware does NOT protect /docs
+# BentoML registers the OpenAPI/Swagger UI routes directly on the
+# Starlette app before add_asgi_middleware runs, so middleware
+# added via svc.add_asgi_middleware() is bypassed for /docs requests.
+svc.add_asgi_middleware(AuthMiddleware)  # Does NOT cover /docs
+```
+
+**Why**: BentoML registers `/docs` (Swagger UI) and `/openapi.json` directly on the internal Starlette app before ASGI middleware is applied. Middleware added via `add_asgi_middleware` wraps the outer app and does not intercept these routes. An attacker with network access to the service port can enumerate every endpoint, schema, and example without credentials, aiding targeted injection or denial-of-service attacks. Gate access at the reverse proxy layer or disable docs at serve time.
+
+**Refs**: OWASP A01:2025 (Broken Access Control), CWE-306, CWE-200
+
+---
+
 ## Quick Reference
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Secure bento building and signing | strict | OWASP LLM05, CWE-502 |
-| Implement secure BentoML services | strict | CWE-20, CWE-94 |
+| Secure bento building and signing | strict | OWASP LLM03:2025, CWE-502 |
+| Implement secure BentoML services | strict | CWE-20, CWE-94, OWASP LLM01:2025 |
 | Configure secure runner execution | strict | CWE-94, CWE-400 |
 | Secure BentoML deployment configuration | strict | CWE-269, CWE-250 |
 | Implement API authentication and rate limiting | strict | OWASP A01:2025, CWE-306 |
+| Gate or disable /docs Swagger UI in production | strict | OWASP A01:2025, CWE-306, CWE-200 |
 
 ---
 
 ## Version History
 
+- **v1.1.0** - Fix OWASP LLM refs to 2025 edition; migrate validators to Pydantic v2; add /docs exposure rule; replace deprecated JSON shim
 - **v1.0.0** - Initial BentoML security rules

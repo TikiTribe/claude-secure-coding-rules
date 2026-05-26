@@ -19,7 +19,7 @@ Security rules for FastAPI development in Claude Code.
 
 **Do**:
 ```python
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from fastapi import FastAPI
 
 class UserCreate(BaseModel):
@@ -27,7 +27,8 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
     age: int = Field(..., ge=0, le=150)
 
-    @validator('password')
+    @field_validator('password', mode='before')
+    @classmethod
     def password_strength(cls, v):
         if not any(c.isupper() for c in v):
             raise ValueError('Password must contain uppercase')
@@ -76,7 +77,7 @@ async def get_user(
 
 @app.get("/files/{filename}")
 async def get_file(
-    filename: str = Path(..., regex=r'^[a-zA-Z0-9_-]+\.[a-z]+$')
+    filename: str = Path(..., pattern=r'^[a-zA-Z0-9_-]+\.[a-z]+$')
 ):
     # Filename validated against pattern
     return {"filename": filename}
@@ -109,7 +110,7 @@ async def get_file(filename: str):
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 SECRET_KEY = os.environ["JWT_SECRET"]  # From environment
 ALGORITHM = "HS256"
@@ -118,7 +119,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 def create_token(data: dict, expires_delta: timedelta = timedelta(minutes=15)):
     to_encode = data.copy()
-    expire = datetime.utcnow() + expires_delta
+    expire = datetime.now(timezone.utc) + expires_delta
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -295,15 +296,14 @@ db.execute(f"DELETE FROM users WHERE id = {user_id}")
 
 **Do**:
 ```python
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     email: str
     name: str
-
-    class Config:
-        orm_mode = True
 
 @app.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: int):
@@ -424,45 +424,36 @@ app.add_middleware(
 **Do**:
 ```python
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 import os
+import re
 
 app = FastAPI()
 
-# Safe: Strict input validation for LLM inputs
+# Safe: Strict input schema for LLM inputs. User content stays in the user
+# message role at inference time; it is never concatenated into the system
+# prompt. This role separation is the primary OWASP LLM01:2025 control.
+# Substring denylists are trivially bypassed (encoding, paraphrase, Unicode
+# substitution) and must not be the sole or primary defense.
 class LLMRequest(BaseModel):
     prompt: str = Field(..., max_length=10000)
     max_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.7, ge=0, le=2)
-
-    @validator("prompt")
-    def validate_prompt(cls, v):
-        # Check for prompt injection patterns
-        injection_patterns = [
-            "ignore previous instructions",
-            "system:",
-            "admin:",
-            "forget your instructions"
-        ]
-        lower_v = v.lower()
-        for pattern in injection_patterns:
-            if pattern in lower_v:
-                raise ValueError("Invalid prompt content")
-        return v
 
 class LLMResponse(BaseModel):
     text: str
     tokens_used: int
     finish_reason: str
 
-# Safe: Validate model outputs
+# Safe: Validate model outputs against a typed Pydantic schema before
+# returning to callers. Structured output validation catches malformed,
+# truncated, or policy-violating responses at the API boundary.
 async def validate_output(text: str) -> str:
-    # Check for sensitive data patterns
+    # Redact known sensitive data patterns as a defense-in-depth layer.
     sensitive_patterns = [
         r'\b\d{3}-\d{2}-\d{4}\b',  # SSN
         r'\b\d{16}\b',  # Credit card
     ]
-    import re
     for pattern in sensitive_patterns:
         if re.search(pattern, text):
             return "[Content filtered]"
@@ -473,9 +464,12 @@ async def generate(
     request: LLMRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    # Load model with safe settings
+    # Pass user content in the user role, not by string concatenation into
+    # the system prompt. The system prompt is a static constant defined in
+    # server configuration, not derived from user input.
     result = await model.generate(
-        request.prompt,
+        system_prompt=STATIC_SYSTEM_PROMPT,   # constant, not user-derived
+        user_message=request.prompt,           # user role, segregated
         max_tokens=request.max_tokens,
         temperature=request.temperature
     )
@@ -489,7 +483,7 @@ async def generate(
         finish_reason=result.finish_reason
     )
 
-# Safe: Streaming with validation
+# Safe: Streaming with output validation
 from fastapi.responses import StreamingResponse
 
 @app.post("/stream")
@@ -499,7 +493,10 @@ async def stream_generate(
 ):
     async def generate_stream():
         buffer = ""
-        async for chunk in model.stream(request.prompt):
+        async for chunk in model.stream(
+            system_prompt=STATIC_SYSTEM_PROMPT,
+            user_message=request.prompt
+        ):
             buffer += chunk
             # Validate accumulated output
             if len(buffer) > 100:
@@ -528,16 +525,21 @@ async def generate(request: LLMRequest):
     result = await model.generate(request.prompt)
     return {"text": result}  # Could contain sensitive data
 
-# VULNERABLE: No prompt injection protection
+# VULNERABLE: User input concatenated into system prompt (prompt injection)
 @app.post("/chat")
 async def chat(message: str):
-    full_prompt = f"User: {message}\nAssistant:"
+    full_prompt = f"System: You are helpful.\nUser: {message}\nAssistant:"
     return await model.generate(full_prompt)  # Injection possible
+
+# VULNERABLE: Substring denylist as sole injection defense
+# Trivially bypassed by encoding, paraphrase, or multilingual injection.
+if "ignore previous instructions" in message.lower():
+    raise ValueError("Blocked")
 ```
 
-**Why**: LLM APIs are vulnerable to prompt injection, output sensitive data, and enable resource exhaustion without proper validation.
+**Why**: LLM APIs are vulnerable to prompt injection when user content reaches the system prompt role. Structural role isolation (user content in the user message role, never concatenated into the system prompt) is the primary OWASP LLM01:2025 control. Output must be validated against typed schemas before returning to callers.
 
-**Refs**: OWASP LLM01, OWASP LLM02, CWE-20
+**Refs**: OWASP LLM01:2025, OWASP LLM05:2025 (Improper Output Handling), CWE-20
 
 ---
 
@@ -611,7 +613,7 @@ async def predict(data: dict):
 
 **Why**: Unsafe model loading enables remote code execution through malicious model files or compromised model repositories.
 
-**Refs**: OWASP LLM05, CWE-502, MITRE ATLAS AML.T0010
+**Refs**: OWASP LLM03:2025 (Supply Chain), OWASP LLM04:2025 (Data and Model Poisoning), CWE-502, MITRE ATLAS AML.T0010
 
 ---
 
@@ -703,7 +705,7 @@ async def generate(request: LLMRequest):
 
 **Why**: AI endpoints are compute-intensive. Without token-based rate limiting, users can exhaust GPU resources and rack up costs.
 
-**Refs**: OWASP LLM04, CWE-400, CWE-770
+**Refs**: OWASP LLM10:2025 (Unbounded Consumption), CWE-400, CWE-770
 
 ---
 
@@ -720,13 +722,14 @@ async def generate(request: LLMRequest):
 | Response filtering | strict | CWE-200 |
 | Error handling | warning | CWE-209 |
 | CORS configuration | strict | CWE-942 |
-| Secure LLM API endpoints | strict | OWASP LLM01, CWE-20 |
-| Secure model loading | strict | OWASP LLM05, CWE-502 |
-| AI-specific rate limiting | strict | OWASP LLM04, CWE-400 |
+| Secure LLM API endpoints | strict | OWASP LLM01:2025, CWE-20 |
+| Secure model loading | strict | OWASP LLM03:2025, CWE-502 |
+| AI-specific rate limiting | strict | OWASP LLM10:2025, CWE-400 |
 
 ---
 
 ## Version History
 
+- **v2.0.0** - Pydantic v2 API, OWASP LLM Top 10 2025 refs, structural prompt injection defense
 - **v1.1.0** - Added AI/ML API security rules
 - **v1.0.0** - Initial FastAPI security rules
