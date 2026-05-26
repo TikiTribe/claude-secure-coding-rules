@@ -2642,7 +2642,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/languages/java/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2655,6 +2655,9 @@ audited_rules:
       - Prevent XXE Attacks
       - Don't Expose Stack Traces
       - Validate All External Input
+      - Prevent JNDI Injection
+      - Do Not Call setAccessible(true) Across Security Boundaries
+      - Use Streams Safely
     notes: |
       Audited all 8 rule sections. Three required topics are entirely absent per checklist,
       and one code example uses the wrong import namespace for Spring Boot 3+.
@@ -2702,12 +2705,21 @@ audited_rules:
         explaining the danger of those methods.
       - Serialization filter (lines 128-131) cites "Java 9+" -- accurate, but Java 17+
         is the current LTS baseline. Advisory: update comment to reflect 17+ minimum.
-      - CWE IDs and OWASP A0x:2025 refs on all 8 existing rules are valid and correctly
-        assigned. No stale or mismatched standards references in the existing rules.
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (JNDI rule): 'Prevent JNDI Injection' rule added (strict); Log4j2 Don't shows
+        logger.info with CVE-2021-44228 annotation; Do uses ALLOWED_JNDI_NAMES allowlist and
+        log4j2.formatMsgNoLookups=true configuration; upgrade to 2.17.1+ documented.
+      - ISSUE 2 (setAccessible rule): 'Do Not Call setAccessible(true) Across Security
+        Boundaries' rule added (strict); field.setAccessible(true) flagged as VULNERABLE;
+        module-system 'opens' directive shown as Do alternative.
+      - ISSUE 3 (Streams rule): '## Streams' section added (warning); parallelStream with
+        shared ArrayList flagged as VULNERABLE; thread-safe collectors shown as Do.
+      - ISSUE 4 (jakarta import): Do block uses 'import jakarta.validation.constraints.*'
+        with inline note explaining javax.* is Spring Boot 2.x only.
     issues_filed: []
 
   - path: rules/languages/ruby/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2767,10 +2779,19 @@ audited_rules:
         File implies Ruby 3.x (YAML permitted_classes: syntax) but states no minimum.
         Advisory: note Ruby >= 3.1 minimum.
       - Open3.capture2 in list form is correct for avoiding shell invocation.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (Shellwords): Shellwords.escape removed from array-form system() call; Do block
+        shows only the plain array-form call; Shellwords.escape reserved for single-string shell
+        invocations per the Why text.
+      - ISSUE 2 (metaprogramming): 'Metaprogramming Safety' rule added covering eval/send/
+        class_eval/instance_eval with untrusted input; allowlist pattern shown as Do; CWE-94.
+      - ISSUE 2 (ERB rule): 'ERB Output Encoding' rule added covering html_safe/raw misuse;
+        sanitize() + html_safe pattern shown as Do; CWE-79.
     issues_filed: []
 
   - path: rules/languages/rust/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2831,10 +2852,20 @@ audited_rules:
         in the snippet. Minor omission; unambiguous in context. Advisory only.
       - unsafe read_value() Do example has a correct # Safety doc comment and minimal
         unsafe block. Satisfies the unsafe block discipline checklist item.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (FFI rule): 'FFI Safety' section added with 'Wrap FFI Boundaries in Safe Rust
+        APIs' rule (strict); extern "C" block, pointer null check, Safety doc comment, and
+        bindgen reference all present.
+      - ISSUE 2 (async rule): 'Enforce Send + Sync Bounds and Safe Sync Primitives Across
+        Await Points' rule added (strict); Pin<Box<dyn Future>>, tokio::sync primitives, and
+        Send+Sync trait bounds all demonstrated.
+      - ISSUE 3 (edition/version): '## Prerequisites' section added; Cargo.toml snippet shows
+        edition = "2021" and rust-version = "1.75" as baseline.
     issues_filed: []
 
   - path: rules/languages/julia/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2885,6 +2916,11 @@ audited_rules:
         path that triggers addprocs(); (c) authenticate and authorize worker connections;
         (d) note that RemoteChannel data must be validated on receipt because workers
         may be compromised. Appropriate refs: CWE-94, CWE-78, OWASP A03:2025.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (Distributed.jl): 'Secure Distributed.jl Remote Execution' rule added (strict);
+        @spawnat, remotecall(), addprocs(), and RemoteChannel all covered; allowlist pattern
+        shown for worker expressions; CWE-94, CWE-78, OWASP A03:2025 refs present.
     issues_filed: []
 
   - path: rules/languages/javascript/CLAUDE.md
@@ -2938,7 +2974,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/languages/cpp/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2998,6 +3034,110 @@ audited_rules:
       - Command injection Do example uses POSIX fork/execlp. Correct on POSIX but
         non-portable to Windows. Advisory only.
 
+  - path: rules/languages/r/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Avoid Dangerous Evaluation
+      - Secure System Commands
+      - Prevent Data Leakage in Outputs
+      - Secure Data Serialization
+      - Verify Package Sources
+      - Validate All Shiny Inputs
+      - Implement Shiny Authentication
+      - Prevent Path Traversal
+      - Use Parameterized Database Queries
+      - Use Cryptographic Randomness for Security
+      - Secure HTTP Requests
+    notes: |
+      Audited all 11 rule sections. No blocking defects found. First-time audit against
+      v2 rewrite (commit b7704a0).
+
+      R syntax: PASS. processx::run, shQuote, grepl allowlist, normalizePath + startsWith
+      guard, DBI parameterized queries, openssl::rand_bytes, renv snapshot, digest SHA-256,
+      shinymanager secure_app, httr2 req_timeout/req_retry — all correct.
+
+      Standards refs: PASS. CWE IDs all valid: CWE-94, CWE-95, CWE-78, CWE-532, CWE-200,
+      CWE-502, CWE-829, CWE-20, CWE-89, CWE-306, CWE-22, CWE-330, CWE-338, CWE-798,
+      CWE-295. OWASP 2025 refs correct: A01, A03, A06, A07, A08.
+
+      R-specific checklist:
+        eval/parse on untrusted input: COVERED; switch() allowlist shown as Do.
+        system()/shell() command injection: COVERED; processx::run and system2 with
+          validated arg shown as Do.
+        Shiny input validation: COVERED; numeric range check and column allowlist.
+        Shiny authentication: COVERED; shinymanager::secure_app shown.
+        Serialization (RDS/RData) from untrusted sources: COVERED; digest SHA-256
+          integrity check shown.
+        Package source verification: COVERED; renv::snapshot and version pinning shown.
+        Cryptographic randomness: COVERED; openssl::rand_bytes vs sample()/runif().
+        Path traversal: COVERED; normalizePath + startsWith guard.
+        Parameterized queries (DBI params = list(...)): COVERED.
+
+      Non-blocking observations:
+      - Shiny auth example uses scrypt::hashPassword which is correct but the scrypt
+        package is less commonly deployed than bcrypt (sodium::password_store). Either
+        is secure; advisory note to confirm package availability.
+      - renv::init() shown without renv::restore() context for reproducible installs.
+        Advisory: add renv::restore() note for CI/CD environments.
+      - No R version guidance stated. R 4.1+ required for |> pipe; examples use %>%
+        (magrittr). No version-dependent correctness issues. Advisory only.
+    issues_filed: []
+  - path: rules/languages/go/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Validate and Sanitize User Input
+      - Use Parameterized Queries in Go database/sql
+      - Avoid Shell Commands with User Input
+      - Prevent Path Traversal
+      - Use Secure Random Numbers
+      - Hash Passwords with bcrypt
+      - Set Timeouts on HTTP Clients
+      - Validate TLS Certificates
+      - Don't Expose Internal Errors
+      - Wrap and Unwrap Errors with errors.Is / errors.As
+      - Protect Shared State with sync.Mutex; Check for Data Races
+      - Propagate context.Context and Respect Cancellation
+      - Use html/template, Not text/template, for HTML Output
+    notes: |
+      Audited all 13 rule sections. No blocking defects found. First-time audit against
+      v2 rewrite (commit b9eb0e8).
+
+      Go 1.22+ syntax: PASS. crypto/rand, database/sql, exec.Command (arg-array form),
+      filepath.Clean + strings.HasPrefix guard, bcrypt.GenerateFromPassword, http.Client
+      with Timeout, tls.Config with MinVersion, html/template, errors.Is/errors.As,
+      sync.Mutex, context.Context propagation — all correct and idiomatic.
+
+      Standards refs: PASS. CWE IDs all valid: CWE-20, CWE-89, CWE-78, CWE-22, CWE-330,
+      CWE-338, CWE-916, CWE-400, CWE-295, CWE-209, CWE-390, CWE-362, CWE-79. OWASP
+      2025 refs correct: A01, A02, A03, A04, A05.
+
+      Go-specific checklist:
+        Parameterized queries (database/sql $1 placeholder): COVERED.
+        exec.Command arg-array (no shell): COVERED; shell fallback validates with regex.
+        crypto/rand over math/rand: COVERED; Don't example shows math/rand predictability.
+        Context propagation and cancellation: COVERED; ctx.Done() check in loops shown.
+        Mutex / data race prevention: COVERED; run with -race flag documented.
+        html/template vs text/template XSS: COVERED (new in v2.0.0).
+        errors.Is / errors.As error chain: COVERED (new in v2.0.0).
+        TLS MinVersion: COVERED; InsecureSkipVerify in Don't.
+        HTTP timeouts (DoS prevention): COVERED.
+
+      Non-blocking observations:
+      - bcrypt.DefaultCost is 10 as of golang.org/x/crypto; OWASP minimum is 10. The
+        file uses DefaultCost without naming the numeric value. Advisory: add comment
+        noting current DefaultCost is 10 and OWASP minimum is 10.
+      - Argon2id (golang.org/x/crypto/argon2) is OWASP A02:2025 first-choice for
+        password hashing; bcrypt is legacy-acceptable. The file leads with bcrypt.
+        Advisory only — bcrypt is not broken for this use case.
+      - No explicit GOPROXY or GONOSUMCHECK security guidance. Advisory: add a brief
+        note about using GOPROXY=https://proxy.golang.org,direct with GONOSUMCHECK="".
+    issues_filed: []
   - path: rules/backend/express/CLAUDE.md
     status: failed
     reviewed_by: rocklambros
