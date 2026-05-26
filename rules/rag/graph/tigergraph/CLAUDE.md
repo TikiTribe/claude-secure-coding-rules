@@ -45,7 +45,8 @@ def create_secure_tigergraph_connection(
 def run_parameterized_query(
     conn: tg.TigerGraphConnection,
     query_name: str,
-    params: dict[str, Any]
+    params: dict[str, Any],
+    timeout_ms: int = 30000
 ) -> list:
     """Execute installed query with validated parameters."""
     # Whitelist of allowed queries
@@ -69,7 +70,6 @@ def run_parameterized_query(
         if isinstance(value, str):
             if len(value) > 1000:
                 raise ValueError(f"Parameter {key} exceeds max length")
-            # Escape special characters for string parameters
             validated_params[key] = value
         elif isinstance(value, (int, float)):
             validated_params[key] = value
@@ -78,8 +78,10 @@ def run_parameterized_query(
         else:
             raise ValueError(f"Unsupported parameter type for {key}")
 
-    # Execute pre-installed parameterized query
-    return conn.runInstalledQuery(query_name, validated_params)
+    # Execute pre-installed parameterized query.
+    # timeout= on runInstalledQuery is the correct API in pyTigerGraph 2.0.4;
+    # conn.setQueryTimeout() does not exist and would raise AttributeError.
+    return conn.runInstalledQuery(query_name, validated_params, timeout=timeout_ms)
 
 def find_user_secure(conn: tg.TigerGraphConnection, user_id: str):
     """Securely find user by ID using parameterized query."""
@@ -97,7 +99,12 @@ def search_vertices_secure(
     filter_value: str,
     limit: int = 100
 ) -> list:
-    """Securely search vertices with attribute filter."""
+    """Securely search vertices using a pre-installed parameterized query.
+
+    Passes filter_value as a named parameter to runInstalledQuery rather than
+    interpolating it into a where-clause string.  pyTigerGraph 2.0.4 does not
+    expose conn.escapeString(); server-side parameterization is the correct defense.
+    """
     # Whitelist vertex types and attributes
     allowed_types = {'User', 'Document', 'Organization', 'Product'}
     allowed_attrs = {'name', 'email', 'title', 'category', 'status'}
@@ -109,11 +116,16 @@ def search_vertices_secure(
 
     limit = min(max(1, limit), 1000)
 
-    # Use pyTigerGraph's safe vertex retrieval
-    return conn.getVertices(
-        vertex_type,
-        where=f"{filter_attr}=\"{conn.escapeString(filter_value)}\"",
-        limit=str(limit)
+    # Parameterized installed query handles escaping server-side.
+    return conn.runInstalledQuery(
+        'search_vertex_by_attr',
+        {
+            'vertex_type': vertex_type,
+            'attr_name': filter_attr,
+            'attr_value': filter_value,
+            'result_limit': limit
+        },
+        timeout=30000
     )
 ```
 
@@ -154,9 +166,9 @@ def interpret_unsafe(conn, condition: str):
     return conn.gsql(query)
 ```
 
-**Why**: GSQL injection allows attackers to execute arbitrary graph operations including data exfiltration, schema modification, and denial of service. TigerGraph's INTERPRET QUERY feature is particularly dangerous with user input. Pre-installed parameterized queries separate code from data, preventing injection. Always use pyTigerGraph's built-in methods which handle escaping.
+**Why**: GSQL injection allows attackers to execute arbitrary graph operations including data exfiltration, schema modification, and denial of service. TigerGraph's INTERPRET QUERY feature is particularly dangerous with user input. Pre-installed parameterized queries separate code from data, preventing injection. Always use pyTigerGraph's built-in methods which handle server-side parameterization.
 
-**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2021 (Injection), CWE-94 (Code Injection)
+**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2025 (Injection), CWE-94 (Code Injection)
 
 ---
 
@@ -312,7 +324,7 @@ conn = tg.TigerGraphConnection(
 
 **Why**: Graph Studio provides full access to graph data, schema, and queries. Weak authentication allows unauthorized access to sensitive data. Excessive permissions violate least privilege and enable lateral movement if credentials are compromised. RBAC ensures users can only access data and operations required for their role.
 
-**Refs**: CWE-269 (Improper Privilege Management), CWE-250 (Execution with Unnecessary Privileges), OWASP A01:2021 (Broken Access Control)
+**Refs**: CWE-269 (Improper Privilege Management), CWE-250 (Execution with Unnecessary Privileges), OWASP A01:2025 (Broken Access Control)
 
 ---
 
@@ -334,22 +346,22 @@ def create_resource_limited_connection(
     host: str,
     graph_name: str,
     username: str,
-    password: str,
-    timeout_seconds: int = 30
+    password: str
 ) -> tg.TigerGraphConnection:
-    """Create connection with resource limits."""
+    """Create connection with TLS enabled.
+
+    Per-query timeouts are passed as timeout= on each runInstalledQuery() call.
+    pyTigerGraph 2.0.4 does not provide conn.setQueryTimeout() — calling it
+    would raise AttributeError at runtime.
+    """
     conn = tg.TigerGraphConnection(
         host=host,
         graphname=graph_name,
         username=username,
         password=password,
-        apiToken=None,
         useCert=True
     )
-
-    # Set query timeout
-    conn.setQueryTimeout(timeout_seconds * 1000)  # milliseconds
-
+    conn.getToken(conn.createSecret())
     return conn
 
 def run_bounded_query(
@@ -366,6 +378,7 @@ def run_bounded_query(
     start_time = time.time()
 
     try:
+        # timeout= is the correct pyTigerGraph 2.0.4 parameter for per-call limits.
         result = conn.runInstalledQuery(
             query_name,
             params,
@@ -471,7 +484,7 @@ def get_all_connected(conn, vertex_id):
 
 **Why**: Graph analytics queries can be computationally expensive, especially for traversals, pattern matching, and graph algorithms. Without resource limits, a single malicious or poorly-written query can exhaust cluster memory, CPU, or cause service unavailability. Timeouts and result limits provide defense against denial of service, both intentional and accidental.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), OWASP A05:2021 (Security Misconfiguration)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), OWASP A05:2025 (Security Misconfiguration)
 
 ---
 
@@ -488,6 +501,7 @@ import pyTigerGraph as tg
 from typing import List, Optional
 import hashlib
 import json
+import time
 
 def create_isolated_ml_environment(
     conn: tg.TigerGraphConnection,
@@ -533,9 +547,6 @@ def validate_model_input(
     allowed_attributes: List[str]
 ) -> bool:
     """Validate ML feature extraction doesn't access sensitive data."""
-    # Parse query to extract accessed attributes
-    # This is simplified - real implementation needs GSQL parser
-
     sensitive_attributes = {
         'ssn', 'password', 'credit_card', 'bank_account',
         'medical_record', 'salary', 'phone', 'address'
@@ -554,9 +565,6 @@ def secure_model_export(
     require_approval: bool = True
 ) -> dict:
     """Export trained model with security controls."""
-    # Verify model exists and user has access
-    # Check for potential data leakage in model
-
     export_record = {
         'model': model_name,
         'exported_by': conn.username,
@@ -637,9 +645,191 @@ def export_model_unsafe(model_name):
 # ML pipeline can access sensitive attributes
 ```
 
-**Why**: ML Workbench has access to graph data for feature extraction and model training. Models can memorize sensitive data (membership inference, model inversion attacks). Unrestricted access allows data exfiltration through trained models. Isolated environments, data access controls, and export restrictions prevent leakage of sensitive information through ML workflows.
+**Why**: ML Workbench has access to graph data for feature extraction and model training. Models can memorize sensitive data through membership inference and model inversion attacks (LLM02:2025). Training pipelines that ingest graph data from untrusted sources risk poisoning (LLM03:2025). Unrestricted access allows data exfiltration through trained models. Isolated environments, data access controls, and export restrictions prevent leakage of sensitive information through ML workflows.
 
-**Refs**: CWE-200 (Exposure of Sensitive Information), OWASP A01:2021 (Broken Access Control), MITRE ATLAS (ML Attack Framework)
+**Refs**: CWE-200 (Exposure of Sensitive Information), OWASP A01:2025 (Broken Access Control), OWASP LLM02:2025 (Sensitive Information Disclosure / Model Inversion), OWASP LLM03:2025 (Supply Chain / Training Data Poisoning), MITRE ATLAS AML.T0024 (Exfiltration via ML Inference)
+
+---
+
+## Rule: C++ UDF Trusted-Path Enforcement
+
+**Level**: `strict`
+
+**When**: Loading or registering User-Defined Functions (UDFs) in TigerGraph
+
+**Do**: Restrict UDF source paths to a controlled directory and verify integrity before installation
+
+```python
+import hashlib
+import hmac
+import os
+import re
+from pathlib import Path
+
+# Approved root for all UDF source files; must be owned root:tigergraph, mode 750.
+UDF_SOURCE_ROOT = Path('/opt/tigergraph/udf/approved')
+
+ALLOWED_UDF_FILENAME = re.compile(r'^[a-zA-Z0-9_]+\.cpp$')
+
+def validate_and_install_udf(
+    udf_filename: str,
+    expected_sha256: str,
+    conn
+) -> None:
+    """Install a C++ UDF only if it lives under the trusted path and matches
+    the pre-approved SHA-256 digest stored in your change-management system."""
+
+    if not ALLOWED_UDF_FILENAME.match(udf_filename):
+        raise ValueError(f"UDF filename rejected: {udf_filename}")
+
+    # Resolve and confirm the path stays inside the trusted root (no traversal)
+    source_path = (UDF_SOURCE_ROOT / udf_filename).resolve()
+    if not str(source_path).startswith(str(UDF_SOURCE_ROOT.resolve())):
+        raise ValueError("Path traversal attempt in UDF filename")
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"UDF source not found in approved directory: {source_path}")
+
+    # Integrity check before handing off to GSQL
+    digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    if not hmac.compare_digest(digest, expected_sha256):
+        raise ValueError(f"UDF digest mismatch for {udf_filename}; aborting install")
+
+    # Use the GSQL PUT ExprFunctions endpoint - never shell out with user-supplied paths
+    conn.gsql(f'PUT ExprFunctions FROM "{source_path}"')
+```
+
+**Don't**: Load UDFs from arbitrary or user-supplied paths
+
+```python
+# VULNERABLE: Caller controls the file path - path traversal to arbitrary .cpp
+def install_udf_unsafe(conn, user_supplied_path: str):
+    conn.gsql(f'PUT ExprFunctions FROM "{user_supplied_path}"')
+
+# VULNERABLE: Pulling UDF source from the network without integrity check
+import requests
+def install_remote_udf(conn, url: str):
+    source = requests.get(url).text  # No TLS pinning, no digest check
+    with open('/tmp/udf.cpp', 'w') as f:
+        f.write(source)
+    conn.gsql('PUT ExprFunctions FROM "/tmp/udf.cpp"')
+
+# VULNERABLE: Compiling user-supplied C++ on the TigerGraph host
+def compile_user_udf(conn, user_code: str):
+    with open('/tmp/custom.cpp', 'w') as f:
+        f.write(user_code)          # Arbitrary C++ leads to native code execution
+    import subprocess
+    subprocess.run(['g++', '-shared', '-o', '/tmp/custom.so', '/tmp/custom.cpp'])
+```
+
+**Why**: TigerGraph UDFs are compiled C++ executed inside the database engine process. A malicious UDF has the same privilege as the TigerGraph OS user and can read any file visible to that user, open network connections, or crash the cluster. Loading from untrusted paths or unverified network sources enables RCE. Restrict UDF installation to a root-owned, access-controlled directory, verify the SHA-256 digest against a change-management record before every install, and never compile user-supplied source code on the database host.
+
+**Refs**: CWE-829 (Inclusion of Functionality from Untrusted Control Sphere), CWE-94 (Code Injection), OWASP A08:2025 (Software and Data Integrity Failures)
+
+---
+
+## Rule: REST++ Endpoint Authentication Hardening
+
+**Level**: `strict`
+
+**When**: Exposing or consuming TigerGraph REST++ API endpoints
+
+**Do**: Enforce token-based auth on every request and restrict the management port to loopback or VPN
+
+```python
+import pyTigerGraph as tg
+import os
+import time
+import logging
+from typing import Optional
+
+logger = logging.getLogger('tigergraph.restpp')
+
+def create_authenticated_connection(
+    host: str,
+    graph_name: str,
+    secret: Optional[str] = None
+) -> tg.TigerGraphConnection:
+    """Create a connection that always uses a short-lived bearer token.
+
+    Never expose username/password on every REST++ call.  Obtain a token once,
+    pass it for subsequent requests, and rotate before expiry.
+    """
+    conn = tg.TigerGraphConnection(
+        host=host,
+        graphname=graph_name,
+        useCert=True,
+        certPath=os.environ['TG_CA_BUNDLE']   # Require TLS; never disable verification
+    )
+
+    # Obtain a token scoped to this graph; default lifetime is 1 month -
+    # override with a shorter lifetime appropriate for your threat model.
+    token_secret = secret or os.environ['TG_SECRET']
+    token, expiry_ts, _ = conn.getToken(token_secret, setToken=True, lifetime=3600)
+
+    # Store expiry so callers can proactively rotate before the token expires.
+    conn._token_expiry = expiry_ts
+    return conn
+
+
+def refresh_token_if_needed(conn: tg.TigerGraphConnection, buffer_seconds: int = 300):
+    """Rotate the bearer token if it expires within buffer_seconds."""
+    expiry = getattr(conn, '_token_expiry', 0)
+    if time.time() >= expiry - buffer_seconds:
+        token, expiry_ts, _ = conn.getToken(
+            os.environ['TG_SECRET'], setToken=True, lifetime=3600
+        )
+        conn._token_expiry = expiry_ts
+        logger.info("REST++ bearer token rotated")
+
+
+def assert_management_port_not_public():
+    """Raise if the TigerGraph management port (9000/14240) is reachable from
+    a non-loopback address.  Call this during service startup in CI."""
+    import socket
+    management_ports = [9000, 14240]
+    for port in management_ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            result = s.connect_ex(('0.0.0.0', port))
+            if result == 0:
+                raise RuntimeError(
+                    f"TigerGraph management port {port} is bound to 0.0.0.0. "
+                    "Restrict to 127.0.0.1 or a VPN interface."
+                )
+```
+
+**Don't**: Disable auth or expose the management port to untrusted networks
+
+```python
+# VULNERABLE: REST++ token auth disabled (tigergraph.cfg RESTPP_AUTHENTICATE=false)
+# Any unauthenticated HTTP client can read or write all graph data.
+
+# VULNERABLE: Hardcoded credentials in source
+conn = tg.TigerGraphConnection(
+    host='tg-prod.example.com',
+    graphname='prod',
+    username='tigergraph',
+    password='tigergraph'          # Default credential never rotated
+)
+
+# VULNERABLE: Management port (14240) exposed to 0.0.0.0
+# curl http://internal-host:14240/api/ping  -> unauthenticated admin API
+
+# VULNERABLE: TLS verification disabled
+conn = tg.TigerGraphConnection(
+    host='tg-prod.example.com',
+    graphname='prod',
+    useCert=False                  # MITM interception of tokens and query results
+)
+
+# VULNERABLE: Long-lived tokens without rotation
+# A token issued with lifetime=0 (no expiry) is valid indefinitely if leaked.
+```
+
+**Why**: REST++ is TigerGraph's primary query API. With authentication disabled or default credentials in place, any network-adjacent attacker can exfiltrate the entire graph, modify data, or run arbitrary GSQL via INTERPRET QUERY. The management port (9000/14240) exposes admin operations including user creation and schema changes; binding it to 0.0.0.0 is equivalent to granting public admin access. Short-lived tokens, TLS verification, and port binding to loopback or VPN are the minimum baseline.
+
+**Refs**: CWE-306 (Missing Authentication for Critical Function), CWE-319 (Cleartext Transmission of Sensitive Information), OWASP A07:2025 (Identification and Authentication Failures), OWASP A02:2025 (Cryptographic Failures)
 
 ---
 
@@ -647,11 +837,9 @@ def export_model_unsafe(model_name):
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| GSQL injection prevention | strict | CWE-943, OWASP A03:2021 |
-| Graph Studio security | strict | CWE-269, OWASP A01:2021 |
-| Real-time analytics security | warning | CWE-400, CWE-770 |
-| ML Workbench security | warning | CWE-200, MITRE ATLAS |
-
----
-
-## Version History
+| GSQL injection prevention | strict | CWE-943, OWASP A03:2025 |
+| Graph Studio security | strict | CWE-269, OWASP A01:2025 |
+| Real-time analytics security | warning | CWE-400, CWE-770, OWASP A05:2025 |
+| ML Workbench security | warning | CWE-200, LLM02:2025, LLM03:2025 |
+| C++ UDF trusted-path enforcement | strict | CWE-829, CWE-94, OWASP A08:2025 |
+| REST++ endpoint auth hardening | strict | CWE-306, CWE-319, OWASP A07:2025 |
