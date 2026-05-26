@@ -2517,6 +2517,14 @@ audited_rules:
         in the template. In <script setup>, only top-level imported components are
         automatically available to the template via their identifier. This is a second
         independent reason the Do example fails at runtime.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (defineAsyncComponent missing import): `import { defineAsyncComponent } from 'vue'`
+        added to <script setup>; factory restructured to return `() => import('./AdminPanel.vue')`
+        resolving both the missing import and the undefined-return factory bug; comment explains
+        the lazy-load pattern and that server enforces authorization inside the component.
+      - ISSUE 2 (OWASP A02:2025 wrong for CWE-922): State Management Refs now cite OWASP A07:2025
+        (Authentication Failures) replacing the incorrect A02:2025.
     issues_filed: []
   - path: rules/languages/sql/CLAUDE.md
     status: passed
@@ -2622,4 +2630,132 @@ audited_rules:
       - EF Core LINQ and Dapper @params in Do examples are syntactically correct.
       - IExceptionHandler in error handling Do example is correct for ASP.NET Core 8+.
       - All CWE IDs and OWASP 2025 category citations are valid.
+    issues_filed: []
+
+  - path: rules/languages/java/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Parameterized Queries
+      - Prevent Command Injection
+      - Avoid Unsafe Deserialization
+      - Use Strong Cryptographic Algorithms
+      - Validate File Paths
+      - Prevent XXE Attacks
+      - Don't Expose Stack Traces
+      - Validate All External Input
+    notes: |
+      Audited all 8 rule sections. Three required topics are entirely absent per checklist,
+      and one code example uses the wrong import namespace for Spring Boot 3+.
+
+      ISSUE 1 — JNDI lookup rule entirely absent (MISSING REQUIRED RULE)
+        The checklist requires a JNDI rule covering the Log4Shell class of vulnerabilities:
+        no untrusted data should flow into JNDI lookup paths
+        (javax.naming.InitialContext.lookup, log4j message patterns, LDAP/RMI URLs).
+        No such rule exists anywhere in the file. Log4Shell (CVE-2021-44228) and variants
+        remain one of the highest-profile Java-specific RCE vectors. Omitting this rule
+        leaves developers without guidance on this attack surface.
+        Fix required: add a JNDI rule (level: strict) prohibiting untrusted data in any
+        JNDI lookup path; include Log4j2 PatternLayout as the canonical Don't example
+        and log4j2.formatMsgNoLookups=true or upgrade to log4j 2.17.1+ as the Do.
+
+      ISSUE 2 — Reflection/setAccessible rule entirely absent (MISSING REQUIRED RULE)
+        The checklist requires a reflection rule: no setAccessible(true) across security
+        boundaries (bypassing module access, violating encapsulation of security code).
+        No such rule exists in the file. Reflection-based access control bypass is a
+        documented Java attack vector (CWE-470; OWASP A01:2025).
+        Fix required: add a reflection rule (level: strict) prohibiting
+        setAccessible(true) on untrusted or externally-supplied Class objects; show
+        the module-system opens directive as the Do alternative.
+
+      ISSUE 3 — Streams terminal operations rule entirely absent (MISSING REQUIRED RULE)
+        The checklist requires a streams rule ensuring terminal operations are used safely.
+        No such rule exists in the file.
+        Fix required: add a streams rule (level: warning) covering forEach with side
+        effects that suppress exception propagation, and parallel streams with shared
+        mutable state causing data races.
+
+      ISSUE 4 — Input validation Do example: wrong import namespace for Spring Boot 3+ (CODE BUG)
+        Line 340: "import javax.validation.constraints.*;"
+        Spring Boot 3.x (current LTS baseline, requires Java 17+) migrated to
+        jakarta.* as part of the Jakarta EE 9 transition. The javax.validation package
+        is absent from Spring Boot 3+ classpaths; this import produces a compilation error
+        on any current Spring Boot project.
+        Fix required: update to "import jakarta.validation.constraints.*;" and add a note
+        that Spring Boot 2.x uses javax.*, 3.x uses jakarta.*.
+
+      Non-blocking observations (no status change):
+      - Deserialization Do example (lines 112-131): ObjectMapper shown without a warning
+        against mapper.enableDefaultTyping() / mapper.activateDefaultTyping(). Those calls
+        introduce the gadget chain risk the rule is meant to prevent. Advisory: add a comment
+        explaining the danger of those methods.
+      - Serialization filter (lines 128-131) cites "Java 9+" -- accurate, but Java 17+
+        is the current LTS baseline. Advisory: update comment to reflect 17+ minimum.
+      - CWE IDs and OWASP A0x:2025 refs on all 8 existing rules are valid and correctly
+        assigned. No stale or mismatched standards references in the existing rules.
+    issues_filed: []
+
+  - path: rules/languages/ruby/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Parameterized Queries
+      - Prevent Command Injection
+      - Avoid Unsafe Deserialization
+      - Use Strong Cryptographic Algorithms
+      - Validate File Paths
+      - Prevent ReDoS Attacks
+      - Don't Expose Stack Traces
+      - Use Strong Parameters
+    notes: |
+      Audited all 8 rule sections. Two blocking issues found: one is a misleading
+      Do example (command injection rule), one is missing coverage of two mandatory
+      Ruby-specific topics. Standards refs are otherwise clean.
+
+      ISSUE 1 — Command Injection Do example: Shellwords.escape passed to array-form system (MISLEADING / BLOCKING)
+        Line 67: system('echo', Shellwords.escape(user_input))
+        The array-form of system() (passing arguments as separate elements) does NOT
+        invoke the shell. No shell metacharacter interpretation occurs; the OS executes
+        the binary directly with the argument string as-is. Applying Shellwords.escape
+        to an argument that will never be interpreted by a shell is redundant and teaches
+        a false mental model: developers will incorrectly believe escaping is required
+        when using the array form. Worse, if user_input contains special characters that
+        Shellwords escapes (e.g., quotes, spaces), those escape sequences are passed
+        literally to the program as part of the argument value, corrupting the input.
+        Shellwords escaping is only meaningful for the single-string form of system()/exec()
+        where the shell parses the command string.
+        Fix required: remove Shellwords.escape from the array-form system() call; keep the
+        comment noting that array form avoids shell invocation, which IS the correct lesson.
+        Show Shellwords.escape only in the context where it is appropriate: building a
+        single-string shell command when array form is unavailable.
+
+      ISSUE 2 — Missing mandatory Ruby-specific topics: metaprogramming and ERB injection (COVERAGE GAP / BLOCKING)
+        The audit checklist for Ruby-specific rules requires coverage of:
+          (a) Metaprogramming risks: eval(), send() with untrusted input, define_method,
+              class_eval, instance_eval with user-controlled strings. These are Ruby's
+              highest-severity code execution vectors and are absent from the file.
+          (b) ERB injection: HTML-safe vs raw output in ERB templates (html_safe,
+              raw(), <%== %>). In Rails, calling String#html_safe or raw() on user input
+              bypasses Rails' automatic XSS escaping and enables stored XSS. This pattern
+              is unique to Ruby/Rails and absent from the file.
+        The file covers SQL injection, command injection, deserialization, crypto, path
+        traversal, ReDoS, error handling, and mass assignment but the two mandatory
+        Ruby-specific metaprogramming and ERB topics are unrepresented.
+        Fix required: add a 'Metaprogramming Safety' rule covering eval/send/class_eval
+        with untrusted input (CWE-94, OWASP A03:2025); add an 'ERB Output Encoding' rule
+        covering html_safe/raw misuse (CWE-79, OWASP A03:2025).
+
+      Non-blocking observations (no status change):
+      - YAML.safe_load with permitted_classes: [Symbol, Date] is correct Ruby 3.1+ API.
+        The deprecated whitelist_classes: keyword (Ruby <3.1) is not present. Good.
+      - BCrypt::Password.create cost: 12 is acceptable; Argon2id is now OWASP A04:2025
+        first-choice but bcrypt remains standard-compliant. Advisory only.
+      - No version guidance present. Ruby 2.7 EOL 2023-03-31; 3.0 EOL 2024-03-31.
+        File implies Ruby 3.x (YAML permitted_classes: syntax) but states no minimum.
+        Advisory: note Ruby >= 3.1 minimum.
+      - Open3.capture2 in list form is correct for avoiding shell invocation.
     issues_filed: []
