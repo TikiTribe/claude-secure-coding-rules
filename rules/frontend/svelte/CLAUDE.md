@@ -2,6 +2,11 @@
 
 Security rules for Svelte development in Claude Code.
 
+**Version target**: Svelte 4 / SvelteKit 2.x. Svelte 4 component syntax ($:, `export let`,
+`on:event` directives) is valid in Svelte 5 with no code changes; see the advisory notes
+at the bottom for Svelte 5 rune equivalents. SvelteKit 2.x changed `error()` and
+`redirect()` to throw internally — do not add an outer `throw` keyword.
+
 ## Prerequisites
 
 - `rules/_core/owasp-2025.md` - Core web security
@@ -93,7 +98,9 @@ Security rules for Svelte development in Claude Code.
 
 **Level**: `strict`
 
-**When**: Using Svelte stores for state management.
+**When**: Using Svelte stores for state management. In Svelte 5, shared mutable state is
+idiomatic via `$state` in a `.svelte.js` module; `writable` stores remain valid. The
+security principle — no tokens in client-side state — applies equally to both forms.
 
 **Do**:
 ```javascript
@@ -252,7 +259,9 @@ async function deleteAccount(userId) {
 }
 ```
 
-**Why**: Missing CSRF tokens allow attackers to perform actions on behalf of users.
+**Why**: Missing CSRF tokens allow attackers to perform actions on behalf of users. Note:
+SvelteKit Form Actions include built-in CSRF protection and do not require manual token
+handling. This pattern applies to custom `fetch()` calls against non-SvelteKit backends.
 
 **Refs**: CWE-352, OWASP A01:2025
 
@@ -314,12 +323,12 @@ import { error } from '@sveltejs/kit';
 export async function GET({ locals }) {
   // Verify authentication
   if (!locals.user) {
-    throw error(401, 'Authentication required');
+    error(401, 'Authentication required');        // SvelteKit 2.x: no throw
   }
 
   // Verify authorization
   if (!locals.user.isAdmin) {
-    throw error(403, 'Insufficient permissions');
+    error(403, 'Insufficient permissions');        // SvelteKit 2.x: no throw
   }
 
   const data = await getAdminData();
@@ -357,17 +366,17 @@ export async function load({ params, locals }) {
   // Validate parameter
   const id = parseInt(params.id);
   if (isNaN(id) || id <= 0) {
-    throw error(400, 'Invalid user ID');
+    error(400, 'Invalid user ID');               // SvelteKit 2.x: no throw
   }
 
   // Check authorization
   if (locals.user?.id !== id && !locals.user?.isAdmin) {
-    throw error(403, 'Cannot access this user');
+    error(403, 'Cannot access this user');        // SvelteKit 2.x: no throw
   }
 
   const user = await getUser(id);
   if (!user) {
-    throw error(404, 'User not found');
+    error(404, 'User not found');                 // SvelteKit 2.x: no throw
   }
 
   return { user };
@@ -420,7 +429,8 @@ import { DATABASE_URL } from '$env/static/private';
 import { JWT_SECRET } from '$env/static/private';
 
 // In +page.svelte (client-side)
-const secret = JWT_SECRET;  // This will fail, but attempting it is wrong
+const secret = JWT_SECRET;  // Build error — SvelteKit enforces the private boundary at
+                             // compile time via module resolution, not at runtime
 ```
 
 **Why**: Secrets exposed to client are visible in browser and can be extracted.
@@ -445,6 +455,25 @@ const secret = JWT_SECRET;  // This will fail, but attempting it is wrong
 
 ---
 
+## Svelte 5 Migration Notes
+
+The rules above use Svelte 4 syntax throughout. All examples are valid in Svelte 5 with no
+changes. For new Svelte 5 projects, the idiomatic equivalents are:
+
+| Svelte 4 | Svelte 5 |
+|---|---|
+| `export let prop` | `let { prop } = $props()` |
+| `$: derived = expr` | `let derived = $derived(expr)` |
+| `$: { sideEffect }` | `$effect(() => { sideEffect })` |
+| `on:submit\|preventDefault` | `onsubmit={handler}` (call `e.preventDefault()` inside) |
+| `writable` store | `$state` in a `.svelte.js` module |
+
+Security principles (no tokens in client state, sanitize `{@html}` input, validate all
+parameters) are identical between versions.
+
+---
+
 ## Version History
 
+- **v2.0.0** - SvelteKit 2.x `error()` call sites updated; Svelte 5 advisory notes added
 - **v1.0.0** - Initial Svelte security rules
