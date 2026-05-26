@@ -5869,3 +5869,52 @@ audited_rules:
       - GraphQL depth/complexity limits not covered; add advisory or warning rule for
         QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, and reverse-proxy limiting on /v1/graphql
       - Raft consensus port (8300) and mTLS requirement absent from Replication Security rule
+
+  - path: rules/rag/search-rerank/neural-rerankers/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Cohere SDK usage
+      - PII redaction before third-party API
+      - Local reranker model loading (Jina, FlashRank, ColBERT)
+      - Inference timeout
+      - Adversarial input detection
+    notes: |
+      6 defects found. Subagent originally appended audit YAML to the rule file
+      itself rather than docs/p05-audit-output.yaml. The rule file was truncated
+      back to its proper end (line 1111). This entry captures the audit findings
+      from the subagent run.
+
+      ISSUE 1 — cohere.Client() is legacy v4 SDK; v5 requires cohere.ClientV2.
+      ISSUE 2 — All OWASP refs missing :2025 qualifier throughout the file.
+      ISSUE 3 — No PII redaction step before documents are sent to Cohere external API.
+      ISSUE 4 — Jina rule loads model without use_safetensors=True; ColBERT verifies .pt files but does not require safetensors format.
+      ISSUE 5 — No inference timeout on local model calls (Jina, FlashRank, ColBERT) to bound DoS tail latency.
+      ISSUE 6 — Adversarial input detection covers prompt-injection markers but not Unicode homoglyphs or invisible characters.
+
+  - path: rules/rag/vector-managed/zilliz/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Secure API Key and Cluster Authentication
+      - Collection Access Control and Isolation
+      - GPU Resource Limits and Tenant Isolation
+      - Dynamic Schema Security Validation
+      - Partition Key Security for Multi-Tenancy
+      - Backup and Restore Security
+      - Query Injection Prevention in Filter Expressions
+      - Rate Limiting and Quota Management
+    notes: |
+      3 defects found. Subagent originally appended audit YAML to the rule file
+      itself rather than docs/p05-audit-output.yaml. The rule file was truncated
+      back to its proper end (line 869). This entry captures the audit findings.
+
+      ISSUE 1 — All OWASP/LLM refs lack :2025 qualifier. "OWASP API Security Top 10" (no year), "OWASP LLM03" (no year), "OWASP API4:2023" — all must carry :2025 (note: OWASP API Security Top 10 latest is 2023; rewrite must preserve correct year).
+      ISSUE 2 — No rule or advisory covers VPC peering for private Zilliz Cloud cluster connectivity.
+      ISSUE 3 — Collection/partition access control relies entirely on naming-convention prefix checks; no pymilvus RBAC API calls (create_role, grant_privilege, grant_role) demonstrating cluster-enforced role grants.
+
+      Passed: MilvusClient uri+token API correct for pymilvus 2.x / Zilliz Cloud; cluster auth via API key with TLS; partition key multi-tenancy isolation; expr filter injection prevention.
