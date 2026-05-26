@@ -6325,9 +6325,10 @@ audited_rules:
       Non-blocking: data residency disclosure, API key rotation, markdown href injection bypass in sanitize_for_web, webhook HMAC coverage.
 
   - path: rules/rag/document-processing/unstructured/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
+    fixed_on: 2026-05-26
     audit_coverage: full
     rules_audited:
       - unstructured-client SDK
@@ -6336,15 +6337,15 @@ audited_rules:
       - MIME type validation
       - hi_res strategy subprocess sandboxing
     notes: |
-      7 defects. Entry was missing from YAML; rule file contained an appended Audit Log section, removed in cleanup.
+      7 defects fixed in rewrite.
 
-      ISSUE 1 — All OWASP inline refs and bottom References block use :2021; none use :2025.
-      ISSUE 2 — No OWASP LLM Top 10 2025 refs: prompt-injection detection rule cites only CWE-74/A03:2021, not LLM01:2025.
-      ISSUE 3 — partition_via_api not addressed: API Service Security rule covers UnstructuredClient SDK but never discloses third-party SaaS data egress.
-      ISSUE 4 — No MIME-type validation: pipeline routes on file extension only.
-      ISSUE 5 — hi_res strategy spawns ML inference subprocesses (detectron2/layoutparser) on untrusted content; subprocess attack surface not addressed.
-      ISSUE 6 — fast vs hi_res trade-off treated as resource concern only; security dimension (subprocess attack surface) missing.
-      ISSUE 7 — unstructured-client 0.x SDK imports appear stale; shared.PartitionParameters path changed in >=0.26.
+      ISSUE 1 — Fixed: all OWASP inline refs and References block updated :2021 -> :2025.
+      ISSUE 2 — Fixed: prompt injection detection rule now cites OWASP LLM01:2025 in addition to CWE-74/A03:2025.
+      ISSUE 3 — Fixed: added partition_via_api Egress Disclosure rule with classification gate and DPA guidance.
+      ISSUE 4 — Fixed: added MIME-Type Validation rule using python-magic byte-level detection.
+      ISSUE 5 — Fixed: added hi_res Subprocess Sandboxing rule with container isolation and seccomp guidance.
+      ISSUE 6 — Fixed: fast vs hi_res trade-off table now includes subprocess attack surface dimension.
+      ISSUE 7 — Fixed: SDK imports updated to unstructured_client.models.operations.PartitionRequest (>=0.26 path).
 
   - path: rules/rag/observability/monitoring/CLAUDE.md
     status: failed
