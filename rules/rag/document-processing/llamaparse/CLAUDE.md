@@ -445,7 +445,7 @@ def parse_with_language(file_path: str, language: str):
 
 **Why**: Parsing instructions are sent to LLM models for processing. User-controlled instructions can inject prompts that alter extraction behavior, exfiltrate data, or manipulate output. Always use predefined, validated instructions and whitelist language parameters.
 
-**Refs**: CWE-94 (Code Injection), OWASP LLM01 (Prompt Injection), CWE-20 (Improper Input Validation)
+**Refs**: CWE-94 (Code Injection), OWASP LLM01:2025 (Prompt Injection), CWE-20 (Improper Input Validation)
 
 ---
 
@@ -555,7 +555,7 @@ def use_in_prompt(parsed_text: str, user_query: str):
 
 **Why**: Parsed documents may contain crafted content designed for prompt injection attacks when fed to LLMs, XSS attacks when displayed in web interfaces, or SQL injection when stored in databases. Output must be sanitized for its specific usage context.
 
-**Refs**: CWE-79 (XSS), CWE-89 (SQL Injection), OWASP LLM01 (Prompt Injection), CWE-116 (Improper Encoding)
+**Refs**: CWE-79 (XSS), CWE-89 (SQL Injection), OWASP LLM01:2025 (Prompt Injection), CWE-116 (Improper Encoding)
 
 ---
 
@@ -707,3 +707,125 @@ def batch_parse(file_paths: list):
 **Why**: LlamaParse charges per page processed. Without rate limiting, attackers can cause significant financial damage through API abuse, or perform denial of service by exhausting quotas. Per-user limits prevent any single user from monopolizing resources. Page estimation helps budget costs before committing to processing.
 
 **Refs**: CWE-400 (Resource Exhaustion), CWE-770 (Allocation Without Limits), OWASP API4:2023 (Unrestricted Resource Consumption)
+
+---
+
+## Rule: PII Redaction Before Upload
+
+**Level**: `strict`
+
+**When**: Uploading documents to LlamaCloud for parsing in regulated deployments (HIPAA, GDPR, PCI-DSS, CCPA)
+
+**Do**:
+```python
+import os
+import logging
+from llama_parse import LlamaParse
+
+# presidio is the recommended redaction library; install with:
+# pip install presidio-analyzer presidio-anonymizer
+# python -m spacy download en_core_web_lg
+try:
+    from presidio_analyzer import AnalyzerEngine
+    PRESIDIO_AVAILABLE = True
+except ImportError:
+    PRESIDIO_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+# Entity classes that block upload without redaction in regulated deployments
+HIGH_RISK_ENTITIES = {"US_SSN", "CREDIT_CARD", "IBAN_CODE", "MEDICAL_LICENSE", "US_PASSPORT"}
+
+
+def extract_text_from_pdf(file_path: str) -> str:
+    """Extract raw text locally for pre-scan. Requires pypdf."""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(file_path)
+        return " ".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
+
+
+def scan_for_pii(file_path: str) -> set:
+    """
+    Pre-scan document for PII entity types before upload.
+    Returns set of detected entity types so caller can decide whether to proceed.
+    """
+    if not PRESIDIO_AVAILABLE:
+        raise RuntimeError("presidio-analyzer required for PII scanning")
+
+    raw_text = extract_text_from_pdf(file_path)
+    if not raw_text:
+        return set()
+
+    analyzer = AnalyzerEngine()
+    results = analyzer.analyze(text=raw_text, language="en")
+    return {r.entity_type for r in results}
+
+
+def parse_with_pii_redaction(
+    file_path: str,
+    regulated: bool = True,
+) -> list:
+    """
+    Parse document with mandatory PII pre-scan for regulated deployments.
+
+    For regulated=True:
+    1. Extracts readable text locally and scans for PII with presidio.
+    2. Raises ValueError if high-risk PII is present — caller must redact
+       the source document or use a self-hosted parser.
+    3. Logs any non-blocking PII detections for audit trail before upload.
+
+    For regulated=False, upload proceeds with a warning log only
+    (caller asserts the document contains no regulated data).
+    """
+    if regulated:
+        detected = scan_for_pii(file_path)
+        high_risk = HIGH_RISK_ENTITIES & detected
+
+        if high_risk:
+            raise ValueError(
+                f"Document contains high-risk PII ({', '.join(sorted(high_risk))}) "
+                "and cannot be uploaded to LlamaCloud without redaction. "
+                "Redact the source document before parsing, or use a self-hosted parser."
+            )
+
+        if detected:
+            # Log non-blocking entity classes for audit trail
+            logger.warning(
+                "PII entity types detected before LlamaCloud upload: %s. "
+                "Verify data residency requirements and BAA/DPA coverage.",
+                sorted(detected),
+            )
+    else:
+        logger.warning(
+            "regulated=False: document sent to LlamaCloud without PII scan. "
+            "Ensure this document contains no regulated data."
+        )
+
+    parser = LlamaParse(
+        api_key=os.environ["LLAMA_CLOUD_API_KEY"],
+        result_type="markdown",
+    )
+    return parser.load_data(file_path)
+```
+
+**Don't**:
+```python
+from llama_parse import LlamaParse
+import os
+
+def parse_medical_record(file_path: str):
+    # No PII scan or redaction before sending to third-party SaaS
+    parser = LlamaParse(
+        api_key=os.environ["LLAMA_CLOUD_API_KEY"],
+        result_type="markdown"
+    )
+    # SSNs, patient names, diagnoses transmitted to LlamaCloud without review
+    return parser.load_data(file_path)
+```
+
+**Why**: LlamaCloud is a third-party SaaS operated by LlamaIndex. Documents uploaded for parsing leave your infrastructure. Regulated data (PHI under HIPAA, PII under GDPR, cardholder data under PCI-DSS) transmitted to an external service without a BAA or DPA creates compliance exposure and data-residency violations. Presidio provides entity-level detection before transmission; blocking on high-risk entities (SSN, IBAN, medical license) prevents the worst-case disclosures. For maximum control, run a self-hosted parser (Unstructured, Docling) in your own environment and skip the upload entirely.
+
+**Refs**: CWE-359 (Exposure of Private Personal Information), NIST AI RMF GV 1.6 (data governance), GDPR Art. 28 (processor contracts), HIPAA 45 CFR §164.314 (BAA requirement), OWASP Top 10:2025 A02 (Cryptographic Failures — data in transit to third parties)

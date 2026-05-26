@@ -7,6 +7,9 @@ Security patterns for cloud embedding APIs: OpenAI, Cohere, Voyage AI, and Jina.
 | Rule | Level | Provider | Trigger |
 |------|-------|----------|---------|
 | API Key Security | `strict` | All | Any API-based embedding usage |
+| PII Redaction Before API Send | `strict` | All | Any text sent to third-party embedding API |
+| Per-Tenant API Key Isolation | `strict` | All | Multi-tenant / SaaS deployments |
+| Data Residency and Vendor Retention | `strict` | All | DPA scope, cross-border data |
 | Model Selection Security | `warning` | OpenAI | Model configuration |
 | Batch Processing Security | `warning` | OpenAI | Bulk embedding operations |
 | Input Type Validation | `warning` | Cohere | Search/retrieval embedding |
@@ -48,8 +51,8 @@ class SecureEmbeddingClients:
         if not api_key:
             raise ValueError("OPENAI_API_KEY not configured in environment")
 
-        # Organization ID scopes API key to specific org
-        # Prevents cross-org billing and access
+        # Organization ID scopes API key to specific org.
+        # Prevents cross-org billing and access.
         return OpenAI(
             api_key=api_key,
             organization=org_id,
@@ -135,7 +138,370 @@ config = {"openai_key": "sk-proj-..."}  # Will be committed to git
 
 **Why**: Exposed API keys enable unauthorized access, cost abuse, and data exfiltration. Organization scoping prevents cross-org billing and limits blast radius. Attackers actively scan repositories and logs for leaked credentials.
 
-**Refs**: CWE-798 (Hardcoded Credentials), CWE-532 (Log Exposure), OWASP LLM06 (Sensitive Information Disclosure)
+**Refs**: CWE-798 (Hardcoded Credentials), CWE-532 (Log Exposure), OWASP LLM06:2025 (Sensitive Information Disclosure)
+
+---
+
+## Rule: PII Redaction Before API Send
+
+**Level**: `strict`
+
+**When**: Sending any text to a third-party embedding API (OpenAI, Cohere, Voyage, Jina)
+
+**Do**: Scan and redact PII before the text leaves your trust boundary
+
+```python
+from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
+
+def redact_pii(texts: List[str]) -> List[str]:
+    """
+    Redact PII from texts using Microsoft Presidio before sending to
+    any third-party embedding API. Raises on error rather than silently
+    forwarding raw text.
+    """
+    try:
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_anonymizer import AnonymizerEngine
+    except ImportError:
+        raise RuntimeError(
+            "presidio-analyzer and presidio-anonymizer are required. "
+            "Install: pip install presidio-analyzer presidio-anonymizer"
+        )
+
+    analyzer = AnalyzerEngine()
+    anonymizer = AnonymizerEngine()
+
+    redacted = []
+    for text in texts:
+        results = analyzer.analyze(
+            text=text,
+            entities=[
+                "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER",
+                "CREDIT_CARD", "US_SSN", "IBAN_CODE",
+                "IP_ADDRESS", "LOCATION", "DATE_TIME",
+                "NRP",  # Nationality, religion, political group
+            ],
+            language="en"
+        )
+
+        if results:
+            logger.info(
+                "PII detected and redacted before embedding API call: "
+                "%d entities across %d characters",
+                len(results), len(text)
+            )
+
+        anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+        redacted.append(anonymized.text)
+
+    return redacted
+
+
+def embed_with_pii_redaction(
+    texts: List[str],
+    embed_fn,
+    skip_redaction: bool = False
+) -> list:
+    """
+    Wrapper that enforces PII redaction before any embedding API call.
+    Set skip_redaction=True only for clearly non-personal corpora (e.g.,
+    public documentation) and document the justification at call sites.
+    """
+    if skip_redaction:
+        logger.warning(
+            "PII redaction bypassed — confirm corpus contains no personal data"
+        )
+        clean_texts = texts
+    else:
+        clean_texts = redact_pii(texts)
+
+    return embed_fn(clean_texts)
+```
+
+**Don't**: Send raw user-supplied or document text to third-party APIs without scanning
+
+```python
+# VULNERABLE: Raw PII forwarded to OpenAI
+response = client.embeddings.create(
+    model="text-embedding-3-small",
+    input=user_documents  # May contain SSNs, emails, medical data
+)
+
+# VULNERABLE: Redaction only in logging, not in API payload
+logger.info("Embedding: %s", redact_for_log(text))
+client.embed(text)  # Original PII still sent
+
+# VULNERABLE: Regex-only redaction misses entity types
+import re
+clean = re.sub(r"\d{3}-\d{2}-\d{4}", "[SSN]", text)
+client.embed(clean)  # Misses names, locations, account numbers
+```
+
+**Why**: Text sent to third-party APIs leaves your trust boundary and may be used for provider training, stored in provider logs, or disclosed in a breach. GDPR Art. 28, HIPAA, and most DPAs restrict cross-boundary transfer of personal data without a lawful basis and appropriate controls. NER-based redaction (Presidio) catches structured and unstructured PII that regex cannot.
+
+**Refs**: OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-200 (Exposure of Sensitive Information), GDPR Art. 28 (Processor obligations), NIST AI RMF (GOVERN 6.1)
+
+---
+
+## Rule: Per-Tenant API Key Isolation
+
+**Level**: `strict`
+
+**When**: Building multi-tenant or SaaS applications that embed text on behalf of multiple customers
+
+**Do**: Issue a separate API key (or project-scoped key) per tenant and enforce key-to-tenant binding at request time
+
+```python
+import os
+from typing import Optional
+from functools import lru_cache
+
+class TenantKeyStore:
+    """
+    Resolves the correct API key for each tenant.
+    Backed by a secrets manager; never stores keys in application memory
+    beyond the scope of a single request.
+    """
+
+    def __init__(self, secrets_backend: str = "aws"):
+        self.secrets_backend = secrets_backend
+
+    def get_key(self, tenant_id: str, provider: str) -> str:
+        """
+        Fetch tenant-specific API key from the secrets manager.
+        Secret naming convention: embedding/{provider}/{tenant_id}
+        """
+        if not tenant_id or "/" in tenant_id:
+            raise ValueError(f"Invalid tenant_id: {tenant_id!r}")
+
+        secret_name = f"embedding/{provider}/{tenant_id}"
+
+        if self.secrets_backend == "aws":
+            import boto3
+            client = boto3.client("secretsmanager")
+            response = client.get_secret_value(SecretId=secret_name)
+            return response["SecretString"]
+
+        if self.secrets_backend == "vault":
+            import hvac
+            vault = hvac.Client(url=os.environ["VAULT_ADDR"])
+            secret = vault.secrets.kv.v2.read_secret_version(
+                path=f"embedding/{provider}/{tenant_id}"
+            )
+            return secret["data"]["data"]["api_key"]
+
+        raise ValueError(f"Unknown secrets backend: {self.secrets_backend}")
+
+
+class TenantScopedEmbedder:
+    """
+    Embedder that binds each request to the requesting tenant's own API key.
+    Prevents key sharing across tenant boundaries.
+    """
+
+    def __init__(self, key_store: TenantKeyStore, provider: str = "openai"):
+        self.key_store = key_store
+        self.provider = provider
+
+    def embed(
+        self,
+        texts: list[str],
+        tenant_id: str
+    ) -> list[list[float]]:
+        """Embed using only the key allocated to tenant_id."""
+        api_key = self.key_store.get_key(tenant_id, self.provider)
+
+        if self.provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=texts
+            )
+            return [e.embedding for e in response.data]
+
+        raise ValueError(f"Unsupported provider: {self.provider}")
+```
+
+**Don't**: Share a single org-level key across all tenants
+
+```python
+# VULNERABLE: One key for all tenants — cost, quota, and audit conflation
+OPENAI_KEY = os.environ["OPENAI_API_KEY"]
+
+def embed_for_tenant(texts, tenant_id):
+    client = OpenAI(api_key=OPENAI_KEY)  # Same key regardless of tenant
+    return client.embeddings.create(model="text-embedding-3-small", input=texts)
+
+# VULNERABLE: Tenant passed as metadata only — key still shared
+def embed_for_tenant(texts, tenant_id):
+    response = shared_client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts,
+        user=tenant_id  # Metadata only; does not isolate spend or quota
+    )
+```
+
+**Why**: A shared key means one tenant's data is billed against another's quota, rate-limit exhaustion by one tenant disrupts others, and a compromised key exposes all tenants. Per-tenant keys allow independent revocation, quota management, and audit attribution. Org-level scoping alone does not prevent cross-tenant blast radius.
+
+**Refs**: OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-284 (Improper Access Control), NIST SP 800-204B (API security), SOC 2 CC6.1 (Logical access controls)
+
+---
+
+## Rule: Data Residency and Vendor Retention
+
+**Level**: `strict`
+
+**When**: Sending text to any third-party embedding API, especially under GDPR, HIPAA, or data sovereignty requirements
+
+**Do**: Review provider DPA, configure data residency options, and set retention to zero where available
+
+```python
+import logging
+from dataclasses import dataclass, field
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ProviderDataPolicy:
+    """
+    Documented data-handling properties for an embedding provider.
+    Populate from the provider's DPA and API documentation.
+    Update when you renew or renegotiate the DPA.
+    """
+    provider: str
+    dpa_url: str
+    # Regions where data is processed; None = provider chooses
+    processing_regions: list[str]
+    # Days provider retains request data; 0 = no retention claimed
+    retention_days: int
+    # Whether training opt-out is available and configured
+    training_opt_out: bool
+    # SCCs or equivalent in place for cross-border transfers
+    cross_border_mechanism: Optional[str]
+    # Date this entry was last verified against provider docs
+    last_verified: str
+
+
+# Keep this registry in version control and review on each DPA renewal.
+PROVIDER_POLICIES: dict[str, ProviderDataPolicy] = {
+    "openai": ProviderDataPolicy(
+        provider="openai",
+        dpa_url="https://openai.com/policies/data-processing-addendum",
+        processing_regions=["US"],
+        retention_days=30,   # Verify current value in DPA
+        training_opt_out=True,
+        cross_border_mechanism="SCCs",
+        last_verified="2025-04-01"
+    ),
+    "cohere": ProviderDataPolicy(
+        provider="cohere",
+        dpa_url="https://cohere.com/data-processing-agreement",
+        processing_regions=["US", "EU"],
+        retention_days=30,
+        training_opt_out=True,
+        cross_border_mechanism="SCCs",
+        last_verified="2025-04-01"
+    ),
+    "voyage": ProviderDataPolicy(
+        provider="voyage",
+        dpa_url="https://www.voyageai.com/privacy",
+        processing_regions=["US"],
+        retention_days=30,
+        training_opt_out=True,
+        cross_border_mechanism="SCCs",
+        last_verified="2025-04-01"
+    ),
+    "jina": ProviderDataPolicy(
+        provider="jina",
+        dpa_url="https://jina.ai/privacy-policy",
+        processing_regions=["EU", "US"],
+        retention_days=0,
+        training_opt_out=True,
+        cross_border_mechanism="SCCs",
+        last_verified="2025-04-01"
+    ),
+}
+
+
+def assert_residency_compliant(
+    provider: str,
+    allowed_regions: list[str],
+    require_training_opt_out: bool = True,
+    max_retention_days: int = 0,
+) -> None:
+    """
+    Raise if the provider policy does not satisfy the caller's requirements.
+    Call this at service startup, not per-request, to catch misconfigurations
+    before any data is sent.
+    """
+    policy = PROVIDER_POLICIES.get(provider)
+    if policy is None:
+        raise ValueError(
+            f"No data policy on record for provider '{provider}'. "
+            "Add an entry to PROVIDER_POLICIES before use."
+        )
+
+    disallowed = [r for r in policy.processing_regions if r not in allowed_regions]
+    if disallowed:
+        raise RuntimeError(
+            f"Provider '{provider}' processes data in {disallowed}, "
+            f"which are outside allowed regions {allowed_regions}. "
+            "Use a provider with a compliant region or add a cross-border mechanism."
+        )
+
+    if require_training_opt_out and not policy.training_opt_out:
+        raise RuntimeError(
+            f"Provider '{provider}' does not offer training opt-out. "
+            "Configure the opt-out header/flag or choose a different provider."
+        )
+
+    if policy.retention_days > max_retention_days:
+        raise RuntimeError(
+            f"Provider '{provider}' retains data for {policy.retention_days} days, "
+            f"exceeding the allowed maximum of {max_retention_days} days. "
+            "Negotiate zero-retention terms or redact before sending."
+        )
+
+    logger.info(
+        "Data residency check passed for provider '%s' (regions=%s, "
+        "retention=%d days, opt-out=%s, last_verified=%s)",
+        provider,
+        policy.processing_regions,
+        policy.retention_days,
+        policy.training_opt_out,
+        policy.last_verified,
+    )
+```
+
+**Don't**: Send data to a provider without verifying residency and retention terms
+
+```python
+# VULNERABLE: No residency check; EU personal data may flow to non-adequate country
+response = openai_client.embeddings.create(
+    model="text-embedding-3-small",
+    input=eu_customer_documents
+)
+
+# VULNERABLE: Relying on provider default; may enable training on your data
+response = cohere_client.embed(
+    texts=confidential_texts,
+    model="embed-english-v3.0"
+    # No opt-out flag; provider may use data for model improvement
+)
+
+# VULNERABLE: Assuming zero retention without verifying the DPA
+for doc in sensitive_docs:
+    client.embed(doc)  # Retention terms unchecked; data may persist 30+ days
+```
+
+**Why**: Third-party embedding APIs receive your plaintext. If the provider stores it, trains on it, or processes it in a jurisdiction outside your DPA scope, you incur regulatory liability (GDPR Art. 46 cross-border transfers, HIPAA BA requirements). Zero-retention and training opt-out eliminate the residual risk; where those are unavailable, redact first (see PII Redaction rule).
+
+**Refs**: OWASP LLM06:2025 (Sensitive Information Disclosure), GDPR Art. 46 (Cross-border transfers), HIPAA § 164.308(b) (Business associate contracts), NIST AI RMF (GOVERN 6.2)
 
 ---
 
@@ -145,7 +511,7 @@ config = {"openai_key": "sk-proj-..."}  # Will be committed to git
 
 **When**: Configuring OpenAI embedding models
 
-**Do**: Pin model versions and validate output dimensions
+**Do**: Pin to a current, supported model and validate output dimensions
 
 ```python
 from dataclasses import dataclass
@@ -159,11 +525,12 @@ class OpenAIEmbeddingConfig:
     dimensions: int
     max_input_tokens: int
 
-    # Supported models with their properties
+    # Current supported models.
+    # text-embedding-ada-002 was retired by OpenAI in April 2025;
+    # migrate existing indexes to text-embedding-3-small or text-embedding-3-large.
     MODELS = {
         "text-embedding-3-small": {"dimensions": 1536, "max_tokens": 8191},
         "text-embedding-3-large": {"dimensions": 3072, "max_tokens": 8191},
-        "text-embedding-ada-002": {"dimensions": 1536, "max_tokens": 8191},
     }
 
     def __post_init__(self):
@@ -237,12 +604,12 @@ config = OpenAIEmbeddingConfig(
 result = create_openai_embeddings(texts, client, config)
 ```
 
-**Don't**: Use unpinned models or skip dimension validation
+**Don't**: Use retired models or skip dimension validation
 
 ```python
-# VULNERABLE: No version pinning
+# VULNERABLE: text-embedding-ada-002 was retired April 2025 — requests will fail
 embeddings = client.embeddings.create(
-    model="text-embedding-ada-002",  # Could change behavior
+    model="text-embedding-ada-002",
     input=texts
 )
 
@@ -255,9 +622,9 @@ EMBEDDING_DIM = 1536  # Assumed, not verified
 index = faiss.IndexFlatL2(EMBEDDING_DIM)  # May not match actual output
 ```
 
-**Why**: OpenAI may update model behavior. Dimension mismatches cause silent retrieval failures as embeddings map to wrong vector space indices. Version pinning ensures reproducibility and compatibility.
+**Why**: OpenAI retired `text-embedding-ada-002` in April 2025; calls to it will fail in production. `text-embedding-3-small` delivers equal or better quality at lower cost. Dimension mismatches cause silent retrieval failures as embeddings map to wrong vector space indices.
 
-**Refs**: CWE-1188 (Insecure Default Initialization), NIST AI RMF (Version Control), OWASP LLM04 (Model Misconfiguration)
+**Refs**: CWE-1188 (Insecure Default Initialization), NIST AI RMF (Version Control), OWASP LLM04:2025 (Model Misconfiguration)
 
 ---
 
@@ -389,7 +756,7 @@ for batch in batches:
 
 **Why**: Large batches can exceed API limits, causing failures and wasted tokens. Missing timeouts cause hung requests. Without partial failure handling, a single error loses progress on entire corpus.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-754 (Improper Check for Unusual Conditions), OWASP LLM10 (Model Denial of Service)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-754 (Improper Check for Unusual Conditions), OWASP LLM10:2025 (Model Denial of Service)
 
 ---
 
@@ -507,7 +874,7 @@ embedding = client.embed(
 
 **Why**: Cohere's v3 models use asymmetric embeddings - documents and queries are embedded differently for optimal retrieval. Using wrong input types degrades search quality by 10-30% and can cause complete retrieval failures.
 
-**Refs**: OWASP LLM04 (Model Misconfiguration), CWE-1188 (Insecure Default Initialization), Cohere Documentation
+**Refs**: OWASP LLM04:2025 (Model Misconfiguration), CWE-1188 (Insecure Default Initialization), Cohere Documentation
 
 ---
 
@@ -649,7 +1016,7 @@ similarity = np.dot(binary_emb, other_binary)
 
 **Why**: Silent truncation loses critical document content without warning. Mishandled compression wastes storage or corrupts embeddings. Binary embeddings require proper unpacking for correct similarity computation.
 
-**Refs**: CWE-131 (Incorrect Calculation of Buffer Size), CWE-704 (Incorrect Type Conversion), OWASP LLM04 (Model Misconfiguration)
+**Refs**: CWE-131 (Incorrect Calculation of Buffer Size), CWE-704 (Incorrect Type Conversion), OWASP LLM04:2025 (Model Misconfiguration)
 
 ---
 
@@ -793,7 +1160,7 @@ legal_emb = client.embed(
 
 **Why**: Domain-specific models are trained on specialized corpora and understand domain terminology, structure, and relationships. Using mismatched models degrades retrieval quality by 15-40% for specialized content.
 
-**Refs**: OWASP LLM04 (Model Misconfiguration), NIST AI RMF (Model Selection), CWE-1188 (Insecure Default Initialization)
+**Refs**: OWASP LLM04:2025 (Model Misconfiguration), NIST AI RMF (Model Selection), CWE-1188 (Insecure Default Initialization)
 
 ---
 
@@ -974,7 +1341,7 @@ embeddings = [embed(chunk) for chunk in chunks]
 
 **Why**: Jina's 8K context is largest among common providers but still requires chunking for long documents. Silent truncation loses critical content. Poor chunking degrades semantic coherence. Missing aggregation returns duplicate documents.
 
-**Refs**: CWE-131 (Incorrect Calculation of Buffer Size), OWASP LLM04 (Model Misconfiguration), CWE-404 (Improper Resource Shutdown)
+**Refs**: CWE-131 (Incorrect Calculation of Buffer Size), OWASP LLM04:2025 (Model Misconfiguration), CWE-404 (Improper Resource Shutdown)
 
 ---
 
@@ -1154,7 +1521,7 @@ for doc in documents:
 
 **Why**: All embedding APIs have rate limits (RPM/TPM). Exceeding limits causes 429 errors that can cascade into service unavailability. Exponential backoff prevents retry storms. Token tracking catches TPM limits that occur before RPM limits.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), OWASP LLM10 (Model Denial of Service), CWE-770 (Resource Allocation Without Limits)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), OWASP LLM10:2025 (Model Denial of Service), CWE-770 (Resource Allocation Without Limits)
 
 ---
 
@@ -1177,12 +1544,12 @@ logger = logging.getLogger(__name__)
 class EmbeddingCostTracker:
     """Track embedding costs with budget alerts."""
 
-    # Pricing per 1K tokens (update as needed)
+    # Pricing per 1K tokens (verify against current provider pricing pages)
     PRICING = {
         "openai": {
             "text-embedding-3-small": 0.00002,
             "text-embedding-3-large": 0.00013,
-            "text-embedding-ada-002": 0.0001,
+            # text-embedding-ada-002 retired April 2025 — do not use
         },
         "cohere": {
             "embed-english-v3.0": 0.0001,
@@ -1346,7 +1713,7 @@ track_cost(tokens)  # Can't analyze cost by feature/user
 
 **Why**: Embedding API costs accumulate quickly with large corpora. A bug or attack can exhaust monthly budget in hours. Budget alerts enable early intervention. Usage tracking enables cost attribution and optimization.
 
-**Refs**: CWE-770 (Resource Allocation Without Limits), OWASP LLM10 (Model Denial of Service), NIST AI RMF (Resource Management)
+**Refs**: CWE-770 (Resource Allocation Without Limits), OWASP LLM10:2025 (Model Denial of Service), NIST AI RMF (Resource Management)
 
 ---
 
@@ -1520,7 +1887,7 @@ return result.embeddings  # No validation of response structure
 
 **Why**: API responses can contain malformed embeddings due to errors, truncation, or edge cases. Invalid embeddings corrupt vector indices silently. Validation catches issues before they cause retrieval failures in production.
 
-**Refs**: CWE-754 (Improper Check for Unusual Conditions), CWE-20 (Improper Input Validation), OWASP LLM04 (Model Misconfiguration)
+**Refs**: CWE-754 (Improper Check for Unusual Conditions), CWE-20 (Improper Input Validation), OWASP LLM04:2025 (Model Misconfiguration)
 
 ---
 
@@ -1529,3 +1896,4 @@ return result.embeddings  # No validation of response structure
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2024-01-15 | Initial release with 10 provider-specific rules |
+| 2.0.0 | 2025-05-26 | Fix OWASP LLM citations to :2025; retire ada-002; add PII redaction, per-tenant key isolation, and data residency rules |
