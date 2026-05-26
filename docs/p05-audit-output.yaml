@@ -2988,4 +2988,36 @@ audited_rules:
         for function arguments. Advisory only.
       - Command injection Do example uses POSIX fork/execlp. Correct on POSIX but
         non-portable to Windows. Advisory only.
+
+  - path: rules/backend/express/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 9 rules. Syntax valid for Node.js 20/22 and Express 4.x/5.x. All OWASP
+      2025 category refs (A03, A04, A05, A07) and CWE IDs (20, 79, 89, 209, 307, 384,
+      434, 942) are current and correct. helmet, express-session (RedisStore, not
+      MemoryStore, secure/httpOnly/sameSite all set), express-rate-limit (standardHeaders
+      true, legacyHeaders false), and multer are all present. connect-redis import uses
+      .default — correct for v7+. No deprecated mitigations. One blocking defect found.
+
+      ISSUE 1 — Secure File Uploads Do example: extension-only MIME check in multer
+      fileFilter (SELF-CONTRADICTION / BLOCKING)
+        The Do example filters uploads by checking path.extname(file.originalname):
+          const ext = path.extname(file.originalname).toLowerCase();
+          if (allowed.includes(ext)) { cb(null, true); }
+        This relies solely on the filename extension provided by the attacker. An attacker
+        renames shell.php to shell.jpg and the filter passes. The Don't example flags
+        use of req.file.originalname as dangerous, making the Do example's own reliance
+        on originalname for type gating a self-contradiction. The correct approach adds
+        file.mimetype validation alongside extension checking:
+          const allowedMimes = ['image/jpeg', 'image/png', 'application/pdf'];
+          if (allowed.includes(ext) && allowedMimes.includes(file.mimetype)) { ... }
+        Note: mimetype is set by multer from the Content-Type header, which is also
+        attacker-controlled, so both checks together are defense-in-depth; neither alone
+        is sufficient. A comment noting this limitation and recommending server-side
+        magic-byte verification (e.g., file-type package) would complete the guidance.
+        Fix required: add file.mimetype check alongside extension check in the Do
+        example; add advisory comment that magic-byte verification is recommended for
+        high-assurance contexts.
     issues_filed: []
