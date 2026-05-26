@@ -1523,3 +1523,116 @@ audited_rules:
         year-old lower bound. The pinning pattern is correct; the specific version
         number is stale. Advisory only.
     issues_filed: []
+
+  - path: rules/containers/helm/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - No Hardcoded Secrets in Values Files
+      - Secure Container SecurityContext Defaults
+      - Resource Requests and Limits
+      - Image Tag and Digest Pinning
+      - Network Policy Integration
+      - RBAC and ServiceAccount Least Privilege
+      - Ingress TLS Enforcement
+      - Chart Linting and Schema Validation
+      - Sensitive Values Redaction and NOTES.txt
+      - Dependency Management and Chart Provenance
+    notes: |
+      Audited all 10 rule sections. Three distinct blocking issues found; one is a
+      broken CLI command (cosign missing required flag), one is a misleading OCI
+      helm pull flag, and one is an image reference inconsistency between rules.
+      No OWASP LLM taxonomy issues — this file uses CWE, CIS Kubernetes Benchmark,
+      and NSA Kubernetes Hardening Guide refs throughout. No inline secrets appear
+      in any Do example; secrets correctly use existingSecret or ExternalSecret
+      patterns only. Chart.yaml uses apiVersion: v2 correctly. JSON Schema uses
+      draft/2020-12 per Helm v3 documentation. Security context defaults
+      (runAsNonRoot, readOnlyRootFilesystem, capabilities drop ALL,
+      allowPrivilegeEscalation: false, seccompProfile RuntimeDefault) are correct
+      and consistent with CIS Kubernetes Benchmark 5.2 and Pod Security Standards.
+
+      ISSUE 1 — cosign verify missing required --certificate-identity flag (BROKEN Do / CRITICAL)
+        Lines 863-865: the Do example for chart provenance verification is:
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            registry-1.docker.io/bitnamicharts/postgresql:16.4.5
+        Since cosign v2.0 (released October 2023, current stable), --certificate-identity
+        or --certificate-identity-regexp is REQUIRED when --certificate-oidc-issuer is
+        set. Without it cosign v2+ exits with:
+          "Error: --certificate-identity or --certificate-identity-regexp is required
+          when --certificate-oidc-issuer is set."
+        The command always fails on cosign v2.x, which is the version any user following
+        current documentation will have installed. A developer copying this example gets
+        an immediate error and is likely to remove the verification step entirely, which
+        is worse than not teaching it. The correct pattern requires both issuer AND
+        identity constraints:
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "https://github.com/bitnami/.*" \
+            registry-1.docker.io/bitnamicharts/postgresql:16.4.5
+        Fix required: add --certificate-identity or --certificate-identity-regexp to
+        the cosign verify invocation; document that the identity value must match the
+        actual signing workflow identity for the target chart publisher.
+
+      ISSUE 2 — helm pull --verify does not work for OCI registries (MISLEADING Do)
+        Line 872: helm pull oci://myregistry.io/charts/myapp --version 1.2.3 --verify
+        Helm's --verify flag applies to classic HTTP chart repositories with GPG-signed
+        .prov provenance files (the helm sign / helm verify workflow). For OCI
+        registries, Helm does not perform cosign verification via --verify; OCI chart
+        integrity verification is done entirely through the cosign CLI. Running
+        helm pull oci://... --verify against an OCI registry that lacks a .prov file
+        either silently succeeds without verifying anything (Helm < 3.13) or fails
+        with "Error: failed to fetch provenance" (Helm 3.13+). Neither outcome achieves
+        the intended security goal. The inline comment directly above the command states
+        "Use OCI registries for charts (preferred over HTTP repos — integrity built in)"
+        but then uses the HTTP-registry --verify flag, contradicting the OCI recommendation
+        and implying a verification step that cannot function for OCI targets.
+        Fix required: remove --verify from the helm pull OCI example; add a note that
+        OCI chart integrity is verified via cosign verify (already shown in the block
+        above at line 863); optionally show helm show chart with digest comparison
+        to confirm the pulled content matches the expected digest.
+
+      ISSUE 3 — SecurityContext rule deployment template uses tag-only image reference
+        contradicting the Image Pinning rule in the same file (INCONSISTENT Do)
+        Line 157 in the Secure Container SecurityContext Defaults Do example:
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        This uses a tag-only reference with no digest fallback. The Image Tag and
+        Digest Pinning rule (lines 291-300 in the same file) correctly shows the
+        digest-preferred conditional pattern using a >- block scalar and if/else.
+        A developer working from the SecurityContext Do example gets a deployment
+        template that ignores image.digest even if set in values-production.yaml.
+        Two Do examples in the same file teach contradictory patterns for the same
+        template fragment; a security-focused corpus must be self-consistent.
+        Fix required: replace the tag-only image reference on line 157 with the
+        digest-preferred conditional block already shown in the Image Pinning rule.
+
+      Non-blocking observations (no status change):
+      - checkov-action SHA at line 738: bridgecrewio/checkov-action@
+        9e5a7f1c2d4b6a8f0c1e2d3b4a5f6c7d8e9f0a1b has no version comment
+        (every other SHA pin in CI/CD rules carries a # vX.Y.Z annotation).
+        Advisory: verify the SHA against the live checkov-action repo and add
+        a version comment.
+      - The >- block scalar for the digest-preferred image template (lines 294-300)
+        may produce a leading space before the repository value depending on the
+        Go template whitespace trimming context. Advisory: use a single-line
+        conditional to avoid potential whitespace rendering ambiguity:
+          image: "{{ if .Values.image.digest }}{{ .Values.image.repository }}@
+          {{- .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:
+          {{- .Values.image.tag }}{{ end }}"
+      - values.schema.json is shown as a jsonc (JSON with comments) fenced block
+        (line 648). The // comment lines are not valid JSON and will cause parse
+        errors if copied verbatim into a real values.schema.json file. Advisory:
+        note that // comments are documentation-only and must be stripped from
+        the actual file, or use an adjacent prose block for comments.
+      - CIS Kubernetes Benchmark version not qualified in any Refs line (e.g.,
+        "CIS Kubernetes Benchmark 5.2"). CIS Benchmark for Kubernetes is currently
+        at v1.10 (December 2024); section numbers differ between versions.
+        Advisory: add version qualifier e.g. "CIS Kubernetes Benchmark v1.10 §5.2".
+      - Network Policy template (lines 391-395): namespaceSelector and podSelector
+        are siblings under a single from[] entry, correctly implementing AND
+        semantics (must be from that namespace AND that pod label). The template
+        is correct; the indentation pattern that produces AND vs OR is subtle and
+        worth a clarifying comment for practitioners who may misread it.
+    issues_filed: []
