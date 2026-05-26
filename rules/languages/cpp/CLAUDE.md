@@ -80,10 +80,27 @@ std::array<char, 256> buffer;
 // Safe: Use std::string
 std::string name = user_input;
 
-// Safe: Bounds-checked copy
-void safe_copy(char* dest, size_t dest_size, const char* src) {
-    strncpy(dest, src, dest_size - 1);
-    dest[dest_size - 1] = '\0';
+// Safe: Use std::string for all text — eliminates buffer management entirely
+std::string copy_input(const std::string& src) {
+    return src;  // Copy constructor; no size arithmetic required
+}
+
+// Safe: When a char* destination is unavoidable (C interop), use snprintf.
+// snprintf always null-terminates and returns the number of bytes that would
+// have been written, so truncation is detectable. SEI CERT C STR07-C.
+void copy_to_cbuf(char* dest, size_t dest_size, const char* src) {
+    int written = snprintf(dest, dest_size, "%s", src);
+    if (written < 0 || static_cast<size_t>(written) >= dest_size) {
+        // Truncation occurred — handle as appropriate for the caller
+        throw std::runtime_error("Buffer too small for copy");
+    }
+}
+
+// Safe: std::span<char, N> (C++20) as a bounds-safe buffer view for APIs
+// that must accept raw arrays without decaying them to pointers.
+#include <span>
+void fill_buffer(std::span<char> buf, char val) {
+    std::fill(buf.begin(), buf.end(), val);  // range known; no overrun possible
 }
 ```
 
