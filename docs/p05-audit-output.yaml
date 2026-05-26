@@ -5296,3 +5296,68 @@ audited_rules:
         appropriate given the limitations of substring-based detection.
       - cryptography.fernet API usage in SecureIndexStorage is correct and current.
     issues_filed: []
+
+  - path: rules/rag/vector-selfhosted/pgvector/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 7 rules: Connection Security, SQL Injection Prevention, Row-Level
+      Security, Index Security, Extension Security, Backup Security,
+      Performance Limits.
+
+      ISSUE 1 — OWASP refs use :2021 year suffix, not :2025 (BLOCKING)
+        All four OWASP citations use the 2021 edition:
+          Line 106: OWASP A02:2021 (Cryptographic Failures)
+          Line 243: OWASP A03:2021 (Injection)
+          Line 422: OWASP A01:2021 (Broken Access Control)
+          Line 794: OWASP A02:2021 (Cryptographic Failures)
+        The audit standard requires :2025 year tags. Fix required: update all
+        four OWASP identifiers to their :2025 equivalents (A02:2025, A03:2025,
+        A01:2025).
+
+      ISSUE 2 — No pg_hba.conf authentication configuration guidance (BLOCKING)
+        The audit spec requires coverage of pg_hba.conf auth. The file covers SSL
+        mode (verify-full) and credential handling via env vars but contains no
+        mention of pg_hba.conf configuration — specifically the requirement to
+        reject md5/trust auth methods and enforce scram-sha-256 or cert-based
+        authentication for all connections. This is a gap for self-hosted
+        deployments where pg_hba.conf is the access-control layer below the
+        application. Fix required: add a rule or note in Connection Security
+        covering pg_hba.conf entries: use scram-sha-256, reject trust and md5,
+        restrict host entries to app server CIDR, require SSL in local entries.
+
+      ISSUE 3 — No partition-by-tenant_id guidance (BLOCKING)
+        The audit spec requires partition-by-tenant_id for performance and
+        security. The file covers per-tenant schema isolation as an alternative
+        approach and uses tenant_id as a WHERE predicate plus RLS filter, but
+        never discusses declarative table partitioning (PARTITION BY LIST
+        (tenant_id)). Partitioning provides query pruning (large tenants do not
+        scan other tenants' pages), prevents row-level RLS from needing full
+        table access, and enables per-tenant pg_dump for regulated data
+        residency. Fix required: add a note or rule section explaining when to
+        use PARTITION BY LIST (tenant_id) and how it complements RLS.
+
+      Non-blocking observations (no status change):
+      - create_tenant_schema() at lines 369/372 uses f-strings to inject
+        schema_name into CREATE SCHEMA / CREATE TABLE DDL after a regex
+        validation guard. The regex (^[a-z0-9_]{1,63}$) is tight enough that
+        injection risk is low, but the f-string pattern in SQL is flagged
+        advisory per audit rules. Consider using psycopg2.sql.Identifier instead.
+      - configure_performance_limits() and set_search_params() use f-strings to
+        inject values from a hardcoded config dict into SET statements (lines
+        831-843). Values are not user-controlled; advisory only.
+      - create_secure_index() uses f-strings for DDL construction (lines
+        469-478). Values come from INDEX_CONFIGS dict; advisory only.
+      - OWASP refs for Extension Security (lines 609-610) cite CWE-829 and
+        CWE-269 only, with no OWASP Top 10 category. Consider adding A08:2025
+        (Software and Data Integrity Failures) for extension supply-chain risk.
+      - The RLS defense-in-depth check in query_vectors() at line 332 compares
+        row[0] (UUID primary key) to tenant_id, which is logically incorrect;
+        it should compare the tenant_id column index. This is a logic bug in
+        an advisory defense-in-depth check, not in the primary RLS enforcement
+        path. Non-blocking but should be corrected.
+      - CWE-319, CWE-798, CWE-295, CWE-89, CWE-943, CWE-284, CWE-863,
+        CWE-400, CWE-208, CWE-829, CWE-269, CWE-311, CWE-312, CWE-770: all
+        valid, non-retired IDs, correctly mapped to rule categories.
+    issues_filed: []
