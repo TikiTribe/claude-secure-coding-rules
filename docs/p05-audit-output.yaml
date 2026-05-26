@@ -3846,3 +3846,243 @@ audited_rules:
         A08:2025 (Software and Data Integrity Failures) or A03:2025 (Injection) are
         closer. Current mapping is not wrong enough to block but worth revisiting.
     issues_filed: []
+
+  - path: rules/backend/modal/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Secure Modal Function Configuration
+      - Secure Modal Secrets Handling
+      - Harden Modal Container Images
+      - Secure Modal Web Endpoints
+      - Secure Modal Scheduled Functions
+    notes: |
+      Audited all 5 rule sections. Two blocking defects found: a pervasive deprecated
+      API (modal.Stub replaced by modal.App) and a wrong OWASP LLM category number.
+      No modal.Volume coverage (checklist item: no shared writable across untrusted
+      callers) — absence rather than wrong rule; counted as advisory gap.
+
+      MODAL API — modal.Stub deprecated, all Do examples broken (PERVASIVE / BLOCKING)
+        All five rule sections use modal.Stub() and decorator patterns @stub.function(),
+        @stub.cls(). The import line 'from modal import Image, Secret, Stub' appears in
+        every Do block. modal.Stub was renamed to modal.App in Modal 0.60 (released
+        late 2023). Current Modal 0.x exports modal.App, not modal.Stub; importing Stub
+        raises ImportError on any Modal >= 0.60. Every Do example in the file fails at
+        import time on a current Modal install. stub = modal.Stub(...) must become
+        app = modal.App(...); @stub.function()/@stub.cls() become @app.function()/@app.cls();
+        'from modal import ..., Stub' becomes 'from modal import ..., App'.
+        Fix required: replace all modal.Stub() with modal.App(); update all decorator
+        and assignment references throughout the file.
+
+      ISSUE 1 — Function Configuration Refs: wrong OWASP LLM category (STANDARDS MISMATCH)
+        Line 147 cites "OWASP LLM04" for the rule covering resource exhaustion (CWE-400)
+        and unsafe model loading via trust_remote_code=True (CWE-502). In OWASP LLM Top
+        10 2025, LLM04:2025 is "Data and Model Poisoning" — not resource limits or RCE
+        via unsafe model loading. Resource exhaustion from unrestricted function invocation
+        maps to LLM06:2025 (Excessive Agency); trust_remote_code=True RCE maps to
+        LLM01:2025 (Prompt Injection / arbitrary code execution). No :2025 qualifier is
+        present on any OWASP LLM citation in the file (file-wide pattern).
+        Fix required: replace "OWASP LLM04" with "OWASP LLM06:2025" for the resource-
+        exhaustion portion and add "OWASP LLM01:2025" for the trust_remote_code RCE
+        risk; add :2025 qualifiers to all OWASP LLM refs.
+
+      ISSUE 2 — Container Image Do example: apt_install without version pin (SELF-CONTRADICTION)
+        Line 282 shows .apt_install("libgomp1") with no version constraint. The container
+        security checklist requires pinned versions for all package installs. The same Do
+        block immediately below pins all pip packages to exact versions (torch==2.0.1,
+        numpy==1.24.0), creating a self-contradiction: apt packages float while pip
+        packages are pinned. Modal's .apt_install() calls apt-get install; without a
+        version string (e.g., "libgomp1=12.3.0-1") every image rebuild pulls the latest
+        available version from the debian repository, undermining reproducibility and
+        introducing supply-chain risk.
+        Fix required: pin the apt package version in .apt_install(), e.g.
+        .apt_install("libgomp1=12.3.0-1"), and add a comment noting version can be
+        found with 'apt-cache show libgomp1'.
+
+      Non-blocking observations (no status change):
+      - modal.Volume absent: No rule covers modal.Volume access controls. The checklist
+        item "no shared writable across untrusted callers" is unaddressed. Advisory: add
+        a Volume security rule covering per-caller namespace isolation and read-only
+        mounts for shared model artifacts.
+      - Web endpoint auth token comparison (line 403): 'if token not in valid_keys' uses
+        plain string comparison. hmac.compare_digest() is preferred to prevent timing
+        side-channel leaks. Advisory only.
+      - @modal.method() per-method authz (line 105): Do example validates prompt length
+        but performs no caller identity check at the method level. Advisory only.
+      - GPU type string "T4" (lines 48, 89): valid in current Modal alongside the object
+        form modal.gpu.T4(). No issue.
+      - All CWE IDs valid: CWE-400, CWE-502, CWE-798, CWE-532, CWE-250, CWE-269,
+        CWE-306, CWE-770, CWE-94. OWASP web-app refs A07:2025, A05:2025, A01:2025
+        are correct 2025 category mappings.
+      - modal.Secret.from_name() used consistently throughout Do examples; no inline
+        keys anywhere. Correct pattern.
+      - All Do examples include explicit timeout= and concurrency_limit= values.
+        Cost caps adequately covered.
+    issues_filed: []
+
+  - path: rules/backend/ray-serve/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 5 rules. Ray 2.x API syntax is valid throughout: AutoscalingConfig
+      parameters (min_replicas, max_replicas, target_num_ongoing_requests_per_replica,
+      upscale_delay_s, downscale_delay_s, metrics_interval_s, look_back_period_s),
+      serve.deployment decorator, serve.run(), serve.ingress(), .bind() pattern,
+      HTTPOptions with host/port/request_timeout_s, and serve.start() with namespace
+      and detached are all current Ray 2.x API. All CWE IDs (20, 94, 200, 209, 269,
+      400, 502, 770) are valid. Four blocking defects found.
+
+      ISSUE 1 — OWASP LLM taxonomy mismatch: LLM04 used for DoS/resource-exhaustion
+      context (STANDARDS ERROR / BLOCKING)
+        Lines 133 and 607 cite "OWASP LLM04" as a reference for resource exhaustion
+        and unvalidated data flows. In the OWASP LLM Top 10 2025 taxonomy, LLM04 is
+        "Data and Model Poisoning" not Denial of Service. The 2023 taxonomy had LLM04
+        as "Model Denial of Service" but the 2025 edition renumbered it; DoS moved to
+        LLM10:2025 (Unbounded Consumption). Using bare "OWASP LLM04" without a year
+        qualifier silently points to the wrong category in the current standard.
+        Fix required: replace "OWASP LLM04" with "OWASP LLM10:2025 (Unbounded
+        Consumption)" on lines 133 and 607; add :2025 year qualifier throughout.
+
+      ISSUE 2 — OWASP LLM taxonomy mismatch: LLM05 used for serialization/RCE
+      context (STANDARDS ERROR / BLOCKING)
+        Line 374 cites "OWASP LLM05" for the pickle/deserialization RCE rule. In the
+        OWASP LLM Top 10 2025 taxonomy, LLM05 is "Improper Output Handling." The
+        pickle deserialization RCE vector is an infrastructure supply-chain risk not
+        mapped to LLM05:2025. The closest 2025 mapping is LLM04:2025 (Data and Model
+        Poisoning) or no LLM ref (CWE-502 and CWE-94 alone are sufficient).
+        Fix required: remove bare "OWASP LLM05" from line 374 Refs. If an LLM ref is
+        desired, cite LLM04:2025.
+
+      ISSUE 3 — Ray dashboard port 8265 not covered (COVERAGE GAP / BLOCKING)
+        The audit checklist requires that Ray dashboard exposure on port 8265 be
+        addressed: the dashboard is unauthenticated by default and must require a
+        token in production. No rule in the file covers this. An attacker with
+        network access to port 8265 can inspect actors, kill jobs, and exfiltrate
+        task metadata without credentials in a default Ray cluster deployment.
+        The correct mitigations are --dashboard-token (Ray CLI) or the
+        RAY_DASHBOARD_TOKEN env var, combined with network-layer controls blocking
+        8265 from untrusted networks.
+        Fix required: add a strict rule covering Ray dashboard authentication showing
+        token configuration. Don't example: serve.start() without dashboard token
+        on a non-loopback interface.
+
+      ISSUE 4 — runtime_env pip installs from untrusted sources not covered
+      (COVERAGE GAP / BLOCKING)
+        The audit checklist requires that runtime_env pip installs from untrusted
+        sources be addressed. Ray's runtime_env feature allows specifying arbitrary
+        pip packages at deployment time; an attacker who controls runtime_env
+        configuration can install a malicious package that executes code in every
+        worker at startup, equivalent to RCE across all replicas. No rule in the
+        file addresses this vector. Ray uses cloudpickle internally for task/actor
+        serialization; the serialization rule correctly warns about pickle but does
+        not name cloudpickle or its role as Ray's internal serializer, and does not
+        address the runtime_env supply-chain vector.
+        Fix required: add a strict rule covering runtime_env security: require pinned
+        package versions with hashes, restrict pip index to an internal registry or
+        --no-index with a local wheelhouse, prohibit git+https:// or VCS refs
+        without commit SHA pinning. Name cloudpickle as Ray's internal serializer
+        and note that untrusted task code submitted to Ray actors is RCE.
+
+      Non-blocking observations (no status change):
+      - Inter-actor trust is not covered. When multiple deployments communicate via
+        .remote() handles, a compromised replica can call any handle it holds a
+        reference to without authentication. Advisory: note in the composition rule
+        that handle references are trust boundaries and callee deployments should
+        validate caller identity.
+      - The multi-application isolation rule shows ray_actor_options with a "namespace"
+        key (lines 411, 422). ray_actor_options does not accept a "namespace" key;
+        namespace is a top-level argument to ray.init() or serve.start(), not a
+        per-actor resource option. The key is silently ignored at runtime.
+        Non-blocking because the surrounding serve.start(namespace=...) pattern is
+        correct; the stray key in ray_actor_options is a misleading artifact.
+    issues_filed: []
+
+  - path: rules/backend/transformers/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Disable Remote Code Execution
+      - Verify Model Integrity
+      - Validate Tokenizer Inputs
+      - Validate Model Outputs
+      - Secure Training Data and Process
+      - Secure Hugging Face Hub Authentication
+    notes: |
+      Audited all 6 rule sections. Transformers 4.x API usage is mostly correct:
+      use_safetensors=True (from_pretrained, >= 4.31), safe_serialization=True
+      (save_pretrained, >= 4.30), token= kwarg (replaces deprecated use_auth_token=,
+      >= 4.31), revision= for SHA pinning, truncation/padding args -- all valid. CWE IDs
+      all correct: CWE-502, CWE-494, CWE-400, CWE-20, CWE-200, CWE-798, CWE-532.
+      OWASP A07:2025 for Hub auth rule is correct. Two blocking defects found.
+
+      OWASP LLM 2023->2025 NUMBERING: YES -- applies throughout this file.
+        All four OWASP LLM refs omit the :2025 qualifier and use 2023 numbers.
+        LLM05 (supply chain / trust_remote_code) is LLM03:2025 in the 2025 taxonomy --
+        the number is wrong. LLM04 (tokenizer validation / output handling) maps to
+        different 2025 categories: the tokenizer DoS rule is closest to LLM10:2025
+        (Unbounded Consumption); the output validation rule is closest to LLM05:2025
+        (Improper Output Handling). All LLM refs need :2025 qualifier and number
+        correction as a minimum.
+
+      ISSUE 1 -- OWASP LLM refs use 2023 numbers, no :2025 qualifier (STANDARDS MISMATCH / BLOCKING)
+        Lines 75, 139, 205, 277, 356, 424 cite OWASP LLM04 and LLM05 without :2025
+        qualifier. In the 2025 taxonomy:
+          LLM05:2023 (Supply Chain Vulnerabilities) -> LLM03:2025 -- number changed.
+            Affected rules: Disable Remote Code Execution (line 75), Verify Model
+            Integrity (line 139), Secure Training Process (line 356).
+          LLM04:2023 (Model Denial of Service) -> LLM10:2025 (Unbounded Consumption)
+            for the tokenizer DoS rule (line 205).
+          The Validate Model Outputs rule (line 277) covers improper output handling
+            -> LLM05:2025 (Improper Output Handling) is the correct 2025 ref.
+        Fix required: update supply-chain refs to LLM03:2025; tokenizer rule to
+        LLM10:2025; output validation rule to LLM05:2025; add :2025 qualifier throughout.
+
+      ISSUE 2 -- verify_model() info.security_status is not a real ModelInfo field (DEAD GUARD / BLOCKING)
+        Lines 95-97 in the Verify Model Integrity Do example check:
+          if hasattr(info, 'security_status'):
+              if info.security_status == 'unsafe':
+                  raise ValueError(...)
+        The huggingface_hub ModelInfo dataclass (all released versions) does not have a
+        security_status attribute. hasattr() always returns False; the guard is
+        permanently bypassed for every model. A developer copying this example will
+        believe the security_status check is an active mitigation when it is dead code
+        that never triggers. No version of huggingface_hub exposes this field in the
+        ModelInfo response. The correct approach is to check info.tags for known
+        community-applied tags or inspect info.disabled.
+        Fix required: remove the info.security_status block or replace it with a
+        check against info.tags and info.disabled; document that HF Hub does not
+        provide a single security_status signal and that allowlist + tag review is
+        the available API.
+
+      Non-blocking observations (no status change):
+      - AML.T0010 (line 75, trust_remote_code RCE): ATLAS live site returned 404 in all
+        prior audits in this project. From training-set knowledge AML.T0010 is not a
+        confirmed technique ID in ATLAS v4 (AML.T0011 = User Execution via malicious
+        artifact is a closer fit for the trust_remote_code RCE scenario). Cannot confirm
+        or refute from the live catalog. Recommend replacing with AML.T0011 or verifying
+        against the live ATLAS catalog before publishing.
+      - AML.T0024 (line 277, logit leakage / inference exfiltration): plausible as
+        Exfiltration via ML Inference API from training knowledge; same 404 caveat.
+      - AML.T0020 (lines 139, 356, data poisoning): confirmed as Poison Training Data
+        in ATLAS v4 -- correct use.
+      - The save_pretrained(path) Don't example comments 'Default may use pickle.'
+        In transformers >= 4.37 the default switches to safetensors when the safetensors
+        package is installed. The comment is inaccurate for current transformers; update
+        to note that safe_serialization=True guarantees safetensors regardless of
+        environment.
+      - torch.load() coverage is conceptually correct but does not mention the
+        weights_only=True partial mitigation added in PyTorch 2.0. File correctly steers
+        toward safetensors; omission of weights_only is a coverage gap, not a contradiction.
+      - PEFT/LoRA fine-tuning concerns (adapter weight leakage, poisoning via adapter
+        injection) are not covered. Advisory: add a PEFT/LoRA subsection.
+      - pipeline() API injection risks are not addressed. Advisory: add a rule covering
+        trust_remote_code in pipeline() and output sanitization for pipeline results.
+      - Untrusted tokenizer.json source check is not explicitly addressed; the
+        trust_remote_code=False coverage is correct but does not discuss the
+        tokenizer.json attack surface independently.
+    issues_filed: []
