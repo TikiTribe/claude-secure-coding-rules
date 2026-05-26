@@ -622,9 +622,106 @@ def insert_document(collection, content):
     collection.data.insert(properties={"content": content})
 ```
 
-**Why**: External vectorization modules send data to third-party APIs. Exposed API keys can be abused for unauthorized usage. Sensitive data sent to external services may be logged or retained by the provider.
+**Why**: External vectorization modules send data to third-party APIs. Exposed API keys can be abused for unauthorized usage. Sensitive data (PII, proprietary content) sent to the text2vec-openai module is transmitted to OpenAI for embedding — a data egress path that bypasses your data classification controls. If Weaviate is integrated with agentic pipelines or tool-calling systems, module misconfiguration can allow agents to trigger unbounded external API calls without human review.
 
-**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-798, CWE-200 (Exposure of Sensitive Information)
+**Refs**: OWASP A02:2025 (Cryptographic Failures), OWASP LLM02:2025 (Sensitive Information Disclosure), OWASP LLM06:2025 (Excessive Agency), CWE-798, CWE-200 (Exposure of Sensitive Information)
+
+---
+
+## Rule: GraphQL Query Depth and Complexity Limits
+
+**Level**: `strict`
+
+**When**: Exposing Weaviate's `/v1/graphql` endpoint to any client, internal or external
+
+**Do**: Restrict maximum results via `QUERY_MAXIMUM_RESULTS`, add application-layer depth validation, and configure a reverse proxy with body-size and rate limits
+
+```python
+# Application-layer GraphQL depth validation
+import re
+
+MAX_QUERY_DEPTH = 5
+MAX_RESULTS_HARD_CAP = 1000  # Must match QUERY_MAXIMUM_RESULTS env var
+
+
+def measure_query_depth(query: str) -> int:
+    """Count nesting depth by tracking opening braces."""
+    depth = 0
+    max_depth = 0
+    for char in query:
+        if char == '{':
+            depth += 1
+            max_depth = max(max_depth, depth)
+        elif char == '}':
+            depth -= 1
+    return max_depth
+
+
+def validate_graphql_query(query: str, limit: int) -> None:
+    """Reject queries that exceed depth or result-count limits."""
+    depth = measure_query_depth(query)
+    if depth > MAX_QUERY_DEPTH:
+        raise ValueError(
+            f"Query depth {depth} exceeds maximum allowed depth {MAX_QUERY_DEPTH}"
+        )
+    if limit > MAX_RESULTS_HARD_CAP:
+        raise ValueError(
+            f"Requested limit {limit} exceeds maximum allowed {MAX_RESULTS_HARD_CAP}"
+        )
+
+
+# Weaviate env var — set in Docker Compose or Kubernetes manifest
+"""
+services:
+  weaviate:
+    environment:
+      QUERY_MAXIMUM_RESULTS: '1000'   # Hard server-side cap on result set size
+"""
+
+# Nginx reverse-proxy config — body size + rate limiting
+"""
+http {
+    limit_req_zone $binary_remote_addr zone=weaviate_gql:10m rate=30r/s;
+
+    server {
+        location /v1/graphql {
+            limit_req zone=weaviate_gql burst=10 nodelay;
+            client_max_body_size 1m;   # Reject oversized query bodies
+
+            proxy_pass http://weaviate:8080;
+            proxy_read_timeout 30s;
+        }
+    }
+}
+"""
+```
+
+**Don't**: Expose the GraphQL endpoint without server-side result caps or proxy-level controls
+
+```python
+# VULNERABLE: No depth validation — deeply nested query can exhaust CPU
+def run_graphql(client, raw_query: str):
+    return client.query.raw(raw_query)  # Attacker controls full query AST
+
+# VULNERABLE: Limit sourced directly from user input
+def search(collection, user_limit: int, query_vector: list):
+    return collection.query.near_vector(
+        near_vector=query_vector,
+        limit=user_limit  # user_limit=10_000_000 exhausts memory
+    )
+```
+
+```yaml
+# VULNERABLE: No QUERY_MAXIMUM_RESULTS set — default is unbounded in older builds
+services:
+  weaviate:
+    environment:
+      QUERY_TIMEOUT_SECONDS: '60'  # Timeout alone is not sufficient
+```
+
+**Why**: Weaviate's `/v1/graphql` endpoint accepts arbitrary nested queries. A deeply recursive or high-`limit` query can exhaust CPU and memory, causing a denial of service for all tenants. `QUERY_MAXIMUM_RESULTS` provides a server-side hard cap; the proxy body-size limit prevents gigabyte-scale query strings from reaching the parser; rate limiting prevents sustained flood attacks.
+
+**Refs**: OWASP A05:2025 (Security Misconfiguration), CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits or Throttling)
 
 ---
 
@@ -983,6 +1080,87 @@ def query(collection, query_vector):
 **Why**: Unencrypted cluster traffic can be intercepted to steal data or inject malicious updates. Without authentication, attackers can join rogue nodes to the cluster. Unhealthy replication leads to data loss or inconsistency.
 
 **Refs**: OWASP A02:2025 (Cryptographic Failures), OWASP A07:2025 (Identification and Authentication Failures), CWE-319, CWE-306
+
+---
+
+## Rule: Raft Consensus Security
+
+**Level**: `strict`
+
+**When**: Running Weaviate v1.25+ clusters, which use Raft consensus for schema and metadata coordination on port 8300
+
+**Do**: Isolate the Raft port to cluster-internal networks only, enable mTLS for inter-node Raft traffic, and enforce a Kubernetes NetworkPolicy that allows port 8300 only from peer Weaviate pods
+
+```yaml
+# Docker Compose — bind Raft port to the internal cluster network only
+# Never publish port 8300 to the host or external networks
+services:
+  weaviate-node-1:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.25.0
+    environment:
+      CLUSTER_HOSTNAME: 'node1'
+      # Raft consensus port (v1.25+) — keep on internal network
+      CLUSTER_RAFT_BIND_PORT: '8300'
+      # mTLS for Raft inter-node communication
+      CLUSTER_TLS_ENABLED: 'true'
+      CLUSTER_TLS_CERT: '/certs/node.crt'
+      CLUSTER_TLS_KEY: '/certs/node.key'
+      CLUSTER_TLS_CA: '/certs/ca.crt'
+    networks:
+      - weaviate_internal   # Internal cluster network only
+    # Do NOT add ports: - "8300:8300" — that exposes Raft to the host
+
+networks:
+  weaviate_internal:
+    driver: bridge
+    internal: true   # No external routing
+```
+
+```yaml
+# Kubernetes NetworkPolicy — restrict Raft port 8300 to weaviate pods only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: weaviate-raft-isolation
+  namespace: weaviate
+spec:
+  podSelector:
+    matchLabels:
+      app: weaviate
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: weaviate   # Only peer Weaviate pods may reach Raft
+      ports:
+        - protocol: TCP
+          port: 8300
+```
+
+**Don't**: Publish port 8300 to the host or allow external pods to reach the Raft consensus endpoint
+
+```yaml
+# VULNERABLE: Raft port exposed to host — any process on the host can reach it
+services:
+  weaviate-node-1:
+    ports:
+      - "8300:8300"   # Raft port reachable from outside the cluster
+
+# VULNERABLE: mTLS disabled — Raft messages travel in plaintext
+environment:
+  CLUSTER_TLS_ENABLED: 'false'
+```
+
+```yaml
+# VULNERABLE: No NetworkPolicy — any pod in the namespace can reach port 8300
+# (absence of a NetworkPolicy is the vulnerability)
+```
+
+**Why**: The Raft port carries schema mutations and leader-election messages. An attacker who can reach port 8300 can inject malicious schema changes, force leader re-elections to destabilize the cluster, or eavesdrop on metadata traffic. mTLS ensures only authenticated cluster members participate in consensus; network isolation ensures the port is never reachable from outside the Weaviate pod set.
+
+**Refs**: OWASP A05:2025 (Security Misconfiguration), CWE-319 (Cleartext Transmission of Sensitive Information), CWE-284 (Improper Access Control)
 
 ---
 
