@@ -153,8 +153,9 @@ library(jsonlite)
 write_json(data, "data.json")
 data <- fromJSON("data.json")
 
-# Safe: Validate before loading
-if (file.exists(filepath) && tools::md5sum(filepath) == expected_hash) {
+# Safe: Validate before loading (SHA-256; MD5 is collision-weak)
+if (file.exists(filepath) &&
+    digest::digest(filepath, algo = "sha256", file = TRUE) == expected_sha256) {
   data <- readRDS(filepath)
 }
 ```
