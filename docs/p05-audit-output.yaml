@@ -5742,3 +5742,130 @@ audited_rules:
         CWE-732, CWE-116, CWE-89, CWE-209: all valid, non-retired CWE IDs,
         correctly mapped to their respective rules.
     issues_filed: []
+
+  - path: rules/rag/vector-managed/pinecone/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 7 rules against p0.5 checklist (pinecone-client 5.x API; OWASP 2025 + LLM
+      2025 refs; Pinecone-specific: API key rotation; per-namespace tenant isolation;
+      metadata filters for ACL server-enforcement; serverless DoS via similarity_top_k;
+      PII in metadata; project-scoped keys; webhook security). Four blocking defects found.
+
+      ISSUE 1 -- Fake MITRE ATLAS technique ID (BROKEN REFS / CRITICAL)
+        Line 806: "MITRE ATLAS ML03 (Data Poisoning)"
+        No such technique exists. Valid ATLAS IDs follow the AML.TXXXX format.
+        Data poisoning maps to AML.T0020 in the MITRE ATLAS taxonomy. "ML03" is not
+        a recognized identifier in any published ATLAS release.
+        Fix required: replace "MITRE ATLAS ML03" with "MITRE ATLAS AML.T0020
+        (Craft Adversarial Data)" in the Hybrid Search Security rule Refs line.
+
+      ISSUE 2 -- Missing LLM08:2025 and LLM02:2025 refs (STANDARDS GAP / BLOCKING)
+        No rule in the file cites OWASP LLM Top 10 2025. For a vector store file,
+        LLM08:2025 (Vector and Embedding Weaknesses) is the primary applicable
+        standard and should appear in the Namespace Isolation, Metadata Filter
+        Injection, and Query Result Validation rules. LLM02:2025 (Sensitive
+        Information Disclosure) applies to the PII metadata gap and the Query
+        Result Validation rule.
+        Fix required: add OWASP LLM08:2025 (Vector and Embedding Weaknesses) and
+        OWASP LLM02:2025 (Sensitive Information Disclosure) to applicable rules.
+
+      ISSUE 3 -- No rule preventing PII storage in metadata at upsert time (MISSING
+        RULE / CRITICAL)
+        The Query Result Validation rule redacts pii_hash from responses but no rule
+        requires a PII scan before metadata is written to Pinecone. The
+        upsert_with_provenance helper spreads arbitrary caller-supplied fields via
+        **vec.get("metadata", {}) directly into stored metadata without PII scanning.
+        Once stored, PII persists until explicit deletion and is returned in query
+        results by default (include_metadata=True).
+        Fix required: add a strict rule requiring PII detection (e.g., presidio,
+        scrubadub) on all metadata values before upsert, with guidance to hash or
+        redact PII fields rather than store raw values.
+
+      ISSUE 4 -- No top_k cap; serverless cost-DoS vector unmitigated (MISSING
+        RULE / CRITICAL)
+        On serverless Pinecone, read units are consumed per vector scanned. A caller
+        setting top_k=10000 (the API maximum) burns ~1000x the read units of top_k=10.
+        No rule enforces a maximum top_k. The secure_query_with_validation helper uses
+        top_k=10 as a default but accepts any caller-supplied value without bounds
+        checking.
+        Fix required: add a warning-level rule capping top_k at a configurable
+        maximum (recommended default: 100) with enforcement in the query wrapper,
+        referencing the serverless read-unit pricing model as the threat context.
+
+      Non-blocking observations (no status change):
+      - pinecone-client 5.x API: all imports and method calls (Pinecone(),
+        ServerlessSpec, client.Index(), list_indexes(), create_index(), delete_index(),
+        SparseValues) correct for 5.x serverless API. No legacy pinecone.init() calls.
+        PASSES.
+      - OWASP 2025 refs: all web OWASP refs correctly use :2025 format. PASSES.
+      - API key rotation: covered with rotate_api_key() function. PASSES.
+      - Per-namespace tenant isolation: namespace= parameter used as primary server-
+        enforced boundary with defense-in-depth metadata validation. PASSES.
+      - Metadata filter ACL server-enforced: namespace isolation is the primary ACL
+        boundary; filter injection rule warns against filter-only ACL. Don't examples
+        show the metadata-filter-only anti-pattern. PASSES.
+      - Project-scoped keys: separate env vars per role (query/index/admin). PASSES.
+      - Webhook security: not applicable; Pinecone 5.x has no webhook surface.
+        Deferred.
+    issues_filed: []
+
+  - path: rules/rag/vector-selfhosted/weaviate/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audit checks: weaviate-client v4 API, OWASP 2025 refs, OWASP LLM 2025 refs,
+      anonymous_access disabled, API key/OIDC auth, multi-tenancy with tenant-per-query,
+      GraphQL depth/complexity limits, module security (text2vec-openai data egress),
+      backup-s3 credentials, raft consensus security.
+
+      PASS — weaviate-client v4 API throughout: connect_to_custom(), weaviate.classes,
+        Configure, AuthApiKey, AuthClientCredentials, client.collections, client.backup,
+        client.cluster. No v3 Client() patterns. Correct.
+
+      PASS — OWASP :2025 refs present: A01:2025 (lines 109, 483), A02:2025 (lines 364,
+        627, 985), A05:2025 (line 843), A07:2025 (lines 109, 985). All year-tagged.
+
+      FAIL — OWASP LLM 2025 refs absent. The Module Configuration rule addresses
+        text2vec-openai sending user data to OpenAI and backup-s3 credential exposure.
+        Both scenarios map to OWASP LLM06:2025 (Excessive Agency / Sensitive Information
+        Disclosure) and the broader LLM data-leakage taxonomy. No LLM Top 10 ref appears
+        anywhere in the file.
+
+      PASS — anonymous_access disabled: AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'false'
+        in both Docker Compose and Kubernetes StatefulSet env blocks. Correct.
+
+      PASS — API key and OIDC both covered with working v4 code examples. Correct.
+
+      PASS — multi_tenancy_config=Configure.multi_tenancy(enabled=True) on three
+        collections; with_tenant(tenant_id) used in all query helpers. Correct.
+
+      FAIL — GraphQL depth/complexity limits absent. Weaviate exposes a GraphQL
+        endpoint at /v1/graphql. Deeply-nested queries (recursive IntrospectionQuery or
+        high-depth Get queries) exhaust CPU. No rule or advisory mentions
+        QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, or reverse-proxy rate/depth limiting.
+        The HNSW parameter limits in the existing rule only bound vector-search resource
+        usage and do not cover GraphQL query complexity as a distinct DoS vector.
+
+      FAIL — Raft consensus security not addressed. Weaviate v1.25+ uses Raft for
+        cluster consensus (default port 8300). The Replication Security rule covers
+        gossip (7100) and data (7101) ports with TLS and auth token but does not mention
+        the Raft port, quorum requirements for write acceptance, or the need to firewall
+        port 8300 from non-member nodes. Missing mTLS or equivalent on the Raft channel
+        allows influence over leader election or log injection from an attacker with
+        network reach to any cluster node.
+
+      PASS — backup-s3 module credentials: S3 env vars injected from secrets manager,
+        IAM role preference stated, hardcoded credentials shown as Don't. Correct.
+
+      PASS — module security (text2vec-openai data egress): Why section explicitly states
+        external vectorization modules send data to third-party APIs. skip_vectorization
+        on sensitive properties shown. PII sanitization before vectorization shown. Content
+        size limits shown. Adequate for warning level; missing LLM ref is filed above.
+    issues_filed:
+      - OWASP LLM 2025 refs absent; add LLM06:2025 to Module Configuration rule Refs line
+      - GraphQL depth/complexity limits not covered; add advisory or warning rule for
+        QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, and reverse-proxy limiting on /v1/graphql
+      - Raft consensus port (8300) and mTLS requirement absent from Replication Security rule
