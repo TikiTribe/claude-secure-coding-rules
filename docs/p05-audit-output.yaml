@@ -5083,3 +5083,216 @@ audited_rules:
       - ACID transaction rule correctly uses ReadConcern("snapshot") and
         WriteConcern(w="majority", j=True) with max_commit_time_ms. Correct.
     issues_filed: []
+
+  - path: rules/rag/search-rerank/lexical/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules. Code parses for rank_bm25 (BM25Okapi) and Elasticsearch.
+      No OWASP :2025 refs anywhere. Seven blocking gaps found.
+
+      ISSUE 1 — Elasticsearch/OpenSearch query_string DSL injection: NOT COVERED (MISSING RULE)
+        The file's Elasticsearch examples use match queries only. No rule covers
+        query_string or simple_query_string DSL, which pass user input directly to
+        Lucene's full query parser. query_string accepts field:value syntax, wildcards,
+        boolean operators, and range expressions; an unauthenticated caller can enumerate
+        field names, trigger expensive wildcard scans, and exfiltrate schema information.
+        No "Do" example shows how to detect or block query_string injection; the sanitizer
+        in the BM25 rule strips Lucene special chars for rank_bm25 but no analogous
+        guard is applied when building Elasticsearch/OpenSearch requests.
+        Fix required: add a strict rule covering query_string injection mitigation
+        (disallow query_string DSL for untrusted input; use match/term queries only;
+        or whitelist allowed query types before forwarding to the cluster).
+
+      ISSUE 2 — Elasticsearch script query RCE: NOT COVERED (MISSING RULE)
+        Painless script queries (script: {source: "..."}) allow arbitrary code execution
+        within Elasticsearch. If user-supplied values are interpolated into a script
+        source string, attackers achieve server-side RCE. No rule mentions script queries
+        or Painless injection. The ElasticsearchResourceLimits helper builds only match
+        queries, but no policy disallows script queries for untrusted input paths.
+        Fix required: add a strict rule requiring that script queries be disabled in
+        index/cluster settings for multi-tenant or user-facing search, and that any
+        remaining script uses parameterized params: {} bindings rather than string
+        interpolation into source.
+
+      ISSUE 3 — Cross-tenant index isolation: NOT COVERED (MISSING RULE)
+        No rule addresses index-level tenant isolation. In multi-tenant deployments,
+        a user query must be confined to their tenant's index (or alias). Without an
+        explicit check, a caller can request arbitrary index names (e.g., by injecting
+        commas or wildcards into the index parameter) and read documents from other
+        tenants. Neither the BM25 nor the Elasticsearch sections address this vector.
+        Fix required: add a rule requiring that the index name be resolved from a
+        server-side tenant-to-index map rather than accepted from user input, and that
+        wildcard index patterns be disabled for user-facing APIs.
+
+      ISSUE 4 — Authentication (API keys, TLS): NOT COVERED (MISSING RULE)
+        The file contains no authentication rule. Elasticsearch and OpenSearch require
+        TLS for transport and API-key or basic auth for HTTP. Without these controls,
+        the cluster is open to unauthenticated reads and writes. No Do example shows
+        how to configure an authenticated client; no Don't example shows a bare
+        connection without auth.
+        Fix required: add a strict rule requiring TLS verification (ca_certs,
+        verify_certs=True) and API-key or token-based auth in the
+        Elasticsearch/OpenSearch client constructor, with a Don't example showing
+        an http:// connection with no credentials.
+
+      ISSUE 5 — Rate limiting: NOT COVERED (MISSING RULE)
+        The Resource Limits rule addresses per-query timeouts and Elasticsearch's
+        terminate_after, but does not address rate limiting at the API or application
+        layer. Without rate limiting, the search endpoint is a DoS target independent
+        of per-query cost caps.
+        Fix required: add a warning-level rule covering application-layer rate limiting
+        (e.g., per-user token bucket on the HTTP layer) for the Elasticsearch/OpenSearch
+        search endpoint, separate from the in-query timeout mechanism.
+
+      ISSUE 6 — Field-level security: NOT COVERED (MISSING RULE)
+        No rule addresses field-level security (FLS). Elasticsearch and OpenSearch
+        support per-role field whitelists and blacklists. Without FLS, a user whose
+        role grants read on an index can retrieve any field, including fields that
+        contain PII or internal metadata never intended for the caller.
+        Fix required: add an advisory or warning rule covering FLS configuration in
+        Elasticsearch/OpenSearch security plugins (ES Security or OpenSearch Security),
+        with guidance to whitelist only fields required for search and snippet display.
+
+      ISSUE 7 — Document-level security with role-based filters: NOT COVERED (MISSING RULE)
+        No rule addresses document-level security (DLS). Elasticsearch and OpenSearch
+        support per-role query filters that restrict which documents a user can read.
+        Without DLS, tenant isolation relies entirely on separate indices; a misconfigured
+        alias or index pattern exposes all documents in the index to every authenticated
+        user.
+        Fix required: add a warning rule covering DLS role-based query filters, with
+        a Do example that configures a document_security role with a terms filter keyed
+        to the caller's tenant_id field.
+
+      Non-blocking observations (no status change):
+      - OpenSearch not mentioned. rank_bm25, Elasticsearch, and Whoosh are present;
+        OpenSearch (API-compatible fork with its own Security plugin) is absent despite
+        being in the audit spec. Advisory; no separate OpenSearch examples required if
+        Elasticsearch guidance covers the shared DSL, but the prerequisites line should
+        note OpenSearch compatibility.
+      - Tantivy not mentioned. Tantivy (Rust-native BM25 engine) is absent from the
+        file. Advisory; Tantivy is used primarily via tantivy-py or Meilisearch;
+        its absence is a coverage gap, not a defect in existing rules.
+      - OWASP refs lack year tags. The single OWASP reference ("OWASP Information
+        Disclosure", line 238) has no :2025 year tag. Advisory; inconsistent with the
+        project's ref format standard but not a standalone blocker.
+    issues_filed: []
+  - path: rules/rag/orchestration/haystack/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules against p0.5 checklist. Four blocking defects found.
+
+      ISSUE 1 — No :2025 OWASP or LLM:2025 refs (STANDARDS GAP / BLOCKING)
+        All OWASP refs use bare names without year suffix (e.g., "OWASP LLM01 (Prompt
+        Injection)"). Neither OWASP Top 10:2025 nor OWASP LLM Top 10:2025 appears
+        anywhere in the file.
+
+      ISSUE 2 — No ComponentTool agent boundary rule (MISSING RULE / BLOCKING)
+        Haystack 2.x Agent with ComponentTool wraps arbitrary pipeline components as
+        callable tools inside an agent loop. No rule covers the trust boundary this
+        creates: a compromised or untrusted component gains tool-call authority,
+        allowing it to invoke other components with agent-level permissions.
+
+      ISSUE 3 — No PromptBuilder Jinja injection rule (MISSING RULE / BLOCKING)
+        PromptBuilder is used in examples but no rule covers Jinja2 template injection
+        risk. User-controlled template strings allow {{ 7*7 }} or {% for %} constructs
+        to render arbitrary expressions. The rule should mandate static templates
+        and reject dynamic template strings from untrusted input.
+
+      ISSUE 4 — No Secret.from_env_var() pattern (MISSING API / BLOCKING)
+        All credential examples use os.environ.get() directly. Haystack 2.x provides
+        Secret.from_env_var() which integrates with Haystack's secret management layer
+        and prevents accidental serialization of credentials in pipeline YAML exports.
+        The file should demonstrate this pattern instead of raw env reads.
+
+      Non-blocking observations:
+      - API parsability: all Haystack 2.x imports and patterns are correct. Pipeline,
+        @component decorator, component.output_types(), and dict-based pipeline.run()
+        all match Haystack 2.x API. PASS.
+      - Pipeline component allowlist: covered in Pipeline Configuration Security rule.
+      - Document store TLS enforcement: covered in Document Store Security rule.
+      - Multi-tenant isolation: TenantIsolatedDocumentStore pattern is correct.
+    issues_filed: []
+
+  - path: rules/rag/orchestration/llamaindex/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      10-rule file covering document loading, index persistence, query engine input
+      validation, response synthesis, node parsing, callbacks, service context, citations,
+      agent/tool security, and multi-index queries.
+
+      ISSUE 1 - SimpleNodeParser import removed in llama-index-core 0.10+ (CRITICAL BROKEN IMPORT)
+        Line 803: `from llama_index.core.node_parser import SentenceSplitter, SimpleNodeParser`
+        SimpleNodeParser was removed from llama-index-core in the 0.10 split refactor. The
+        import fails at runtime; only SentenceSplitter (and TokenTextSplitter, etc.) remain.
+        The SecureNodeParser class uses only SentenceSplitter so the import is both broken and
+        unused. Any developer copying this Do example gets an ImportError.
+        Fix required: remove SimpleNodeParser from the import line.
+
+      ISSUE 2 - ComposableGraph removed in llama-index-core 0.10+ (CRITICAL BROKEN IMPORT)
+        Line 1839: `from llama_index.core.composability import ComposableGraph`
+        The composability module and ComposableGraph class were removed in the 0.10 package
+        split. The entire Multi-Index Query Security rule's SecureComposableGraph class wraps
+        a non-existent API. Developers copying this pattern get an ImportError on import.
+        Fix required: replace the ComposableGraph pattern with SubQuestionQueryEngine or
+        RouterQueryEngine, both present in llama-index-core 0.11+.
+
+      ISSUE 3 - load_index_from_storage service_context kwarg removed (CRITICAL BROKEN API)
+        Lines 314-317: `load_index_from_storage(storage_context, service_context=service_context)`
+        The service_context keyword argument was removed when llama-index migrated to the global
+        Settings object in 0.10. Passing service_context= raises a TypeError at runtime.
+        Fix required: remove the service_context= kwarg; add a comment directing callers to
+        configure Settings.llm and Settings.embed_model before loading.
+
+      ISSUE 4 - Rate limiter accepts user_id but never uses it per-user (CRITICAL LOGIC BUG)
+        Lines 485-500: _check_rate_limit(self, user_id: str) stores timestamps in
+        self._query_times (a single flat list), never keyed by user_id. All users share one
+        bucket, so a busy user exhausts the quota for everyone. Docstring says "per-user rate
+        limits" which is false. Developers copy a broken rate limiter believing it is correct.
+        Fix required: change self._query_times to a dict[str, list[float]]; key by user_id.
+
+      ISSUE 5 - All OWASP LLM refs cite 2023 edition with wrong category names (STANDARDS GAP)
+        Every OWASP LLM reference (LLM01, LLM02, LLM06, LLM08, LLM09, LLM10) omits the
+        :2025 qualifier. References section line 2100 explicitly states "v1.1 (2023)". The
+        2025 edition renumbered several categories:
+          LLM06:2025 = Excessive Agency (was Sensitive Information Disclosure in 2023)
+          LLM02:2025 = Sensitive Information Disclosure (was Insecure Output Handling in 2023)
+          LLM09:2025 = Misinformation (was Overreliance in 2023)
+          LLM10:2025 = Unbounded Consumption (was Model Denial of Service in 2023)
+        Rules citing e.g. LLM06 as "Sensitive Information Disclosure" reference the 2023 name
+        of an ID that maps to a different 2025 category. Creates incorrect cross-references.
+        Fix required: replace all LLMxx refs with LLMxx:2025 using 2025 category names;
+        update References section to OWASP LLM Top 10 2025.
+
+      ISSUE 6 - Missing LlamaIndex-specific coverage (COVERAGE GAPS)
+        The audit spec requires coverage of:
+        - QueryFusionRetriever: absent. Fusion retrievers run multiple parallel sub-queries;
+          each is a prompt injection surface not addressed by the query engine rule.
+        - PromptTemplate variable injection: absent. LlamaIndex PromptTemplate uses {variable}
+          substitution; unvalidated variables inject at the template layer independently of
+          query-level injection detection.
+        - trust_remote_code: absent. Loading HuggingFace-backed embeddings via
+          llama-index-embeddings-huggingface with trust_remote_code=True executes arbitrary
+          code from the model repository. No rule covers this vector.
+        - Node post-processors (MetadataReplacementPostProcessor, SentenceTransformerRerank):
+          absent. Post-processors mutate retrieved nodes before synthesis; a compromised
+          post-processor can inject or suppress content. No rule covers this trust boundary.
+        Fix required: add strict-level rules for trust_remote_code and PromptTemplate injection;
+        add advisory notes for QueryFusionRetriever and node post-processor trust boundary.
+
+      Non-blocking observations (no status change):
+      - All other 0.11+ split-layout imports are correct: llama_index.core, llama_index.llms.openai,
+        llama_index.embeddings.openai, llama_index.core.agent, llama_index.core.tools all match.
+      - ToolMetadata imported on line 1564 but never used; dead import, not a security issue.
+      - MITRE ATLAS IDs AML.T0020 and AML.T0051 are both valid ATLAS entries.
+      - All cited CWEs (CWE-20, 22, 78, 79, 94, 200, 284, 311, 345, 354, 400, 434, 532, 639, 798)
+        are valid and correctly mapped to their respective rules.
+      - Injection pattern denylist in SecureQueryEngine is warn-and-filter (not hard block),
+        appropriate given the limitations of substring-based detection.
+      - cryptography.fernet API usage in SecureIndexStorage is correct and current.
+    issues_filed: []
