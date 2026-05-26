@@ -62,8 +62,10 @@ class RuleParser:
         re.DOTALL
     )
 
-    # Pattern for rule headers
-    RULE_HEADER_PATTERN = re.compile(r"^###\s+Rule:\s+(.+)$", re.MULTILINE)
+    # Pattern for rule headers. Accepts both ## Rule: (v2 layout, post-rewrites)
+    # and ### Rule: (v1 layout, pre-rewrites) so the parser handles both during
+    # the v1 -> v2 transition.
+    RULE_HEADER_PATTERN = re.compile(r"^#{2,3}\s+Rule:\s+(.+)$", re.MULTILINE)
 
     def __init__(self, content: str, filepath: Path) -> None:
         """Initialize parser with markdown content."""
@@ -74,11 +76,12 @@ class RuleParser:
 
     def _parse(self) -> None:
         """Parse all rules from the markdown content."""
-        # Split content by rule headers
-        rule_splits = re.split(r"(?=^### Rule:)", self.content, flags=re.MULTILINE)
+        # Split content by rule headers. Accept both 2-hash and 3-hash variants
+        # so we parse both v1 (### Rule:) and v2 (## Rule:) rule files.
+        rule_splits = re.split(r"(?=^#{2,3} Rule:)", self.content, flags=re.MULTILINE)
 
         for rule_text in rule_splits:
-            if not rule_text.strip() or "### Rule:" not in rule_text:
+            if not rule_text.strip() or not self.RULE_HEADER_PATTERN.search(rule_text):
                 continue
 
             rule = self._parse_rule(rule_text)
