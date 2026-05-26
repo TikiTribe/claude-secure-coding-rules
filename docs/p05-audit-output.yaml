@@ -1118,7 +1118,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/iac/pulumi/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -1134,6 +1134,12 @@ audited_rules:
       - Rule 9: Dynamic Providers Validation
       - Rule 10: ESC Security
     notes: |
+      Re-audit 2026-05-26 (commit 21b13a1): all 4 blocking defects fixed. Rule 6 Go now
+      imports aws/s3; Rule 6 Python import includes ProviderAssumeRoleArgs; Rule 7 Python
+      uses import pulumi_aws as aws; Rule 4 TypeScript uses correct 2-import pattern with
+      LocalWorkspace from @pulumi/pulumi/automation (not aliased as pulumi). Status -> passed.
+
+      Original audit notes follow:
       Audited all 10 rule sections. Four distinct blocking issues found; three are
       critical compile/runtime errors (missing imports), one is a wrong import path.
       No OWASP LLM numbering problem — this file uses CWE and NIST SP 800-53 refs
@@ -1217,10 +1223,17 @@ audited_rules:
     issues_filed: []
 
   - path: rules/iac/terraform/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     notes: |
+      Re-audit 2026-05-26 (commit 1ab5851): all 7 blocking/warning defects fixed.
+      No ${var interpolation in backend block; checkov-action pinned to @<SHA> (not @master);
+      tfsec-action replaced with deprecation comment; GCS backend block has no KMS path,
+      CMEK enforced at bucket resource level; final_snapshot_identifier uses static var
+      (no timestamp()); acl=private removed; all supply-chain actions SHA-pinned. Status -> passed.
+
+      Original audit notes follow:
       Audited all 12 rules plus the Additional Best Practices section.
       Two CRITICAL defects, one HIGH supply-chain defect, four WARNINGs, and two coverage
       gaps identified.
@@ -1355,7 +1368,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/iac/_core/iac-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-25
     audit_coverage: full
@@ -1380,6 +1393,13 @@ audited_rules:
       - Use Workspaces for Environment Isolation
       - Document Security Decisions
     notes: |
+      Re-audit 2026-05-26 (commit 639b849): all 5 blocking/significant defects fixed.
+      SA-12 citations gone (count=0); PCI-DSS 3.2.1 gone (count=0); checkov-action@master /
+      terrascan-action@main / tfsec-action gone (count=0); has_kms_encryption and
+      has_access_logging both defined as rules with bodies; encryptionsalt correctly placed
+      in Pulumi.<stackname>.yaml (not Pulumi.yaml). Status -> passed.
+
+      Original audit notes follow:
       Audited all 19 rule sections across 8 categories (State Security, Secrets
       Management, Module Supply Chain, Drift Detection, Policy as Code, Provider
       Security, Security Testing, Additional Practices). Five distinct issues found;
