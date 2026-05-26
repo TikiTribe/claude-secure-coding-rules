@@ -204,7 +204,7 @@ def query_vectors(query_vector, filters):
 
 **Why**: Without namespace isolation, a malicious or buggy query can access other tenants' data. Application-level filtering can be bypassed through query manipulation. Namespace/collection separation provides defense in depth.
 
-**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284, CWE-863
+**Refs**: OWASP A01:2025 (Broken Access Control), LLM08:2025 (Vector and Embedding Weaknesses), CWE-284, CWE-863
 
 ---
 
@@ -569,7 +569,7 @@ results = index.query(vector=query_vector, top_k=10)
 
 **Why**: Without provenance, you cannot comply with data subject access requests (GDPR), audit data access, enforce retention policies, or trace the source of problematic content. Content hashes enable integrity verification.
 
-**Refs**: GDPR Article 30, CCPA, CWE-778, CWE-779
+**Refs**: GDPR Article 30, CCPA, CWE-778, CWE-779, OWASP A09:2025 (Security Logging and Monitoring Failures)
 
 ---
 
@@ -801,7 +801,7 @@ embedding = model.encode(f"SSN: {ssn}, Name: {name}")
 
 **Why**: High-precision embeddings can be vulnerable to inversion attacks that recover original content, membership inference attacks, and model extraction. Quantization and DP noise provide protection while maintaining utility.
 
-**Refs**: MITRE ATLAS ML04 (ML Model Inversion), CWE-200, Differential Privacy literature
+**Refs**: MITRE ATLAS AML.T0024 (Exfiltration via ML Inference API), LLM08:2025 (Vector and Embedding Weaknesses), CWE-200, Differential Privacy literature
 
 ---
 
@@ -959,7 +959,225 @@ def query(tenant_id, query_vector):
 
 **Why**: Multi-tenant systems are high-value targets. Namespace isolation can have bugs or misconfigurations. Defense in depth with multiple enforcement layers and result validation ensures tenant data remains isolated even if one layer fails.
 
-**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284, CWE-863
+**Refs**: OWASP A01:2025 (Broken Access Control), LLM08:2025 (Vector and Embedding Weaknesses), CWE-284, CWE-863
+
+---
+
+## Rule: Rate Limiting on Similarity Search
+
+**Level**: `strict`
+
+**When**: Exposing similarity search endpoints to authenticated users or external callers
+
+**Do**: Apply per-user rate limits and payload caps on query endpoints to prevent resource exhaustion and oracle attacks
+
+```python
+import time
+from collections import defaultdict
+from threading import Lock
+
+# Token-bucket rate limiter for vector search
+class VectorSearchRateLimiter:
+    def __init__(self, max_requests: int = 20, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._buckets: dict[str, list] = defaultdict(list)
+        self._lock = Lock()
+
+    def check(self, user_id: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            timestamps = self._buckets[user_id]
+            # Drop timestamps outside the window
+            self._buckets[user_id] = [t for t in timestamps if now - t < self.window]
+            if len(self._buckets[user_id]) >= self.max_requests:
+                raise RateLimitError(f"Rate limit exceeded: {self.max_requests} queries per {self.window}s")
+            self._buckets[user_id].append(now)
+
+_limiter = VectorSearchRateLimiter(max_requests=20, window_seconds=60)
+
+def similarity_search(user_id: str, query_vector: list, top_k: int = 10) -> list:
+    # Enforce rate limit before any computation
+    _limiter.check(user_id)
+
+    # Cap top_k to prevent resource exhaustion via large result sets
+    top_k = min(top_k, 50)
+
+    # Cap query vector dimension (reject mismatched or oversized payloads)
+    if len(query_vector) != EXPECTED_DIM:
+        raise ValueError(f"Vector dimension must be {EXPECTED_DIM}")
+
+    return index.query(vector=query_vector, top_k=top_k)
+```
+
+**Don't**: Allow unbounded query rates or uncapped result sizes
+
+```python
+# VULNERABLE: No rate limiting
+def similarity_search(query_vector, top_k):
+    # Attacker can issue thousands of queries per second
+    # to map embedding space or exhaust CPU/GPU
+    return index.query(vector=query_vector, top_k=top_k)
+
+# VULNERABLE: Uncapped top_k
+def search(query_vector, top_k=request.args.get("top_k")):
+    # top_k=100000 causes backend OOM or multi-second latency
+    return index.query(vector=query_vector, top_k=int(top_k))
+```
+
+**Why**: Unbounded similarity search enables embedding-space oracle attacks (AML.T0024), denial of service via GPU exhaustion (CWE-400), and membership inference by systematic probing. Rate limiting and payload caps constrain all three attack classes without degrading legitimate use.
+
+**Refs**: OWASP LLM10:2025 (Unbounded Consumption), CWE-400, CWE-770
+
+---
+
+## Rule: Admin API Hardening
+
+**Level**: `strict`
+
+**When**: Exposing vector database management APIs (collection creation, schema changes, user management, index tuning)
+
+**Do**: Require strong authentication and restrict admin API network access to private networks or VPN
+
+```python
+import ipaddress
+from functools import wraps
+
+# Allowlisted CIDR ranges for admin API access
+ADMIN_ALLOWED_CIDRS = [
+    ipaddress.IPv4Network("10.0.0.0/8"),      # Internal RFC-1918
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+]
+
+def require_admin_network(f):
+    """Reject admin calls originating outside trusted networks."""
+    @wraps(f)
+    def wrapper(*args, request=None, **kwargs):
+        client_ip = ipaddress.IPv4Address(request.remote_addr)
+        if not any(client_ip in cidr for cidr in ADMIN_ALLOWED_CIDRS):
+            audit_log.warning("admin_api_blocked", ip=str(client_ip))
+            raise PermissionError("Admin API not accessible from this network")
+        return f(*args, request=request, **kwargs)
+    return wrapper
+
+def require_admin_token(f):
+    """Verify admin bearer token with short expiry."""
+    @wraps(f)
+    def wrapper(*args, request=None, **kwargs):
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        claims = jwt.decode(token, ADMIN_PUBLIC_KEY, algorithms=["RS256"])
+        if "admin" not in claims.get("roles", []):
+            raise PermissionError("Admin role required")
+        if claims["exp"] - claims["iat"] > 3600:
+            # Reject tokens with TTL > 1 hour to limit blast radius of leak
+            raise ValueError("Admin token TTL too long")
+        return f(*args, request=request, **kwargs)
+    return wrapper
+
+@require_admin_network
+@require_admin_token
+def create_collection(collection_name: str, schema: dict, request=None):
+    """Create vector collection — admin only."""
+    audit_log.info("collection_create", name=collection_name)
+    return vector_client.create_collection(collection_name, schema)
+```
+
+**Don't**: Expose admin APIs on public endpoints or accept long-lived credentials
+
+```python
+# VULNERABLE: Admin API on public port with no network restriction
+app.route("/admin/collections", methods=["POST"])(create_collection)
+# Any internet caller can attempt to create/drop collections
+
+# VULNERABLE: Static shared admin password
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "changeme")
+if request.headers.get("X-Admin-Key") == ADMIN_SECRET:
+    # No rotation, no audit, single credential for all admins
+    allow_admin_action()
+```
+
+**Why**: Vector database admin APIs can drop entire indexes, modify schemas, or add rogue users. Exposing them without network isolation and strong auth violates least-privilege (A01:2025) and misconfiguration controls (A05:2025), and creates a single-credential blast radius for credential compromise.
+
+**Refs**: OWASP A01:2025 (Broken Access Control), OWASP A05:2025 (Security Misconfiguration), CWE-284, CWE-732
+
+---
+
+## Rule: Replication Trust Boundaries
+
+**Level**: `strict`
+
+**When**: Configuring peer-to-peer replication, WAL streaming, or cluster synchronization for vector stores (etcd, Pulsar, pgvector streaming replication, Qdrant cluster sync)
+
+**Do**: Enforce mutual TLS (mTLS) between all replication peers; reject unauthenticated peer connections at the network layer
+
+```python
+# pgvector / PostgreSQL streaming replication — pg_hba.conf entries
+"""
+# Only allow replication connections from known replica IPs with client cert
+hostssl replication replicator 10.0.1.10/32 cert clientcert=verify-full
+hostssl replication replicator 10.0.1.11/32 cert clientcert=verify-full
+# Explicitly deny unauthenticated replication
+local   replication all reject
+host    replication all 0.0.0.0/0 reject
+"""
+
+# Qdrant cluster peer config (qdrant.yaml excerpt)
+"""
+cluster:
+  enabled: true
+  p2p:
+    port: 6335
+    # mTLS for peer-to-peer sync
+    tls:
+      cert: /certs/peer.crt
+      key: /certs/peer.key
+      ca_cert: /certs/ca.crt
+      verify_https_client_certificate: true
+"""
+
+# Pulsar (used by Milvus WAL) — TLS + mTLS config
+"""
+brokerServicePortTls: 6651
+tlsEnabled: true
+tlsCertificateFilePath: /certs/broker.crt
+tlsKeyFilePath: /certs/broker.key
+tlsTrustCertsFilePath: /certs/ca.crt
+tlsRequireTrustedClientCertOnConnect: true  # mTLS — clients must present cert
+"""
+
+def validate_peer_cert(peer_cert: dict, expected_cn_prefix: str = "qdrant-peer") -> None:
+    """Verify replication peer certificate subject before accepting sync data."""
+    subject = peer_cert.get("subject", {})
+    cn = subject.get("commonName", "")
+    if not cn.startswith(expected_cn_prefix):
+        raise SecurityError(f"Rejected peer cert with unexpected CN: {cn}")
+```
+
+**Don't**: Allow replication over plaintext or accept any connecting peer without certificate verification
+
+```python
+# VULNERABLE: etcd without peer TLS (Milvus default dev config)
+"""
+etcd:
+  endpoints:
+    - etcd:2379
+  # No TLS — anyone on the network can inject cluster state
+"""
+
+# VULNERABLE: Qdrant peer without mTLS
+"""
+cluster:
+  enabled: true
+  p2p:
+    port: 6335
+    # No TLS block — peer connections are unauthenticated plaintext
+"""
+```
+
+**Why**: Replication channels carry the full dataset in transit. Without mTLS, an attacker on the internal network can intercept vector data (violating A02:2025 / CWE-319), or inject malicious cluster state to poison the index. The internal network is not a trust boundary; mTLS is.
+
+**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-319, CWE-295
 
 ---
 
