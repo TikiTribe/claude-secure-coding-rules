@@ -2759,3 +2759,67 @@ audited_rules:
         Advisory: note Ruby >= 3.1 minimum.
       - Open3.capture2 in list form is correct for avoiding shell invocation.
     issues_filed: []
+
+  - path: rules/languages/rust/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Avoid Unsafe Code Unless Necessary
+      - Validate Slice and Array Indices
+      - Validate External Input
+      - Use Parameterized Queries
+      - Use Secure Random Numbers
+      - Use Established Crypto Libraries
+      - Don't Expose Internal Errors
+      - Avoid Shell Commands with User Input
+      - Validate Deserialized Data
+    notes: |
+      Audited all 9 rule sections across 7 categories. Code examples are largely correct
+      and idiomatic. CWE IDs and OWASP 2025 refs are valid throughout. Three Rust-specific
+      checklist items fail.
+
+      ISSUE 1 -- FFI safety not covered (COVERAGE GAP)
+        The file has no rule or mention of Foreign Function Interface (FFI) safety.
+        FFI is a primary unsafe surface in Rust: calling C functions, passing raw pointers
+        across the FFI boundary, lifetime mismatches, and ABI mismatch are Rust-specific
+        hazards absent from the file. CWE-822 (Untrusted Pointer Dereference) and
+        CWE-825 (Expired Pointer Dereference) apply here.
+        Fix required: add an FFI safety rule covering: (a) marking extern "C" blocks and
+        every caller as unsafe with a Safety doc comment; (b) validating pointer non-null
+        and alignment before dereference; (c) documenting ownership transfer across the
+        boundary explicitly; (d) using bindgen or cbindgen for ABI generation rather than
+        hand-writing extern blocks.
+
+      ISSUE 2 -- Async memory safety (Pin/Send/Sync) not covered (COVERAGE GAP)
+        The file has no rule on async memory safety. Rust async introduces unique hazards:
+        futures capturing non-Send types, self-referential structs requiring Pin, and
+        accidental Sync violations in shared state across await points. These are
+        Rust 1.75+ concerns (async fn in traits stabilized in 1.75) and are the most
+        common source of subtle memory-safety bugs in async Rust.
+        Fix required: add a rule covering: (a) requiring Send + Sync bounds on shared
+        state passed across await points; (b) using Pin<Box<dyn Future>> for
+        self-referential futures; (c) avoiding Arc<Mutex<T>> patterns that deadlock
+        across await; (d) preferring tokio::sync primitives over std::sync in async.
+
+      ISSUE 3 -- Rust edition and minimum version not declared (STANDARDS GAP)
+        The file contains no statement of the target Rust edition or minimum compiler
+        version. The checklist requires Edition 2021 and Rust 1.75+. Without an explicit
+        declaration, consumers may apply rules to older toolchains where examples do not
+        compile or have different semantics.
+        Fix required: add a Prerequisites or Version section declaring edition = "2021"
+        and rust-version = "1.75" in Cargo.toml as the baseline assumptions.
+
+      Non-blocking observations (no status change):
+      - Crypto: argon2 for password hashing and OsRng for randomness are sound choices.
+        ring/rustls preferred for TLS and symmetric crypto but out of scope for rules shown.
+        No hand-rolled crypto present. Advisory: add a pointer to ring/rustls for TLS.
+      - Command injection Do example validates only ".." in the path. Production rule
+        should also reject null bytes and non-UTF-8 input. The structural defense
+        (arg() vs sh -c) is correctly demonstrated. Advisory only.
+      - IntoResponse impl references axum types (StatusCode, Response) without imports
+        in the snippet. Minor omission; unambiguous in context. Advisory only.
+      - unsafe read_value() Do example has a correct # Safety doc comment and minimal
+        unsafe block. Satisfies the unsafe block discipline checklist item.
+    issues_filed: []
