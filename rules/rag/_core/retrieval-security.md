@@ -10,7 +10,11 @@ Security patterns for search, retrieval, and reranking operations in RAG systems
 
 **When**: Processing retrieved chunks before LLM context injection
 
-**Do**: Implement comprehensive sanitization with injection pattern detection
+**Do**: Implement defense-in-depth sanitization. The primary defenses are structural: enforce
+system/user context delimiters so retrieved content cannot be confused with instructions, and
+validate LLM output on the other side of the boundary. Regex pattern matching is a secondary
+signal — it catches known-bad strings but does not stop adversarial rephrasing, encoding
+variations, or novel payloads. Document its limitations explicitly.
 
 ```python
 import re
@@ -25,8 +29,28 @@ class SanitizationResult:
     confidence: float = 0.0
 
 class RAGChunkSanitizer:
-    """Sanitize retrieved chunks for prompt injection attacks."""
+    """
+    Sanitize retrieved chunks for prompt injection attacks.
 
+    Defense order:
+      1. Structural: wrap chunk in explicit delimiters so the LLM sees it as
+         data, not instructions (primary control — not shown here, apply at
+         prompt-assembly layer).
+      2. Source allowlist: reject chunks from untrusted origins.
+      3. Regex denylist: secondary signal; catches known-bad patterns but
+         WILL miss adversarial rephrasing and novel encodings. Treat a match
+         as a strong indicator, not a guarantee of safety on non-match.
+      4. Delimiter normalization: strip or escape characters that could
+         collapse structural boundaries.
+
+    OWASP LLM01:2025 explicitly states denylist-first approaches are
+    insufficient as a primary injection defense. Use this class as one layer
+    in a layered architecture, not as the sole gate.
+    """
+
+    # Known-bad patterns — secondary signal only. Adversarial rephrasing and
+    # arbitrary encoding schemes (beyond the prefixed variants below) will bypass
+    # these patterns. Do not treat a clean scan as proof of safety.
     INJECTION_PATTERNS = [
         # Direct instruction hijacking
         (r'ignore\s+(previous|above|all)\s+(instructions?|prompts?)', 'instruction_hijack'),
@@ -50,7 +74,8 @@ class RAGChunkSanitizer:
         # Code execution attempts
         (r'```(python|bash|sh|javascript)\s*\n.*?(exec|eval|system|subprocess)', 'code_execution'),
 
-        # Encoded attacks
+        # Prefixed encoded attacks (note: only catches prefixed encoding; arbitrary
+        # encoding schemes are not matched — this is a known gap)
         (r'(?:base64|hex|rot13)\s*:\s*[A-Za-z0-9+/=]+', 'encoded_attack'),
     ]
 
@@ -63,7 +88,7 @@ class RAGChunkSanitizer:
 
     def sanitize(self, chunk: str, source_metadata: dict) -> SanitizationResult:
         """Sanitize a retrieved chunk for injection attacks."""
-        # Validate source trustworthiness
+        # Validate source trustworthiness (primary source control)
         if not self._validate_source(source_metadata):
             return SanitizationResult(
                 content="",
@@ -72,7 +97,7 @@ class RAGChunkSanitizer:
                 confidence=1.0
             )
 
-        # Check for injection patterns
+        # Regex denylist — secondary signal; a clean result does not mean safe
         for pattern, threat_type in self.compiled_patterns:
             match = pattern.search(chunk)
             if match:
@@ -140,7 +165,8 @@ for chunk in retrieved_chunks:
         logger.warning(f"Blocked chunk: {result.threat_type}")
 ```
 
-**Don't**: Pass retrieved content directly to LLM without validation
+**Don't**: Pass retrieved content directly to LLM without validation, or treat a regex-clean
+result as proof of safety.
 
 ```python
 # VULNERABLE: No sanitization of retrieved chunks
@@ -152,9 +178,399 @@ def build_prompt(query: str, chunks: list) -> str:
 # in indexed documents, hijacking LLM behavior
 ```
 
-**Why**: Attackers can embed prompt injection payloads in documents that get indexed and retrieved, allowing indirect attacks on the LLM through poisoned context. OWASP LLM01 identifies prompt injection as the top LLM security risk.
+**Why**: Attackers can embed prompt injection payloads in documents that get indexed and
+retrieved (indirect injection via poisoned corpus). Regex denylists are a defense-in-depth
+secondary control; OWASP LLM01:2025 states they are insufficient as a primary defense because
+adversarial rephrasing and encoding variations bypass them. Primary defenses are structural:
+separate system and retrieved-content turns, enforce output validation on the LLM response
+side. Documents sourced from attacker-controlled origins are also a supply-chain risk covered
+by LLM03:2025; integrity failures in the vector store fall under LLM08:2025.
 
-**Refs**: OWASP LLM01 (Prompt Injection), CWE-94 (Code Injection), MITRE ATLAS AML.T0051 (LLM Prompt Injection)
+**Refs**: OWASP LLM01:2025 (Prompt Injection), OWASP LLM03:2025 (Supply Chain),
+OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-94 (Code Injection),
+MITRE ATLAS AML.T0051 (LLM Prompt Injection)
+
+---
+
+## Rule: ACL Enforcement at Retrieval Time
+
+**Level**: `strict`
+
+**When**: Querying a vector store on behalf of an authenticated user or tenant
+
+**Do**: Inject the ACL filter into the vector DB query before any documents are fetched.
+The model must never see documents the requester cannot access, even briefly.
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+@dataclass
+class UserContext:
+    user_id: str
+    tenant_id: str
+    allowed_doc_ids: list[str]  # empty means no doc-level restriction
+    clearance_level: int
+
+
+def retrieve_with_acl(
+    vector_client,
+    query_embedding: list[float],
+    user: UserContext,
+    top_k: int = 5,
+) -> list[Any]:
+    """
+    Retrieve chunks with ACL enforced at query time.
+
+    The ACL filter is constructed from server-side session state only — never
+    from user-supplied request parameters. This prevents a caller from
+    widening their own filter.
+    """
+    # Build filter from authoritative session context, not request body
+    acl_filter = {
+        "must": [
+            {"key": "tenant_id", "match": {"value": user.tenant_id}},
+            {"key": "clearance_level", "range": {"lte": user.clearance_level}},
+        ]
+    }
+
+    # Optional: doc-level allowlist (e.g., project membership)
+    if user.allowed_doc_ids:
+        acl_filter["must"].append(
+            {"key": "doc_id", "match": {"any": user.allowed_doc_ids}}
+        )
+
+    # ACL filter is passed to the DB — non-authorized docs are never fetched
+    results = vector_client.search(
+        collection_name=f"tenant_{user.tenant_id}",  # namespace isolation (see cross-tenant rule)
+        query_vector=query_embedding,
+        query_filter=acl_filter,
+        limit=top_k,
+    )
+
+    # Defensive assertion: verify every returned chunk matches the tenant
+    for hit in results:
+        assert hit.payload.get("tenant_id") == user.tenant_id, (
+            f"ACL breach: chunk tenant_id={hit.payload.get('tenant_id')} "
+            f"returned for user tenant_id={user.tenant_id}"
+        )
+
+    return results
+
+
+# Qdrant example — same pattern with qdrant_client types
+from qdrant_client.http import models as qmodels
+
+def qdrant_retrieve_with_acl(qdrant_client, query_vector, user: UserContext, top_k: int = 5):
+    acl_filter = qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(
+                key="tenant_id",
+                match=qmodels.MatchValue(value=user.tenant_id),
+            ),
+            qmodels.FieldCondition(
+                key="clearance_level",
+                range=qmodels.Range(lte=user.clearance_level),
+            ),
+        ]
+    )
+
+    return qdrant_client.search(
+        collection_name=f"tenant_{user.tenant_id}",
+        query_vector=query_vector,
+        query_filter=acl_filter,
+        limit=top_k,
+    )
+```
+
+**Don't**: Fetch results first and filter afterward. The model (or any downstream component)
+has already observed unauthorized documents at that point.
+
+```python
+# VULNERABLE: Post-retrieval ACL filtering
+def bad_retrieve(vector_client, query_embedding, user: UserContext, top_k: int = 10):
+    # Fetches ALL documents regardless of ACL
+    all_results = vector_client.search(query_vector=query_embedding, limit=top_k)
+
+    # Filters after the fact — the model has already seen unauthorized chunks
+    # if this runs inside a chain where results are passed to LLM before filtering
+    authorized = [
+        r for r in all_results
+        if r.payload.get("tenant_id") == user.tenant_id
+    ]
+    return authorized
+```
+
+**Why**: Post-retrieval filtering is insufficient because documents outside the requester's
+ACL are fetched, scored, and potentially passed to the LLM before being dropped. This creates
+timing-based side channels (an attacker can infer whether a document exists by observing
+latency or result-count changes) and information leakage if the filter runs after the LLM
+call. Structural enforcement at query time eliminates the exposure surface.
+
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-285 (Improper Authorization),
+CWE-200 (Exposure of Sensitive Information)
+
+---
+
+## Rule: Cross-Tenant Retrieval Isolation
+
+**Level**: `strict`
+
+**When**: Operating a multi-tenant RAG system backed by a shared vector store
+
+**Do**: Isolate tenants by namespace or collection at the vector DB level. A missing or
+misconfigured filter on a shared collection is a single point of failure; namespace
+separation makes cross-tenant retrieval structurally impossible for a correctly addressed
+query.
+
+```python
+from dataclasses import dataclass
+from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TenantContext:
+    tenant_id: str
+    user_id: str
+
+
+class TenantIsolatedRetriever:
+    """
+    Enforce cross-tenant isolation at the collection level.
+
+    Each tenant owns exactly one collection. Queries are namespaced by
+    collection name derived from the tenant_id. A mandatory tenant_id
+    metadata filter is applied as a secondary control — defense in depth
+    against collection-name bugs.
+    """
+
+    COLLECTION_PREFIX = "rag_tenant_"
+
+    def __init__(self, vector_client):
+        self._client = vector_client
+
+    def _collection_name(self, tenant_id: str) -> str:
+        """Derive collection name from tenant_id. Validate to prevent injection."""
+        if not tenant_id.isalnum() or len(tenant_id) > 64:
+            raise ValueError(f"Invalid tenant_id: {tenant_id!r}")
+        return f"{self.COLLECTION_PREFIX}{tenant_id}"
+
+    def retrieve(
+        self,
+        tenant: TenantContext,
+        query_vector: list[float],
+        top_k: int = 5,
+    ) -> list[Any]:
+        collection = self._collection_name(tenant.tenant_id)
+
+        # Secondary filter inside the tenant's own collection as defense-in-depth
+        tenant_filter = {
+            "must": [
+                {"key": "tenant_id", "match": {"value": tenant.tenant_id}}
+            ]
+        }
+
+        results = self._client.search(
+            collection_name=collection,
+            query_vector=query_vector,
+            query_filter=tenant_filter,
+            limit=top_k,
+        )
+
+        # Hard assertion — catch misconfiguration before results reach the caller
+        violations = [
+            hit for hit in results
+            if hit.payload.get("tenant_id") != tenant.tenant_id
+        ]
+        if violations:
+            logger.critical(
+                "Cross-tenant retrieval breach: collection=%s tenant=%s "
+                "violating_doc_ids=%s",
+                collection,
+                tenant.tenant_id,
+                [v.id for v in violations],
+            )
+            raise PermissionError("Cross-tenant isolation violation — aborting retrieval")
+
+        return results
+
+    def provision_tenant(self, tenant_id: str, vector_size: int) -> None:
+        """Create a tenant collection. Call during tenant onboarding, not at query time."""
+        collection = self._collection_name(tenant_id)
+        self._client.create_collection(
+            collection_name=collection,
+            vectors_config={"size": vector_size, "distance": "Cosine"},
+        )
+        logger.info("Provisioned collection %s for tenant %s", collection, tenant_id)
+```
+
+**Don't**: Share a single collection across tenants and rely solely on metadata filters.
+
+```python
+# VULNERABLE: Shared collection with filter-only isolation
+def bad_multi_tenant_retrieve(client, query_vector, tenant_id: str, top_k: int = 5):
+    # One misconfigured query or filter bug leaks all tenants' data
+    results = client.search(
+        collection_name="shared_rag_collection",
+        query_vector=query_vector,
+        # If this filter is omitted or wrong, cross-tenant data is returned silently
+        query_filter={"must": [{"key": "tenant_id", "match": {"value": tenant_id}}]},
+        limit=top_k,
+    )
+    return results
+```
+
+**Why**: A shared collection with filter-only isolation fails open when a filter is
+accidentally omitted, misconfigured, or bypassed. Namespace/collection-level separation makes
+cross-tenant retrieval structurally impossible for a correctly addressed query; the secondary
+metadata filter and post-retrieval assertion provide defense-in-depth.
+
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-284 (Improper Access Control),
+CWE-200 (Exposure of Sensitive Information)
+
+---
+
+## Rule: Vector DB Query Injection Prevention
+
+**Level**: `strict`
+
+**When**: Constructing vector DB queries that incorporate user-supplied input — particularly
+metadata filters, namespace selectors, or query parameters
+
+**Do**: Build metadata filters from an allowlisted, type-validated parameter set. Never
+interpolate raw user input into filter dicts or query strings.
+
+```python
+from typing import Any
+import re
+
+# Allowlisted filter fields and their expected types
+ALLOWED_FILTER_FIELDS: dict[str, type] = {
+    "document_type": str,
+    "language": str,
+    "created_after": int,   # Unix timestamp
+    "min_confidence": float,
+}
+
+# Allowlisted string values per field (empty set = any string allowed within length)
+FIELD_VALUE_ALLOWLIST: dict[str, set[str]] = {
+    "document_type": {"report", "policy", "faq", "manual"},
+    "language": {"en", "fr", "de", "es", "ja", "zh"},
+}
+
+MAX_STRING_LEN = 64
+
+
+def build_safe_filter(user_params: dict[str, Any]) -> dict:
+    """
+    Build a vector DB metadata filter from user-supplied parameters.
+
+    Only keys present in ALLOWED_FILTER_FIELDS are accepted. Values are
+    type-checked and, where applicable, checked against an allowlist.
+    Unknown keys are silently dropped — never passed through.
+
+    This prevents Qdrant/Weaviate/Pinecone operator injection where an
+    attacker supplies nested dicts with $or/$gt/$nin operators or Weaviate
+    GraphQL operator keywords in place of scalar values.
+    """
+    must_clauses = []
+
+    for field, expected_type in ALLOWED_FILTER_FIELDS.items():
+        if field not in user_params:
+            continue
+
+        value = user_params[field]
+
+        # Type enforcement
+        if not isinstance(value, expected_type):
+            raise ValueError(f"Filter field {field!r} must be {expected_type.__name__}")
+
+        # String length and content validation
+        if expected_type is str:
+            if len(value) > MAX_STRING_LEN:
+                raise ValueError(f"Filter field {field!r} value too long")
+            if not re.match(r'^[A-Za-z0-9_\-]+$', value):
+                raise ValueError(f"Filter field {field!r} contains invalid characters")
+
+        # Allowlist check
+        if field in FIELD_VALUE_ALLOWLIST and value not in FIELD_VALUE_ALLOWLIST[field]:
+            raise ValueError(f"Filter field {field!r} value {value!r} not in allowlist")
+
+        must_clauses.append({"key": field, "match": {"value": value}})
+
+    return {"must": must_clauses} if must_clauses else {}
+
+
+# Qdrant example
+from qdrant_client.http import models as qmodels
+
+def safe_qdrant_query(
+    qdrant_client,
+    query_vector: list[float],
+    user_filter_params: dict[str, Any],
+    tenant_id: str,
+    top_k: int = 5,
+):
+    # Start with mandatory ACL filter (from session context, not user input)
+    must_conditions = [
+        qmodels.FieldCondition(
+            key="tenant_id",
+            match=qmodels.MatchValue(value=tenant_id),
+        )
+    ]
+
+    # Append validated user filter params
+    safe_filter = build_safe_filter(user_filter_params)
+    for clause in safe_filter.get("must", []):
+        must_conditions.append(
+            qmodels.FieldCondition(
+                key=clause["key"],
+                match=qmodels.MatchValue(value=clause["match"]["value"]),
+            )
+        )
+
+    return qdrant_client.search(
+        collection_name=f"tenant_{tenant_id}",
+        query_vector=query_vector,
+        query_filter=qmodels.Filter(must=must_conditions),
+        limit=top_k,
+    )
+```
+
+**Don't**: Interpolate user input directly into filter dicts or query strings.
+
+```python
+# VULNERABLE: Direct interpolation allows operator injection
+def bad_filtered_search(client, query_vector, user_params: dict, tenant_id: str):
+    # Attacker sends: {"document_type": {"$or": [{"value": "secret"}, {"value": "hr"}]}}
+    # This passes a nested operator dict instead of a scalar, abusing Qdrant/Weaviate
+    # filter syntax to widen the query across document types they cannot access.
+    raw_filter = {
+        "must": [
+            {"key": "tenant_id", "match": {"value": tenant_id}},
+            # User controls this entire clause — operator injection possible
+            {"key": "document_type", "match": user_params.get("document_type")},
+        ]
+    }
+    return client.search(
+        collection_name="shared_collection",
+        query_vector=query_vector,
+        query_filter=raw_filter,
+        limit=10,
+    )
+```
+
+**Why**: Vector DB filter parameters accept structured operator dicts (Qdrant `$or`/`$gt`,
+Weaviate GraphQL operator fields, Pinecone namespace strings). Interpolating unsanitized user
+input into these positions is the retrieval-layer analog of SQL injection: an attacker can
+widen or redirect the query to return documents they have no access to. Allowlist validation
+on field names, types, and values eliminates the injection surface.
+
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-89 (SQL Injection — analogous
+pattern), CWE-20 (Improper Input Validation)
 
 ---
 
@@ -269,9 +685,14 @@ def get_context(query: str, k: int = 10) -> list:
     return [r.content for r in results]
 ```
 
-**Why**: Attackers can flood the vector store with semantically similar malicious documents, causing all retrieved chunks to contain attacker-controlled content. This enables reliable prompt injection by dominating the context window.
+**Why**: Attackers can flood the vector store with semantically similar malicious documents,
+causing all retrieved chunks to contain attacker-controlled content. This enables reliable
+prompt injection by dominating the context window. Flooding an index with crafted documents
+is a training/data poisoning attack under LLM03:2025; the degradation of vector store
+integrity falls under LLM08:2025.
 
-**Refs**: OWASP LLM01 (Prompt Injection), MITRE ATLAS AML.T0043 (Data Poisoning)
+**Refs**: OWASP LLM01:2025 (Prompt Injection), OWASP LLM03:2025 (Supply Chain),
+OWASP LLM08:2025 (Vector and Embedding Weaknesses), MITRE ATLAS AML.T0043 (Data Poisoning)
 
 ---
 
@@ -404,7 +825,9 @@ def search(query: str) -> list:
     return results  # Adversarial queries can manipulate single model
 ```
 
-**Why**: Adversarial queries can be crafted to exploit specific embedding model weaknesses, retrieving unintended or malicious content. Multi-model ensemble provides defense-in-depth against model-specific attacks.
+**Why**: Adversarial queries can be crafted to exploit specific embedding model weaknesses,
+retrieving unintended or malicious content. Multi-model ensemble provides defense-in-depth
+against model-specific attacks.
 
 **Refs**: MITRE ATLAS AML.T0043 (Adversarial ML), CWE-693 (Protection Mechanism Failure)
 
@@ -517,7 +940,8 @@ def rank_results(results: list) -> list:
     return sorted(results, key=lambda x: x['score'], reverse=True)
 ```
 
-**Why**: Attackers with index write access can manipulate document scores or metadata to artificially boost malicious content rankings, bypassing relevance-based filtering.
+**Why**: Attackers with index write access can manipulate document scores or metadata to
+artificially boost malicious content rankings, bypassing relevance-based filtering.
 
 **Refs**: CWE-345 (Insufficient Verification of Data Authenticity)
 
@@ -635,7 +1059,9 @@ def search(query: str) -> dict:
 # Attacker queries for specific documents to determine if they're indexed
 ```
 
-**Why**: Attackers can use exact similarity scores and repeated queries to infer whether specific documents are in the index, potentially revealing sensitive information about the training data or indexed content.
+**Why**: Attackers can use exact similarity scores and repeated queries to infer whether
+specific documents are in the index, potentially revealing sensitive information about the
+training data or indexed content.
 
 **Refs**: MITRE ATLAS AML.T0024 (Membership Inference), NIST AI RMF (Privacy)
 
@@ -781,7 +1207,8 @@ def hybrid_search(query: str) -> list:
     return sorted(combined.items(), key=lambda x: x[1], reverse=True)
 ```
 
-**Why**: Attackers can craft documents that score high on one search method (e.g., keyword stuffing for BM25) while remaining undetected by the other, manipulating hybrid rankings.
+**Why**: Attackers can craft documents that score high on one search method (e.g., keyword
+stuffing for BM25) while remaining undetected by the other, manipulating hybrid rankings.
 
 **Refs**: CWE-693 (Protection Mechanism Failure)
 
@@ -907,7 +1334,8 @@ def rerank(query: str, results: list) -> list:
     return sorted(reranked, key=lambda x: x[1], reverse=True)
 ```
 
-**Why**: Rerankers can be manipulated through adversarial content that exploits model weaknesses, causing dramatic ranking changes that promote malicious content.
+**Why**: Rerankers can be manipulated through adversarial content that exploits model
+weaknesses, causing dramatic ranking changes that promote malicious content.
 
 **Refs**: MITRE ATLAS AML.T0043 (Adversarial ML), CWE-20 (Improper Input Validation)
 
@@ -917,7 +1345,10 @@ def rerank(query: str, results: list) -> list:
 
 | Rule | Level | Key Defense | Primary Threat |
 |------|-------|-------------|----------------|
-| Chunk Sanitization | `strict` | Pattern detection, source validation | Indirect prompt injection |
+| Chunk Sanitization | `strict` | Structural separation + source validation; regex as secondary signal | Indirect prompt injection, corpus poisoning |
+| ACL at Retrieval Time | `strict` | Metadata filter injected before fetch | Unauthorized document exposure |
+| Cross-Tenant Isolation | `strict` | Per-tenant collection + filter + assertion | Cross-tenant data leakage |
+| Vector DB Query Injection | `strict` | Allowlisted, type-validated filter params | Metadata filter operator injection |
 | Context Stuffing | `warning` | Diversity penalty, source limits | Context manipulation |
 | Bypass Detection | `warning` | Multi-model ensemble | Adversarial queries |
 | Score Manipulation | `warning` | Distribution validation | Ranking attacks |
@@ -932,3 +1363,4 @@ def rerank(query: str, results: list) -> list:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2025-01-15 | Initial retrieval security rules |
+| 2.0.0 | 2026-05-26 | Add ACL-at-retrieval-time, cross-tenant isolation, vector DB query injection rules; add LLM03:2025 and LLM08:2025 refs; append :2025 to all OWASP LLM refs; demote regex denylist from primary to defense-in-depth advisory |
