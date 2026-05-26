@@ -2318,3 +2318,76 @@ audited_rules:
         for the localStorage-token pattern. CWE-922 is accurate; CWE-312 is the NVD preferred
         child CWE. Advisory only.
     issues_filed: []
+
+  - path: rules/frontend/svelte/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Never Use @html with User Input
+      - Validate Dynamic URLs
+      - Don't Store Sensitive Data in Stores
+      - Validate Form Inputs
+      - Include CSRF Tokens
+      - Validate API Responses
+      - Protect Server Routes
+      - Validate Load Function Data
+      - Don't Expose Secrets to Client
+    notes: |
+      Audited all 9 rule sections across 6 categories. One blocking issue found.
+      Standards refs (CWEs, OWASP 2025 category numbers) are correct throughout.
+      {@html} XSS guidance is accurate. DOMPurify sanitization pattern is correct.
+      CSRF token handling, API response validation, and env var rules are sound.
+
+      ISSUE 1 — SvelteKit server rules: `throw error()` is SvelteKit 1.x syntax (VERSION CURRENCY / BLOCKING)
+        Lines 318, 322, 326 (Protect Server Routes Do example) and lines 364, 365,
+        368, 371, 374 (Validate Load Function Data Do example) all use `throw error()`.
+        This is the SvelteKit 1.x API. The SvelteKit 2.x migration guide
+        (svelte.dev/docs/kit/migrating-to-sveltekit-2) explicitly states: "Previously,
+        you had to `throw` the values returned from `error(...)` and `redirect(...)`
+        yourself. In SvelteKit 2 this is no longer the case — calling the functions is
+        sufficient." In SvelteKit 2.x, `error()` throws internally; the external `throw`
+        keyword is removed by the official migration tool (svelte-migrate). A developer
+        following these Do examples to write SvelteKit 2.x code is learning the
+        deprecated 1.x idiom. The code does not crash at runtime (the outer `throw` is
+        unreachable because `error()` itself throws first), but Do examples should
+        reflect the current idiomatic API per audit checklist item 3.
+        Fix required: remove `throw` from all `error()` calls in the SvelteKit section
+        Do examples (lines 318, 322, 326, 364, 365, 368, 371, 374); add a file-level
+        version note stating these rules target SvelteKit 2.x.
+        SvelteKit 2.x correct form:
+          error(401, 'Authentication required');   // no throw
+          error(403, 'Insufficient permissions');  // no throw
+          error(400, 'Invalid user ID');           // no throw
+          error(403, 'Cannot access this user');   // no throw
+          error(404, 'User not found');            // no throw
+
+      Non-blocking observations (no status change):
+      - Svelte 4 legacy syntax used throughout without a version declaration. The file
+        uses reactive declarations ($: at lines 28, 61, 70), `export let` prop syntax
+        (lines 22, 59), and `on:submit|preventDefault` event directive (line 177).
+        Svelte 5 (released October 2024) replaces these with runes ($state, $derived,
+        $effect), `let { prop } = $props()`, and `onsubmit={handler}`. The Svelte 5
+        migration guide confirms backward compatibility: Svelte 4 syntax remains valid
+        in Svelte 5 components and no code will break. However, the absence of any
+        version declaration may mislead Svelte 5 authors. Advisory: add a header note
+        and at least one $state/$derived rune example alongside the $: form.
+      - State management rule (lines 92-138): uses writable store from svelte/store.
+        In Svelte 5, shared mutable state is idiomatic via $state in a .svelte.js
+        module. Both forms remain valid. The security principle (no tokens in client-
+        side state) is correct regardless of the store mechanism. Version-advisory only.
+      - CWE-601 cited in URL validation Refs (line 87). CWE-601 is Open Redirect; it
+        applies because `javascript:` navigates to attacker-controlled code. CWE-79
+        (also cited) is the more direct XSS mapping. Both citations are defensible.
+      - CSRF rule (lines 213-258): reads the CSRF token from a non-httpOnly cookie via
+        document.cookie. This is the Django double-submit cookie pattern and is
+        intentionally JS-readable. However, SvelteKit Form Actions provide built-in
+        CSRF protection and do not require manual token handling. Advisory: note that
+        this pattern is for custom fetch() calls against non-SvelteKit backends; Form
+        Actions handle CSRF automatically.
+      - Env var rule Don't example (lines 418-428): the comment "This will fail, but
+        attempting it is wrong" understates the enforcement. SvelteKit enforces the
+        $env/static/private boundary at build time with a module resolution error.
+        Advisory: clarify "This is a build error, not a silent runtime failure."
+    issues_filed: []
