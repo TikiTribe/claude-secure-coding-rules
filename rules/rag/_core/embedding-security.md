@@ -8,6 +8,8 @@ Core security patterns for embedding generation across all providers (OpenAI, Co
 |------|-------|---------|
 | API Key Security | `strict` | Any embedding API usage |
 | Input Sanitization Before Embedding | `strict` | User-provided text to embed |
+| Embedding Inversion Attack Prevention | `strict` | Any endpoint serving raw vectors |
+| Trusted Source Provenance | `strict` | Pre-computed embeddings from external sources |
 | Embedding Drift Monitoring | `warning` | Production embedding pipelines |
 | Adversarial Embedding Detection | `warning` | Security-sensitive retrieval |
 | Rate Limiting and Cost Control | `strict` | API-based embedding providers |
@@ -80,7 +82,7 @@ config = {
 
 **Why**: Exposed API keys enable unauthorized access, cost abuse, and data exfiltration. Attackers scan repositories and logs for leaked credentials. Hardcoded keys cannot be rotated without code changes.
 
-**Refs**: CWE-798 (Hardcoded Credentials), CWE-532 (Log Exposure), OWASP LLM06 (Sensitive Information Disclosure)
+**Refs**: CWE-798 (Hardcoded Credentials), CWE-532 (Log Exposure), OWASP LLM06:2025 (Sensitive Information Disclosure)
 
 ---
 
@@ -140,7 +142,13 @@ class EmbeddingInputSanitizer:
         return sanitized, redactions
 
     def hash_pii(self, text: str, salt: str) -> str:
-        """Create reversible PII hash for audit trails."""
+        """Create one-way PII hash for audit trails.
+
+        Uses SHA-256 with a caller-supplied salt. This is a one-way hash —
+        the original value cannot be recovered from the digest. Truncation to
+        16 hex characters is for readability only; it reduces the preimage
+        space, so do not use the truncated form as a security token.
+        """
         return hashlib.sha256(f"{salt}{text}".encode()).hexdigest()[:16]
 
 
@@ -173,7 +181,273 @@ results = vector_store.similarity_search(query)  # Poisoned query
 
 **Why**: Embedding unsanitized text can encode PII into vector stores (privacy violation, GDPR/CCPA issues) and allow adversarial queries that manipulate retrieval results. Injection patterns can poison the semantic search space.
 
-**Refs**: CWE-200 (Information Exposure), OWASP LLM01 (Prompt Injection), MITRE ATLAS AML.T0043 (Craft Adversarial Data)
+**Refs**: CWE-200 (Information Exposure), OWASP LLM01:2025 (Prompt Injection), OWASP LLM08:2025 (Vector and Embedding Weaknesses), MITRE ATLAS AML.T0043 (Craft Adversarial Data)
+
+---
+
+## Rule: Embedding Inversion Attack Prevention
+
+**Level**: `strict`
+
+**When**: Any service that generates or serves embedding vectors
+
+**Do**: Restrict raw vector endpoint access; never return raw embeddings to untrusted callers
+
+```python
+from functools import wraps
+from typing import List
+import numpy as np
+
+# Vec2Text-class attacks recover near-verbatim text from raw float vectors.
+# Deny raw embedding access to external callers; expose only similarity
+# scores or ranked document IDs.
+
+def internal_only(fn):
+    """Decorator: block raw-vector endpoints from external callers."""
+    @wraps(fn)
+    def wrapper(request, *args, **kwargs):
+        caller_tier = getattr(request, 'caller_tier', 'external')
+        if caller_tier not in ('internal', 'service_account'):
+            raise PermissionError(
+                "Raw embedding vectors are restricted to internal services. "
+                "Use the /search endpoint, which returns document IDs and scores only."
+            )
+        return fn(request, *args, **kwargs)
+    return wrapper
+
+
+class EmbeddingAPI:
+    def __init__(self, embedder, vector_store):
+        self.embedder = embedder
+        self.vector_store = vector_store
+
+    @internal_only
+    def get_raw_embedding(self, request, text: str) -> List[float]:
+        """Internal-only: return the raw embedding vector."""
+        return self.embedder.embed(text)
+
+    def search(self, query: str, top_k: int = 10) -> List[dict]:
+        """Public: return ranked document IDs and similarity scores only.
+
+        Never return raw vectors in this response — callers receive only the
+        minimum information needed to retrieve documents.
+        """
+        query_emb = self.embedder.embed(query)
+        results = self.vector_store.similarity_search(query_emb, top_k=top_k)
+
+        return [
+            {'id': r.id, 'score': round(float(r.score), 4), 'metadata': r.metadata}
+            for r in results
+        ]
+
+    def add_noise_to_embedding(
+        self, embedding: List[float], epsilon: float = 0.01
+    ) -> List[float]:
+        """Add calibrated Gaussian noise before any permitted external return.
+
+        Use only when a downstream system genuinely requires a vector value.
+        Noise degrades inversion quality without materially affecting cosine
+        similarity for retrieval tasks.
+        """
+        arr = np.array(embedding, dtype=np.float32)
+        noise = np.random.normal(0, epsilon, arr.shape).astype(np.float32)
+        noisy = arr + noise
+        # Re-normalize to unit sphere so cosine similarity is preserved
+        norm = np.linalg.norm(noisy)
+        return (noisy / norm).tolist() if norm > 0 else noisy.tolist()
+```
+
+**Don't**: Expose raw embedding vectors to external or untrusted callers
+
+```python
+# VULNERABLE: Public endpoint returns raw vectors
+@app.get("/embed")
+def embed_text(text: str):
+    return {"embedding": model.embed(text)}  # Full vector enables Vec2Text inversion
+
+# VULNERABLE: Search response leaks vectors
+results = vector_store.search(query_emb)
+return [{"id": r.id, "vector": r.vector, "score": r.score} for r in results]
+
+# VULNERABLE: No access control on embedding endpoint
+def get_document_embedding(doc_id: str):
+    doc = db.get(doc_id)
+    return doc.embedding  # Returns raw float array to any caller
+```
+
+**Why**: Vec2Text-class attacks (Morris et al. 2023, GTR inversion) reconstruct near-verbatim source text from raw embedding vectors. Sensitive corpus content — including PII, trade secrets, or confidential documents — can be recovered by any caller who receives the raw floats. Restricting access to internal services and returning only similarity scores eliminates the inversion surface.
+
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-200 (Information Exposure), MITRE ATLAS AML.T0037 (Data Exfiltration via ML Inference API)
+
+---
+
+## Rule: Trusted Source Provenance for Pre-Computed Embeddings
+
+**Level**: `strict`
+
+**When**: Loading pre-computed embeddings from external sources, object storage, or third-party datasets
+
+**Do**: Verify SHA-256 corpus digest and require signed manifests before ingesting pre-computed embeddings
+
+```python
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Dict, List, Optional
+import numpy as np
+
+# Pre-computed embedding datasets are a supply-chain attack surface.
+# A tampered corpus can backdoor retrieval results at zero inference cost.
+# Verify provenance before any ingest.
+
+MANIFEST_SCHEMA_VERSION = "1.0"
+
+
+def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Stream-hash a file to avoid loading it fully into memory."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(chunk_size), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_corpus(texts: List[str]) -> str:
+    """Deterministic digest of an ordered text corpus."""
+    h = hashlib.sha256()
+    for text in texts:
+        # Length-prefix each entry so boundary shifts are detectable
+        encoded = text.encode('utf-8')
+        h.update(len(encoded).to_bytes(4, 'big'))
+        h.update(encoded)
+    return h.hexdigest()
+
+
+class EmbeddingManifest:
+    """Signed manifest that binds embeddings to the corpus that produced them."""
+
+    def __init__(self, manifest_path: Path, trusted_keys_dir: Path):
+        self.manifest_path = manifest_path
+        self.trusted_keys_dir = trusted_keys_dir
+
+    def load_and_verify(self) -> dict:
+        """Load manifest and verify cryptographic signature.
+
+        Raises ValueError if the manifest is absent, tampered, or signed by
+        an untrusted key.
+        """
+        if not self.manifest_path.exists():
+            raise ValueError(f"Embedding manifest not found: {self.manifest_path}")
+
+        with open(self.manifest_path) as f:
+            manifest = json.load(f)
+
+        self._verify_signature(manifest)
+        return manifest
+
+    def _verify_signature(self, manifest: dict) -> None:
+        """Verify detached Ed25519 signature against a local trust store."""
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+            import base64
+        except ImportError:
+            raise RuntimeError(
+                "cryptography package required for manifest verification. "
+                "pip install cryptography"
+            )
+
+        key_id = manifest.get('signing_key_id')
+        sig_b64 = manifest.get('signature')
+        if not key_id or not sig_b64:
+            raise ValueError("Manifest missing signing_key_id or signature")
+
+        key_path = self.trusted_keys_dir / f"{key_id}.pem"
+        if not key_path.exists():
+            raise ValueError(f"Signing key '{key_id}' not in local trust store")
+
+        with open(key_path, 'rb') as f:
+            public_key = load_pem_public_key(f.read())
+
+        # Canonical payload: manifest fields excluding the signature itself
+        payload = {k: v for k, v in manifest.items() if k != 'signature'}
+        payload_bytes = json.dumps(payload, sort_keys=True).encode('utf-8')
+        signature = base64.b64decode(sig_b64)
+
+        public_key.verify(signature, payload_bytes)  # Raises on failure
+
+
+def load_verified_embeddings(
+    embeddings_path: Path,
+    corpus_texts: List[str],
+    manifest_path: Path,
+    trusted_keys_dir: Path,
+) -> np.ndarray:
+    """Load pre-computed embeddings only after full provenance verification.
+
+    Steps:
+    1. Verify the manifest signature against the local trust store.
+    2. Verify the corpus digest matches the manifest claim.
+    3. Verify the embedding file digest matches the manifest claim.
+    4. Return the embedding array only on full pass.
+    """
+    manifest = EmbeddingManifest(manifest_path, trusted_keys_dir).load_and_verify()
+
+    # Verify corpus digest
+    actual_corpus_hash = sha256_corpus(corpus_texts)
+    expected_corpus_hash = manifest.get('corpus_sha256')
+    if actual_corpus_hash != expected_corpus_hash:
+        raise ValueError(
+            f"Corpus digest mismatch. "
+            f"Expected {expected_corpus_hash}, got {actual_corpus_hash}. "
+            "The corpus may have been tampered with or the wrong corpus was supplied."
+        )
+
+    # Verify embedding file digest
+    actual_file_hash = sha256_file(embeddings_path)
+    expected_file_hash = manifest.get('embeddings_sha256')
+    if actual_file_hash != expected_file_hash:
+        raise ValueError(
+            f"Embedding file digest mismatch. "
+            f"Expected {expected_file_hash}, got {actual_file_hash}. "
+            "The embedding file may have been tampered with."
+        )
+
+    embeddings = np.load(embeddings_path)
+    logger.info(
+        "Embedding provenance verified",
+        extra={
+            'corpus_sha256': actual_corpus_hash,
+            'embeddings_sha256': actual_file_hash,
+            'signing_key_id': manifest.get('signing_key_id'),
+            'model': manifest.get('model'),
+        }
+    )
+    return embeddings
+```
+
+**Don't**: Load pre-computed embeddings without verifying their origin
+
+```python
+# VULNERABLE: No provenance check — tampered embeddings accepted silently
+embeddings = np.load("embeddings.npy")
+vector_store.add(embeddings)
+
+# VULNERABLE: Hash check without signature — attacker updates hash alongside payload
+expected = open("embeddings.sha256").read().strip()
+actual = sha256_file(Path("embeddings.npy"))
+if actual == expected:  # Attacker controls both files
+    embeddings = np.load("embeddings.npy")
+
+# VULNERABLE: Trust based on file path or bucket name alone
+if "trusted-embeddings-bucket" in s3_url:
+    embeddings = download_and_load(s3_url)  # Bucket policy may have changed
+```
+
+**Why**: Pre-computed embedding datasets are a supply-chain attack surface. A tampered corpus can backdoor semantic retrieval so that attacker-chosen queries surface attacker-chosen documents with no per-query manipulation. SHA-256 verification of the embedding file alone is insufficient — the corpus must also be verified to catch attacks that regenerate correct-looking embeddings from a poisoned document set. Signed manifests bind both digests to a key in your trust store.
+
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), MITRE ATLAS AML.T0020 (Poison Training Data), NIST AI RMF (Govern 1.7, Map 5.1), CWE-494 (Download of Code Without Integrity Check)
 
 ---
 
@@ -287,7 +561,7 @@ embeddings = [model.embed(doc) for doc in documents]
 
 **Why**: Embedding drift indicates model updates, data poisoning attacks, or distribution shift that degrades retrieval quality. Without monitoring, adversaries can gradually poison the vector space, or model updates can silently break semantic search.
 
-**Refs**: MITRE ATLAS AML.T0020 (Poison Training Data), NIST AI RMF (Monitor), ISO/IEC 23894 (AI System Monitoring)
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), MITRE ATLAS AML.T0020 (Poison Training Data), NIST AI RMF (Monitor), ISO/IEC 23894 (AI System Monitoring)
 
 ---
 
@@ -400,7 +674,7 @@ embedding = openai_model.embed(malicious_query)
 
 **Why**: Adversarial inputs can be crafted to produce embeddings that retrieve unintended documents, bypass access controls, or extract sensitive information. Cross-model validation increases attack difficulty as adversaries must fool multiple models simultaneously.
 
-**Refs**: MITRE ATLAS AML.T0043 (Craft Adversarial Data), MITRE ATLAS AML.T0015 (Evade ML Model), OWASP LLM01 (Prompt Injection)
+**Refs**: OWASP LLM08:2025 (Vector and Embedding Weaknesses), MITRE ATLAS AML.T0043 (Craft Adversarial Data), MITRE ATLAS AML.T0015 (Evade ML Model), OWASP LLM01:2025 (Prompt Injection)
 
 ---
 
@@ -529,7 +803,7 @@ embeddings = client.embed(huge_corpus)  # $1000s in unexpected charges
 
 **Why**: Embedding APIs charge per token. Without limits, malicious users or bugs can exhaust budgets in minutes. Rate limiting prevents abuse and ensures fair resource allocation. Cost monitoring enables early detection of anomalies.
 
-**Refs**: OWASP LLM10 (Model Denial of Service), CWE-770 (Resource Allocation Without Limits), NIST AI RMF (Resource Management)
+**Refs**: OWASP LLM10:2025 (Model Denial of Service), CWE-770 (Resource Allocation Without Limits), NIST AI RMF (Resource Management)
 
 ---
 
@@ -670,7 +944,7 @@ cache.set(f"embed:{user_text}", embedding)  # Text visible in cache keys
 
 **Why**: Cached embeddings may contain encoded sensitive information. Without encryption, cache access exposes this data. Without isolation, users can access each other's embeddings. Without TTL, model updates leave incompatible cached embeddings.
 
-**Refs**: CWE-311 (Missing Encryption), CWE-200 (Information Exposure), OWASP LLM06 (Sensitive Information Disclosure)
+**Refs**: CWE-311 (Missing Encryption), CWE-200 (Information Exposure), OWASP LLM06:2025 (Sensitive Information Disclosure)
 
 ---
 
@@ -809,3 +1083,4 @@ index.add(cohere_embed(doc2))  # Incompatible embeddings in same space
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2024-01-15 | Initial release with 7 core rules |
+| 1.1.0 | 2026-05-26 | Fix LLM ref year tags; add LLM08:2025 citations; add embedding inversion rule; add trusted source provenance rule; fix hash_pii docstring |
