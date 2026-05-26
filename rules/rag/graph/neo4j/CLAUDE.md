@@ -36,7 +36,7 @@ class SecureNeo4jClient:
             uri,
             auth=(user, password),
             encrypted=True,
-            trust=neo4j.TRUST_SYSTEM_CA_SIGNED_CERTIFICATES
+            trusted_certificates=neo4j.TrustSystemCAs()  # Driver 5.x API; TRUST_* constants removed in 5.x
         )
 
     def find_similar_documents(self, embedding: list, tenant_id: str, top_k: int = 10):
@@ -139,7 +139,7 @@ def find_by_label(label_name):
 
 **Why**: Cypher injection allows attackers to bypass access controls, exfiltrate data across tenants, modify or delete nodes/relationships, and potentially execute administrative commands. Unlike SQL, Cypher's pattern-matching syntax enables complex graph traversals that can expose entire connected datasets.
 
-**Refs**: CWE-943 (Improper Neutralization of Special Elements in Data Query Logic), OWASP A03:2021 (Injection), CWE-89
+**Refs**: CWE-943 (Improper Neutralization of Special Elements in Data Query Logic), OWASP A03:2025 (Injection), CWE-89
 
 ---
 
@@ -261,7 +261,7 @@ def load_user_file(file_path):
 
 **Why**: APOC procedures extend Cypher with powerful capabilities including file system access, HTTP requests, dynamic query execution, and system administration. Unrestricted APOC access enables remote code execution, data exfiltration through external HTTP calls, and complete database compromise.
 
-**Refs**: CWE-94 (Code Injection), CWE-78 (OS Command Injection), OWASP A03:2021 (Injection)
+**Refs**: CWE-94 (Code Injection), CWE-78 (OS Command Injection), OWASP A03:2025 (Injection), OWASP LLM06:2025 (Excessive Agency — apoc.load.json enables SSRF via agent-controlled HTTP calls), OWASP LLM08:2025 (Vector and Embedding Weaknesses — unrestricted APOC can corrupt vector indexes)
 
 ---
 
@@ -403,7 +403,7 @@ def traverse_to_depth(start_id, user_depth):
 
 **Why**: Graph databases can contain highly connected data where unbounded traversals exponentially expand. A single malicious query with unbounded depth can consume all server memory and CPU, causing denial of service for all users. Even legitimate queries can accidentally trigger resource exhaustion.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), OWASP A05:2021 (Security Misconfiguration)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), OWASP A05:2025 (Security Misconfiguration)
 
 ---
 
@@ -594,7 +594,7 @@ def delete_document(doc_id):
 
 **Why**: Without proper RBAC, compromised services can access or modify all data. Shared credentials make it impossible to audit actions or revoke specific access. Graph databases especially need fine-grained access control because relationships can expose data across logical boundaries.
 
-**Refs**: OWASP A01:2021 (Broken Access Control), CWE-284 (Improper Access Control), CWE-732 (Incorrect Permission Assignment)
+**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284 (Improper Access Control), CWE-732 (Incorrect Permission Assignment)
 
 ---
 
@@ -965,7 +965,7 @@ def get_similar(embedding):
 
 **Why**: Vector indexes without proper access controls can leak data across tenants. Unvalidated parameters enable resource exhaustion through large result sets. Low similarity thresholds return irrelevant results that may expose sensitive information through statistical attacks.
 
-**Refs**: CWE-200 (Information Exposure), CWE-400 (Uncontrolled Resource Consumption)
+**Refs**: CWE-200 (Information Exposure), CWE-400 (Uncontrolled Resource Consumption), OWASP LLM08:2025 (Vector and Embedding Weaknesses — index abuse enables cross-tenant data leakage via similarity attacks), OWASP LLM06:2025 (Excessive Agency — unvalidated top_k enables retrieval-level resource exhaustion)
 
 ---
 
@@ -1191,7 +1191,7 @@ def import_from_url(url):
 
 **Why**: Unencrypted backups expose all graph data including embeddings, relationships, and metadata. Without integrity verification, attackers can tamper with backups to inject malicious nodes or modify access controls. Importing from untrusted sources enables code injection through crafted CSV/JSON files.
 
-**Refs**: CWE-311 (Missing Encryption of Sensitive Data), CWE-354 (Improper Validation of Integrity Check Value), OWASP A02:2021 (Cryptographic Failures)
+**Refs**: CWE-311 (Missing Encryption of Sensitive Data), CWE-354 (Improper Validation of Integrity Check Value), OWASP A02:2025 (Cryptographic Failures)
 
 ---
 
@@ -1229,7 +1229,7 @@ class SecureBoltConnection:
             uri,
             auth=basic_auth(user, password),
             encrypted=True,
-            trust=ssl.CERT_REQUIRED,  # Verify server certificate
+            trusted_certificates=neo4j.TrustSystemCAs(),  # Driver 5.x API; ssl.CERT_REQUIRED raises TypeError in 5.x
             max_connection_lifetime=3600,  # 1 hour max lifetime
             max_connection_pool_size=50,
             connection_acquisition_timeout=30,
@@ -1384,7 +1384,7 @@ driver = GraphDatabase.driver(
 
 **Why**: Unencrypted Bolt connections expose all queries and data to network interception, including sensitive graph traversals and embeddings. Hardcoded credentials leak through version control and logs. Without connection pool limits, attackers can exhaust database connections causing denial of service.
 
-**Refs**: OWASP A02:2021 (Cryptographic Failures), CWE-319 (Cleartext Transmission), CWE-798 (Hardcoded Credentials), CWE-400 (Uncontrolled Resource Consumption)
+**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-319 (Cleartext Transmission), CWE-798 (Hardcoded Credentials), CWE-400 (Uncontrolled Resource Consumption)
 
 ---
 
@@ -1400,8 +1400,8 @@ driver = GraphDatabase.driver(
 
 - [Neo4j Security Documentation](https://neo4j.com/docs/operations-manual/current/security/)
 - [Neo4j RBAC Guide](https://neo4j.com/docs/operations-manual/current/authentication-authorization/)
-- [APOC Security Configuration](https://neo4j.com/labs/apoc/4.4/installation/)
+- [APOC Security Configuration](https://neo4j.com/labs/apoc/5/introduction/)
 - [Neo4j GDS Security](https://neo4j.com/docs/graph-data-science/current/production-deployment/)
-- [OWASP Top 10 2021](https://owasp.org/Top10/)
+- [OWASP Top 10 2025](https://owasp.org/Top10/)
 - [CWE-943: Improper Neutralization in Data Query Logic](https://cwe.mitre.org/data/definitions/943.html)
 - [CWE-400: Uncontrolled Resource Consumption](https://cwe.mitre.org/data/definitions/400.html)
