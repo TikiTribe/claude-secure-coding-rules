@@ -47,13 +47,17 @@ class SecureCrewFactory:
         )
 
     @staticmethod
-    def create_write_agent(name: str, tools: list, require_approval: bool = True) -> Agent:
-        """Agents that can modify data - require approval"""
+    def create_write_agent(name: str, tools: list) -> Agent:
+        """Agents that can modify data.
+
+        human_input is a Task-level parameter, not Agent-level.
+        Require approval by setting human_input=True on the Task
+        that uses this agent (see Secure Task Delegation rule).
+        """
         return Agent(
             role=name,
             tools=tools,
             allow_delegation=False,
-            human_input=require_approval,  # Human in loop
             max_iter=3
         )
 ```
@@ -71,11 +75,15 @@ agent = Agent(role="Worker", tools=all_tools)  # Too many capabilities
 
 # VULNERABLE: No iteration limits
 agent = Agent(role="Worker", max_iter=1000)  # Can run forever
+
+# VULNERABLE: human_input on Agent() is silently ignored — it is not
+# a valid Agent parameter. Place it on Task() instead.
+agent = Agent(role="Worker", human_input=True)  # Has no effect
 ```
 
 **Why**: Unrestricted agent capabilities and delegation enable privilege escalation and uncontrolled behavior.
 
-**Refs**: OWASP LLM08, MITRE ATLAS AML.T0051, CWE-269
+**Refs**: OWASP LLM06:2025, MITRE ATLAS AML.T0051, CWE-269
 
 ---
 
@@ -87,7 +95,7 @@ agent = Agent(role="Worker", max_iter=1000)  # Can run forever
 
 **Do**:
 ```python
-from crewai import Task, Crew
+from crewai import Crew, Process, Task
 
 # Safe: Explicit task dependencies with validation
 def create_secure_tasks():
@@ -103,7 +111,8 @@ def create_secure_tasks():
         agent=analyst,
         expected_output="Analysis report",
         context=[research_task],  # Explicit dependency
-        human_input=True  # Require approval before execution
+        human_input=True  # Require human approval before execution
+        # human_input belongs here on Task(), not on Agent()
     )
 
     return [research_task, analysis_task]
@@ -145,7 +154,7 @@ task = Task(
 
 **Why**: Uncontrolled delegation allows agents to assign tasks beyond their authorization, potentially executing dangerous operations.
 
-**Refs**: OWASP LLM08, CWE-863
+**Refs**: OWASP LLM06:2025, CWE-863
 
 ---
 
@@ -168,13 +177,16 @@ crew = Crew(
     memory=False  # No persistent memory
 )
 
-# Safe: If memory needed, isolate per session
+# Safe: If memory is needed, instantiate a separate Crew per session.
+# CrewAI's memory backend is scoped to each Crew instance, so creating
+# one Crew per user/session prevents cross-session data leakage.
 class SecureCrew:
     def __init__(self, crew_id: str):
         self.crew_id = crew_id
-        self.memory_path = f"/secure/memory/{crew_id}"
 
     def run(self, inputs: dict):
+        # New Crew instance per invocation — memory does not bleed
+        # across instances when memory=True is scoped this way.
         crew = Crew(
             agents=self.agents,
             tasks=self.tasks,
@@ -182,9 +194,7 @@ class SecureCrew:
             embedder={
                 "provider": "openai",
                 "config": {"model": "text-embedding-3-small"}
-            },
-            # Memory isolated to this crew instance
-            memory_config={"path": self.memory_path}
+            }
         )
 
         try:
@@ -206,20 +216,20 @@ class SecureCrew:
 crew = Crew(
     agents=agents,
     tasks=tasks,
-    memory=True  # Default memory shared
+    memory=True  # Default memory shared across all calls to this instance
 )
-# Different users' data could leak
+# Different users' data could leak into each other's context
 
 # VULNERABLE: No memory cleanup
 def process_request(user_data):
     result = crew.kickoff(inputs=user_data)
     return result
-    # Sensitive data persists in memory
+    # Sensitive data persists in memory for the next caller
 ```
 
 **Why**: Shared memory between crews or sessions enables cross-user data leakage and context poisoning.
 
-**Refs**: CWE-200, CWE-359, OWASP LLM01
+**Refs**: CWE-200, CWE-359, OWASP LLM01:2025
 
 ---
 
@@ -233,6 +243,8 @@ def process_request(user_data):
 
 **Do**:
 ```python
+from pathlib import Path
+
 from crewai_tools import BaseTool
 from pydantic import BaseModel, Field
 
@@ -243,6 +255,8 @@ class SecureFileReadTool(BaseTool):
 
     class InputSchema(BaseModel):
         filename: str = Field(..., pattern=r'^[a-zA-Z0-9_-]+\.(txt|json|md)$')
+
+    args_schema = InputSchema  # wire schema so CrewAI enforces it
 
     def _run(self, filename: str) -> str:
         # Validate against allowlist
@@ -289,7 +303,7 @@ for agent in agents:
 
 **Why**: Unrestricted tool access enables agents to execute arbitrary code, access sensitive files, or perform unauthorized operations.
 
-**Refs**: OWASP LLM07, CWE-78, CWE-22
+**Refs**: OWASP LLM06:2025, CWE-78, CWE-22
 
 ---
 
@@ -312,9 +326,10 @@ class CrewOutput(BaseModel):
     confidence: float
 
 def process_crew_result(result) -> dict:
-    # Validate output structure
+    # Validate output structure — use model_validate_json() (Pydantic v2).
+    # parse_raw() was removed in Pydantic v2 and must not be used.
     try:
-        parsed = CrewOutput.parse_raw(result.raw)
+        parsed = CrewOutput.model_validate_json(result.raw)
     except Exception:
         raise ValueError("Invalid crew output format")
 
@@ -354,11 +369,14 @@ task = Task(
     description="Save results",
     output_file=user_provided_path  # Path traversal
 )
+
+# VULNERABLE: parse_raw() removed in Pydantic v2 — use model_validate_json()
+parsed = CrewOutput.parse_raw(result.raw)
 ```
 
 **Why**: Crew outputs may contain malicious content, sensitive data, or injection payloads that must be validated before use.
 
-**Refs**: OWASP LLM02, CWE-94, CWE-200
+**Refs**: OWASP LLM05:2025, CWE-94, CWE-200
 
 ---
 
@@ -366,14 +384,15 @@ task = Task(
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Implement agent trust boundaries | strict | OWASP LLM08, CWE-269 |
-| Secure task delegation | strict | OWASP LLM08, CWE-863 |
+| Implement agent trust boundaries | strict | OWASP LLM06:2025, CWE-269 |
+| Secure task delegation | strict | OWASP LLM06:2025, CWE-863 |
 | Isolate crew memory | strict | CWE-200, CWE-359 |
-| Validate agent tool usage | strict | OWASP LLM07, CWE-78 |
-| Validate crew outputs | strict | OWASP LLM02, CWE-94 |
+| Validate agent tool usage | strict | OWASP LLM06:2025, CWE-78 |
+| Validate crew outputs | strict | OWASP LLM05:2025, CWE-94 |
 
 ---
 
 ## Version History
 
+- **v2.0.0** - Audit defect fixes: OWASP LLM ref remapping to 2025 taxonomy, human_input moved to Task, Process import added, SecureFileReadTool corrected, memory isolation documented accurately, parse_raw replaced with model_validate_json
 - **v1.0.0** - Initial CrewAI security rules
