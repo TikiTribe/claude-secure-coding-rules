@@ -1527,3 +1527,66 @@ print(f"Created {len(result['chunks'])} chunks")
 - OWASP A03:2021 - Injection
 - OWASP A05:2021 - Security Misconfiguration
 - OWASP A07:2021 - Identification and Authentication Failures
+
+---
+
+## Audit Log
+
+```yaml
+- audit: p0.5
+  date: 2026-05-26
+  file: rules/rag/document-processing/unstructured/CLAUDE.md
+  status: failed
+  defects:
+    - id: D1
+      severity: high
+      description: >
+        All OWASP refs use :2021 year suffix throughout inline rule Refs sections
+        and the bottom References block. No :2025 refs present anywhere.
+    - id: D2
+      severity: high
+      description: >
+        No OWASP LLM Top 10 2025 references. The Output Validation rule detects
+        prompt injection patterns but cites only CWE-74 and OWASP A03:2021;
+        OWASP LLM01:2025 (Prompt Injection) is absent.
+    - id: D3
+      severity: high
+      description: >
+        partition_via_api is not addressed. The API Service Security rule covers
+        the UnstructuredClient SDK path but never discloses that partition_via_api
+        (from the core unstructured library) sends documents to Unstructured.io
+        as a third-party SaaS vendor. No vendor-egress warning, no data residency
+        or data-retention callout, no guidance on classifying documents before
+        sending to the hosted API.
+    - id: D4
+      severity: medium
+      description: >
+        No file extension / MIME-type validation. The complete pipeline routes on
+        os.path.splitext only. Extension spoofing (e.g. a PHP shell renamed .pdf)
+        is not addressed. No python-magic or mimetypes check against declared
+        content-type before passing to partition functions.
+    - id: D5
+      severity: medium
+      description: >
+        partition_pdf with hi_res strategy spawns ML inference subprocesses
+        (detectron2 / layoutparser) for layout analysis. The rules note hi_res
+        is resource-intensive but do not call out that it widens the subprocess
+        attack surface when processing untrusted documents. No mention of
+        sandboxing or process isolation for hi_res/ocr_only processing.
+    - id: D6
+      severity: medium
+      description: >
+        strategy="fast" vs "hi_res" trust trade-off is treated purely as a
+        resource concern. The security dimension — hi_res invokes ML inference
+        on untrusted content with broader subprocess exposure vs fast uses
+        pdfminer/pypandoc with a narrower attack surface — is not stated.
+    - id: D7
+      severity: low
+      description: >
+        unstructured-client 0.x SDK import path may be stale. The rule uses
+        shared.PartitionParameters and shared.Files from
+        unstructured_client.models.shared. Current 0.x SDK (>=0.26) reorganised
+        these under unstructured_client.models.operations.PartitionRequest and
+        unstructured_client.models.shared.Files. Code as written will fail at
+        import on current releases.
+```
