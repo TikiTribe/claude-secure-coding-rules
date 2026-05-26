@@ -16,25 +16,29 @@ Security rules for IBM Docling document parsing library in RAG pipelines.
 ```python
 from docling.document_converter import DocumentConverter
 from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
+from docling.datamodel.pipeline_options import TesseractCliOcrOptions
+from pathlib import Path
 
-# Use default models from verified sources only
-pipeline_options = PdfPipelineOptions()
+# Pin model weights to a pre-downloaded local directory.
+# artifacts_path prevents docling from fetching weights at runtime.
+ARTIFACTS_PATH = Path("/app/models/docling")
 
-# Disable remote code execution for any HuggingFace models
-pipeline_options.do_ocr = True
-pipeline_options.ocr_options = {
-    "trust_remote_code": False,  # Never trust remote code
-    "use_gpu": False  # Control resource usage
-}
+# Use a typed OcrOptions subclass — plain dicts are silently ignored at runtime.
+ocr_options = TesseractCliOcrOptions()
 
-# Use standard pipeline with verified models
-converter = DocumentConverter(
-    pipeline_options=pipeline_options
+pipeline_options = PdfPipelineOptions(
+    do_ocr=True,
+    ocr_options=ocr_options,
+    # Both default False; set explicitly so intent is auditable.
+    allow_external_plugins=False,
+    enable_remote_services=False,
+    artifacts_path=ARTIFACTS_PATH,
 )
 
-# Verify model checksums if using custom models
-def load_verified_model(model_path: str, expected_hash: str):
+converter = DocumentConverter(pipeline_options=pipeline_options)
+
+# Verify model checksums when using locally managed weights.
+def load_verified_model(model_path: str, expected_hash: str) -> str:
     import hashlib
     with open(model_path, "rb") as f:
         actual_hash = hashlib.sha256(f.read()).hexdigest()
@@ -46,22 +50,24 @@ def load_verified_model(model_path: str, expected_hash: str):
 **Don't**:
 ```python
 from docling.document_converter import DocumentConverter
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 
-# VULNERABLE: Loading models with trust_remote_code enabled
+# VULNERABLE: ocr_options is typed as OcrOptions — assigning a dict causes
+# AttributeError at runtime because docling reads it as an OcrOptions object.
 pipeline_options = PdfPipelineOptions()
 pipeline_options.ocr_options = {
-    "trust_remote_code": True,  # Allows arbitrary code execution
+    "trust_remote_code": True,  # Not a docling API field; has no effect.
 }
 
-# VULNERABLE: Loading unverified custom models
+# VULNERABLE: Loading unverified custom models without integrity check.
 converter = DocumentConverter(
-    custom_model_path="/tmp/untrusted_model.bin"  # No integrity check
+    custom_model_path="/tmp/untrusted_model.bin"
 )
 ```
 
-**Why**: Models with `trust_remote_code=True` can execute arbitrary Python code during loading. Unverified models may be backdoored or tampered with. Attackers can exploit model loading to achieve remote code execution in your RAG pipeline.
+**Why**: `ocr_options` is a Pydantic model field; a plain dict assignment is silently accepted by Python but triggers `AttributeError` when docling reads the field. `trust_remote_code` is a HuggingFace transformers parameter not present in docling's API. The genuine docling trust controls are `allow_external_plugins` and `enable_remote_services` (both `False` by default); `artifacts_path` pins offline model weights and prevents runtime downloads. Unverified models may be backdoored, enabling remote code execution.
 
-**Refs**: CWE-502 (Deserialization), OWASP LLM05 (Supply Chain), MITRE ATLAS ML Supply Chain Compromise
+**Refs**: CWE-502 (Deserialization), OWASP LLM05:2025 (Supply Chain), MITRE ATLAS ML Supply Chain Compromise
 
 ---
 
@@ -193,19 +199,16 @@ def resource_limits(timeout_sec: int, max_memory_mb: int):
 
 def process_scientific_document(file_path: str):
     """Process scientific documents with resource controls."""
-    # Configure pipeline with limits
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_table_structure = True
     pipeline_options.do_ocr = True
 
-    # Limit pages processed
-    pipeline_options.page_range = (1, MAX_PAGES)
-
     converter = DocumentConverter(pipeline_options=pipeline_options)
 
-    # Apply resource limits during processing
+    # max_num_pages is a parameter on convert(), not on PdfPipelineOptions.
+    # pipeline_options.page_range does not exist and would be silently ignored.
     with resource_limits(MAX_PROCESSING_TIME, MAX_MEMORY_MB):
-        result = converter.convert(file_path)
+        result = converter.convert(file_path, max_num_pages=MAX_PAGES)
 
     return result
 ```
@@ -213,18 +216,23 @@ def process_scientific_document(file_path: str):
 **Don't**:
 ```python
 from docling.document_converter import DocumentConverter
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 def process_scientific_document(file_path: str):
     # VULNERABLE: No page limits - can process 10,000+ page documents
     # VULNERABLE: No timeout - infinite processing on complex documents
     # VULNERABLE: No memory limits - can exhaust system memory
 
-    converter = DocumentConverter()
+    pipeline_options = PdfPipelineOptions()
+    # BROKEN: page_range is not a PdfPipelineOptions field; this is a no-op.
+    pipeline_options.page_range = (1, 500)
+
+    converter = DocumentConverter(pipeline_options=pipeline_options)
     result = converter.convert(file_path)  # Unbounded processing
     return result
 ```
 
-**Why**: Scientific documents can contain thousands of pages, complex tables, and intricate equations that consume excessive CPU and memory. Without limits, attackers can cause denial of service by submitting specially crafted documents that exhaust system resources.
+**Why**: Scientific documents can contain thousands of pages, complex tables, and intricate equations that consume excessive CPU and memory. Without limits, attackers can cause denial of service by submitting specially crafted documents that exhaust system resources. `pipeline_options.page_range` does not exist in the docling API and silently has no effect; page limits must be passed via `converter.convert(max_num_pages=...)`.
 
 **Refs**: CWE-400 (Resource Exhaustion), CWE-770 (Allocation Without Limits), NIST AI RMF
 
@@ -276,7 +284,10 @@ def secure_figure_extraction(file_path: str, output_dir: str):
         raise ValueError("Invalid output directory")
 
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.generate_picture_images = True
+    # generate_page_images is the current field; generate_picture_images is
+    # retained for backwards compatibility but triggers a deprecation warning
+    # in recent docling versions.
+    pipeline_options.generate_page_images = True
 
     converter = DocumentConverter(pipeline_options=pipeline_options)
     result = converter.convert(file_path)
@@ -343,6 +354,7 @@ def extract_figures(file_path: str, output_dir: str):
 ```python
 from docling.document_converter import DocumentConverter
 from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.document import DocItemLabel
 import re
 
 # Equation processing limits
@@ -370,27 +382,30 @@ def sanitize_latex(latex_content: str) -> str:
     # Check for forbidden commands
     for pattern in FORBIDDEN_LATEX_COMMANDS:
         if re.search(pattern, latex_content, re.IGNORECASE):
-            raise ValueError(f"Forbidden LaTeX command detected")
+            raise ValueError("Forbidden LaTeX command detected")
 
     return latex_content
 
 def process_equations(file_path: str):
     """Extract and sanitize equations from documents."""
-    pipeline_options = PdfPipelineOptions()
+    pipeline_options = PdfPipelineOptions(do_formula_enrichment=True)
 
     converter = DocumentConverter(pipeline_options=pipeline_options)
     result = converter.convert(file_path)
 
     equations = []
-    for idx, item in enumerate(result.document.main_text):
-        if hasattr(item, 'equation') and item.equation:
-            if idx >= MAX_EQUATIONS:
-                break
+    # In docling v2, iterate result.document.texts and filter by item type.
+    # result.document.main_text was removed in v2 and raises AttributeError.
+    for idx, item in enumerate(result.document.texts):
+        if idx >= MAX_EQUATIONS:
+            break
 
+        # Formula items carry their LaTeX in item.text
+        if hasattr(item, 'label') and item.label == DocItemLabel.FORMULA:
             try:
-                sanitized = sanitize_latex(item.equation)
+                sanitized = sanitize_latex(item.text)
                 equations.append(sanitized)
-            except ValueError as e:
+            except ValueError:
                 # Log and skip malicious equations
                 continue
 
@@ -407,17 +422,20 @@ def render_equation_safely(latex: str) -> str:
     with tempfile.TemporaryDirectory() as tmpdir:
         tex_file = f"{tmpdir}/eq.tex"
         with open(tex_file, "w") as f:
-            f.write(f"\\documentclass{{standalone}}\n\\begin{{document}}\n{sanitized}\n\\end{{document}}")
+            f.write(
+                f"\\documentclass{{standalone}}\n"
+                f"\\begin{{document}}\n{sanitized}\n\\end{{document}}"
+            )
 
         # Run with restrictions
-        result = subprocess.run(
+        proc = subprocess.run(
             ["pdflatex", "-no-shell-escape", "-interaction=nonstopmode", tex_file],
             cwd=tmpdir,
             timeout=30,
             capture_output=True
         )
 
-        if result.returncode != 0:
+        if proc.returncode != 0:
             raise ValueError("LaTeX rendering failed")
 
         return f"{tmpdir}/eq.pdf"
@@ -432,7 +450,7 @@ def process_equations(file_path: str):
     converter = DocumentConverter()
     result = converter.convert(file_path)
 
-    # Return all equations without sanitization
+    # BROKEN: result.document.main_text does not exist in docling v2; raises AttributeError.
     return [item.equation for item in result.document.main_text
             if hasattr(item, 'equation')]
 
@@ -446,7 +464,7 @@ def render_equation(latex: str):
     )
 ```
 
-**Why**: LaTeX has powerful I/O commands that can read/write arbitrary files when shell escape is enabled. Malicious equations can execute system commands, exfiltrate data, or cause infinite loops. Without limits, equation-heavy documents cause resource exhaustion.
+**Why**: LaTeX has powerful I/O commands that can read/write arbitrary files when shell escape is enabled. Malicious equations can execute system commands, exfiltrate data, or cause infinite loops. Without limits, equation-heavy documents cause resource exhaustion. `result.document.main_text` was removed in docling v2; using it raises `AttributeError` immediately on any current installation.
 
 **Refs**: CWE-78 (OS Command Injection), CWE-400 (Resource Exhaustion), LaTeX Security Guidelines
 
@@ -568,7 +586,7 @@ def send_to_llm(file_path: str):
 
 **Why**: Document content can contain malicious payloads including XSS scripts, SQL injection, and prompt injection attacks. Without context-aware sanitization, these payloads execute in downstream systems, leading to data theft, unauthorized actions, or system compromise.
 
-**Refs**: CWE-79 (XSS), CWE-89 (SQL Injection), OWASP LLM01 (Prompt Injection), CWE-116 (Output Encoding)
+**Refs**: CWE-79 (XSS), CWE-89 (SQL Injection), OWASP LLM01:2025 (Prompt Injection), CWE-116 (Output Encoding)
 
 ---
 
@@ -590,7 +608,7 @@ import os
 SECURE_PIPELINE_CONFIG = {
     "do_ocr": True,
     "do_table_structure": True,
-    "generate_picture_images": False,  # Disable unless needed
+    "generate_page_images": False,  # Disable unless needed
     "max_pages": 500,
     "timeout_seconds": 300,
 }
@@ -637,12 +655,16 @@ def create_secure_pipeline(config: dict = None):
     pipeline_options.do_ocr = config.get("do_ocr", True)
     pipeline_options.do_table_structure = config.get("do_table_structure", True)
 
-    # Set page range limit
-    max_pages = config.get("max_pages", 500)
-    pipeline_options.page_range = (1, max_pages)
-
     converter = DocumentConverter(pipeline_options=pipeline_options)
-    return converter
+
+    # max_num_pages is a convert() parameter, not a PdfPipelineOptions field.
+    # pipeline_options.page_range does not exist and would be silently ignored.
+    max_pages = config.get("max_pages", 500)
+    return converter, max_pages
+
+def convert_with_limits(converter: DocumentConverter, file_path: str, max_pages: int):
+    """Run conversion with page limit enforced via the correct API."""
+    return converter.convert(file_path, max_num_pages=max_pages)
 
 def handle_conversion_errors(result) -> dict:
     """Safely handle conversion results and errors."""
@@ -654,15 +676,17 @@ def handle_conversion_errors(result) -> dict:
             # Don't include: result.error_message (may leak paths/internals)
         }
 
+    # page_count is on InputDocument (result.input), not on DoclingDocument (result.document).
     return {
         "success": True,
-        "page_count": result.document.page_count
+        "page_count": result.input.page_count
     }
 ```
 
 **Don't**:
 ```python
 from docling.document_converter import DocumentConverter
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 import yaml
 
 def load_config(config_path: str):
@@ -680,6 +704,9 @@ def create_pipeline(config: dict):
     for key, value in config.items():
         setattr(pipeline_options, key, value)  # Arbitrary attribute setting
 
+    # BROKEN: page_range is not a PdfPipelineOptions field; silently a no-op.
+    pipeline_options.page_range = (1, 500)
+
     return DocumentConverter(pipeline_options=pipeline_options)
 
 def process_with_errors(file_path: str):
@@ -689,9 +716,13 @@ def process_with_errors(file_path: str):
     if result.status == "FAILURE":
         # VULNERABLE: Exposes internal error details
         raise Exception(f"Failed: {result.error_message} at {result.error_trace}")
+
+def broken_page_count(result):
+    # BROKEN: page_count is on result.input, not result.document; raises AttributeError.
+    return result.document.page_count
 ```
 
-**Why**: Untrusted configuration can override security controls or set dangerous options. YAML deserialization with unsafe loaders enables code execution. Exposing internal error messages leaks sensitive information about system internals and file paths.
+**Why**: Untrusted configuration can override security controls or set dangerous options. YAML deserialization with unsafe loaders enables code execution. Exposing internal error messages leaks sensitive information about system internals and file paths. `pipeline_options.page_range` is not a docling API field and silently does nothing; page limits must use `converter.convert(max_num_pages=...)`. `result.document.page_count` does not exist in docling v2; the correct attribute is `result.input.page_count`.
 
 **Refs**: CWE-502 (Deserialization), CWE-209 (Error Information Exposure), OWASP Configuration Security
 
@@ -755,7 +786,7 @@ def process_with_secure_temp(file_content: bytes):
         result = converter.convert(temp_file)
 
         # Temp directory auto-cleaned on exit
-        return result.document.export_to_text()
+        return result.document.export_to_markdown()
 
 def cleanup_cache():
     """Securely clean up old cache entries."""
@@ -821,4 +852,4 @@ def get_cached(filename: str):
 
 **Why**: Predictable temporary file names allow race condition attacks and symlink attacks. Without proper cleanup, sensitive document content persists on disk. Shared cache without user isolation enables cache poisoning attacks where one user's malicious content is served to another user.
 
-**Refs**: CWE-377 (Insecure Temp File), CWE-732 (Incorrect Permission), CWE-349 (Acceptance of Extraneous Untrusted Data)
+**Refs**: CWE-377 (Insecure Temp File), CWE-732 (Incorrect Permission), CWE-345 (Insufficient Verification of Data Authenticity)
