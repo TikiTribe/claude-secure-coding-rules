@@ -119,12 +119,12 @@ def create_user():
 ```
 
 ```python
-import bleach
+import nh3  # nh3 wraps the Rust-backed Ammonia sanitizer; bleach is archived (2023-01-23)
 
 @app.route('/content')
 def show_content():
-    allowed_tags = ['p', 'b', 'i', 'a']
-    clean_html = bleach.clean(user_html, tags=allowed_tags)
+    allowed_tags = {'p', 'b', 'i', 'a'}
+    clean_html = nh3.clean(user_html, tags=allowed_tags)
     return render_template('content.html', content=clean_html)
 ```
 
@@ -156,18 +156,20 @@ def show_content():
 ```python
 from flask import session
 from flask_login import LoginManager, login_user, login_required
-import secrets
 
 login_manager = LoginManager()
 login_manager.init_app(app)
+# 'strong' mode causes login_user() to clear the current session and repopulate it,
+# rotating the session cookie and preventing fixation. Flask's SecureCookieSession
+# has no regenerate() method; calling one raises AttributeError at runtime.
 login_manager.session_protection = 'strong'
 
 @app.route('/login', methods=['POST'])
 def login():
     user = authenticate(request.form['username'], request.form['password'])
     if user:
+        # login_user() handles session rotation when session_protection is 'strong'.
         login_user(user)
-        session.regenerate()  # Prevent session fixation
         return redirect(url_for('dashboard'))
     return render_template('login.html', error='Invalid credentials')
 
@@ -407,3 +409,4 @@ def upload_file():
 ## Version History
 
 - **v1.0.0** - Initial Flask security rules
+- **v1.1.0** - Replace archived bleach with nh3; remove fictional session.regenerate() call
