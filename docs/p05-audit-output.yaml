@@ -6256,3 +6256,164 @@ audited_rules:
         with explicit note that INPUT_VALUE and OUTPUT_VALUE are exported by
         default and must be masked if prompts/responses contain PII.
     issues_filed: []
+
+  - path: rules/rag/graph/memgraph/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Cypher parameterization (gqlalchemy)
+      - TLS / encryption
+      - LOAD CSV trust
+      - Memgraph Lab UI auth
+      - MAGE module trust
+      - OWASP LLM coverage in RAG context
+    notes: |
+      6 defects. Entry was missing from YAML due to concurrent commit collision.
+
+      ISSUE 1 — gqlalchemy TLS API wrong: Memgraph(encrypted=True) is a neo4j-driver kwarg; gqlalchemy uses bolt+s:// URI or ca/cert/key SSL kwargs. TLS examples silently ignore encryption.
+      ISSUE 2 — pymgclient native client unmentioned; bolt+s:// URI scheme never shown.
+      ISSUE 3 — LOAD CSV trust: no rule covering SSRF or malicious-data risk from user-supplied CSV URLs.
+      ISSUE 4 — Memgraph Lab UI auth: no rule on Lab default credentials or network isolation for the web UI.
+      ISSUE 5 — OWASP LLM Top 10 2025 refs missing — LLM01:2025 (prompt injection) and LLM02:2025 (insecure output) applicable in a RAG context but absent.
+      ISSUE 6 — MAGE module trust gap: module provenance (directory permissions, C .so signing, Python source vetting) uncovered.
+
+  - path: rules/rag/graph/arangodb/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - python-arango API
+      - OWASP 2025 refs
+      - AQL injection (parameterized bindVars)
+      - Foxx microservices security
+      - Cluster auth + TLS
+      - SmartGraph cross-tenant isolation
+      - Replication trust
+    notes: |
+      All 7 checks cleared. python-arango v8.3.2 API methods all valid; OWASP A01/A02/A03/A05/A07 use :2025; AQL injection uses @@collection/@param bindVars throughout; Foxx covers joi validation + session auth; cluster uses ssl.create_default_context() with CERT_REQUIRED; SmartGraph enforces smart_field tenant filtering; TLS verify=True with check_hostname.
+
+      Note: previous version contained an HTML-comment audit block; removed in cleanup commit.
+
+  - path: rules/rag/graph/neptune/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - boto3 + gremlinpython API
+      - OWASP 2025 refs
+      - IAM SigV4 authentication
+      - VPC isolation
+      - Gremlin/openCypher injection
+      - Cross-account access
+    notes: |
+      4 defects. Entry was missing from YAML.
+
+      ISSUE 1 — OWASP refs use :2021 not :2025 throughout (A03, A09 in rule bodies and Quick Reference).
+      ISSUE 2 — No LLM Top 10 2025 refs: LLM02:2025 and LLM06:2025 applicable for agent-driven graph traversal.
+      ISSUE 3 — No openCypher injection prevention: Neptune supports openCypher alongside Gremlin/SPARQL; parameterized MATCH/RETURN guidance absent.
+      ISSUE 4 — No cross-account IAM access guidance: trust policies and resource-based policies for cross-account Neptune access not covered.
+
+      Passing: boto3 1.35 and gremlinpython 3.8.1 signatures valid; SigV4/IAM auth, VPC-only, encryption-at-rest, CloudWatch audit logging all present.
+
+  - path: rules/rag/graph/tigergraph/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - pyTigerGraph API correctness
+      - GSQL injection prevention
+      - OWASP 2025 refs
+      - UDF security
+      - REST++ endpoint hardening
+    notes: |
+      4 defects. Entry was missing from YAML; rule file contained an appended Audit Log section, removed in cleanup.
+
+      ISSUE 1 (CRITICAL) — conn.setQueryTimeout() does not exist in pyTigerGraph 2.0.4 (AttributeError at runtime). Timeout belongs on runInstalledQuery(timeout=...).
+      ISSUE 2 (CRITICAL) — conn.escapeString() does not exist in pyTigerGraph 2.0.4 (AttributeError at runtime).
+      ISSUE 3 — All OWASP refs use :2021; spec requires :2025. No OWASP LLM Top 10:2025 citations despite ML Workbench rule covering model inversion/membership inference.
+      ISSUE 4 — No UDF security rule (C++ UDF trusted-path enforcement) and no dedicated REST++ endpoint auth hardening rule.
+
+  - path: rules/rag/document-processing/llamaparse/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - llamaparse SDK
+      - OWASP API Top 10 refs
+      - OWASP LLM Top 10 refs
+      - PII redaction before upload
+    notes: |
+      4 defects. Entry was missing from YAML.
+
+      ISSUE 1 — API2:2023 in Secure API Key Management Refs; project standard is API2:2025 (verify against OWASP API Top 10 actual current edition).
+      ISSUE 2 — OWASP LLM01 without :2025 year tag in two rules (Instruction Injection, Output Sanitization).
+      ISSUE 3 — API4:2023 in Rate Limiting Refs; same year qualifier concern as ISSUE 1.
+      ISSUE 4 — No PII redaction before upload rule: material gap for LlamaCloud (third-party SaaS) in regulated deployments.
+
+      Non-blocking: data residency disclosure, API key rotation, markdown href injection bypass in sanitize_for_web, webhook HMAC coverage.
+
+  - path: rules/rag/document-processing/unstructured/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - unstructured-client SDK
+      - OWASP 2025 refs
+      - partition_via_api egress disclosure
+      - MIME type validation
+      - hi_res strategy subprocess sandboxing
+    notes: |
+      7 defects. Entry was missing from YAML; rule file contained an appended Audit Log section, removed in cleanup.
+
+      ISSUE 1 — All OWASP inline refs and bottom References block use :2021; none use :2025.
+      ISSUE 2 — No OWASP LLM Top 10 2025 refs: prompt-injection detection rule cites only CWE-74/A03:2021, not LLM01:2025.
+      ISSUE 3 — partition_via_api not addressed: API Service Security rule covers UnstructuredClient SDK but never discloses third-party SaaS data egress.
+      ISSUE 4 — No MIME-type validation: pipeline routes on file extension only.
+      ISSUE 5 — hi_res strategy spawns ML inference subprocesses (detectron2/layoutparser) on untrusted content; subprocess attack surface not addressed.
+      ISSUE 6 — fast vs hi_res trade-off treated as resource concern only; security dimension (subprocess attack surface) missing.
+      ISSUE 7 — unstructured-client 0.x SDK imports appear stale; shared.PartitionParameters path changed in >=0.26.
+
+  - path: rules/rag/observability/monitoring/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Prometheus metrics cardinality
+      - Log injection
+      - Trace sampling
+      - Prompt injection alerting
+      - Cost / unbounded consumption monitoring
+    notes: |
+      5 defects. Entry was missing from YAML; rule file contained an appended Audit Log section, removed in cleanup.
+
+      ISSUE 1 — No :2025 OWASP or LLM Top 10 refs; all use :2021.
+      ISSUE 2 — Log injection (CRLF/newline) not addressed in log aggregation rule.
+      ISSUE 3 — No trace sampling guidance for high-volume LLM workloads.
+      ISSUE 4 — No alert rule example for prompt-injection-detection signals.
+      ISSUE 5 — No cost/token consumption monitoring rule; LLM10:2025 (Unbounded Consumption) absent.
+
+  - path: rules/rag/vector-managed/weaviate-cloud/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - WCS authentication
+      - Multi-tenancy + tenant isolation
+      - GraphQL query depth/complexity
+      - Per-collection RBAC
+      - Module data egress
+    notes: |
+      3 defects. Entry was missing from YAML; rule file contained an appended Audit Log section, removed in cleanup.
+
+      ISSUE 1 — LLM refs at lines 654 and 1237 missing :2025 suffix.
+      ISSUE 2 — MAX_QUERY_DEPTH = 5 declared but never passed to any query execution path; depth limit is inert.
+      ISSUE 3 — Per-collection RBAC rule uses only application-layer auth_service.user_has_tenant_access; no native Weaviate Configure.Authorization / RBAC API configuration shown.

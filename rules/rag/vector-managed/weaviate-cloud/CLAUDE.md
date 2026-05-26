@@ -1240,27 +1240,3 @@ def insert_object(collection, content):
 
 ---
 
-## Audit Log
-
-```yaml
-- audit: p0.5
-  date: 2026-05-26
-  status: failed
-  checks:
-    weaviate_client_v4: pass
-    owasp_2025_refs: pass
-    llm_2025_refs: fail
-      detail: "OWASP LLM01/LLM02 refs at lines 654 and 1237 missing ':2025' suffix"
-    wcs_api_key_auth: pass
-    wcs_oidc_auth: pass
-    multi_tenancy_tenant_key_required: pass
-    cross_tenant_query_prevention: pass
-    graphql_depth_limit: fail
-      detail: "MAX_QUERY_DEPTH=5 declared (line 281) but never enforced in any query execution path"
-    module_security_text2vec: pass
-    module_security_generative_vendor_passthrough: pass
-    backup_encryption: pass
-    per_collection_rbac: fail
-      detail: "Rule titled 'Multi-Tenancy with RBAC' uses only application-layer auth; no native Weaviate Configure.Authorization / RBAC API usage present"
-  defects: 3
-```

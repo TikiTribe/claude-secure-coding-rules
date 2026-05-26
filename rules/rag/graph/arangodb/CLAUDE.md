@@ -1370,20 +1370,3 @@ These rules provide comprehensive security coverage for ArangoDB deployments in 
 
 Always apply these rules in conjunction with the core RAG security rules (`rules/_core/rag-security.md`) and graph database security rules (`rules/_core/graph-database-security.md`).
 
-<!--
-audit:
-  file: rules/rag/graph/arangodb/CLAUDE.md
-  date: 2026-05-26
-  auditor: p0.5
-  status: passed
-  checks:
-    python_arango_api: passed  # all methods confirmed valid in v8.3.2 (ArangoClient, aql.execute, max_runtime, create_user, update_permission, permissions, create_graph, cluster.health, replication.inventory)
-    owasp_2025_refs: passed  # A01/A02/A03/A05/A07 use :2025; API4:2023 is correct (OWASP API Security Top 10 2023 edition)
-    aql_injection_bindvars: passed  # Rule 1 uses @@collection/@param bind_vars pattern throughout; no string concat in Do examples
-    foxx_microservices: passed  # Rule 5 covers JS server-side execution, input validation via joi, session auth, AQL bind vars in Foxx context
-    cluster_auth: passed  # Rule 9 enforces ssl.create_default_context(), CERT_REQUIRED, TLS endpoint validation in health check
-    smart_graph_tenant_isolation: passed  # Rule 7 enforces smart_field as tenant identifier, tenant_id filter on all traversals
-    tls_configuration: passed  # Rule 3 verify=True on ArangoClient.db(); Rule 9 ssl_context with check_hostname and CERT_REQUIRED
-  notes: db._query usage in Rule 5 is correct -- it is the ArangoDB JavaScript API used inside Foxx services, not the python-arango client
--->
-
