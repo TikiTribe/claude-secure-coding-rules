@@ -2222,3 +2222,99 @@ audited_rules:
       - ISSUE 1: OWASP 2025 category mapping errors on lines 140, 347, 396
       - ISSUE 2: getServerSession/authOptions removed in next-auth v5
       - ISSUE 3: middleware.ts file convention deprecated in Next.js 16
+
+  - path: rules/frontend/angular/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Never Bypass Sanitization
+      - Validate Dynamic URLs
+      - Use HTTP Interceptors for Auth
+      - Validate Form Inputs
+      - Implement Route Guards
+      - Validate API Responses
+      - Configure Content Security Policy
+      - Don't Store Sensitive Data in Client State
+    notes: |
+      Audited all 8 rule sections. Four distinct blocking issues found.
+
+      ISSUE 1 — Never Bypass Sanitization Do example: this.trustedHtml undefined (CODE BUG / CRITICAL)
+        Line 42: the sanitizedHtml getter calls
+          return this.sanitizer.bypassSecurityTrustHtml(this.trustedHtml);
+        The property this.trustedHtml is never declared or assigned anywhere in
+        ContentComponent. TypeScript raises "Property 'trustedHtml' does not exist on
+        type 'ContentComponent'" at compile time. The example fails before any security
+        behavior can be exercised.
+        Additionally, the rule name is "Never Bypass Sanitization" yet the Do example
+        calls bypassSecurityTrustHtml. The comment reads "sanitize first" but
+        bypassSecurityTrustHtml does the opposite — it marks content as trusted and
+        disables Angular's built-in HTML sanitizer entirely. Angular's [innerHTML]
+        binding already sanitizes by default; no bypass call is needed. The correct
+        secure pattern for rendering HTML is to let [innerHTML] sanitize automatically,
+        or call this.sanitizer.sanitize(SecurityContext.HTML, content) which does sanitize.
+        bypassSecurityTrust* is the escape hatch that belongs only in Don't examples
+        unless a concrete trusted-source use case is shown with SecurityContext imported
+        and trustedHtml actually defined.
+        Fix required: declare trustedHtml as a class property; replace bypassSecurityTrustHtml
+        with sanitize(SecurityContext.HTML, ...) and import SecurityContext from @angular/core;
+        update the comment to clarify that [innerHTML] already sanitizes by default and
+        bypassSecurityTrust* intentionally disables that sanitization.
+
+      ISSUE 2 — Use HTTP Interceptors for Auth: csrfService and HTTP_INTERCEPTORS not imported (CODE BUG / CRITICAL)
+        Line 133: this.csrfService.getToken() is called inside AuthInterceptor.intercept().
+        csrfService is not constructor-injected, not typed, and not imported. TypeScript
+        raises "Property 'csrfService' does not exist on type 'AuthInterceptor'" at compile
+        time. Additionally, HTTP_INTERCEPTORS is referenced in the providers snippet (line 142)
+        but is not imported from @angular/common/http. The Do example does not compile.
+        Separately, the class-based HttpInterceptor / HTTP_INTERCEPTORS token pattern is the
+        legacy approach. Angular 15 introduced functional interceptors via withInterceptors()
+        inside provideHttpClient(); Angular 17+ documentation leads with functional interceptors.
+        A strict-level rule should present the current API as primary and note the class-based
+        form as a legacy alternative.
+        Fix required: inject CsrfService in the constructor with a proper type annotation;
+        import HTTP_INTERCEPTORS from @angular/common/http; add a functional interceptor
+        variant using withInterceptors() as the recommended Angular 15+ form.
+
+      ISSUE 3 — Implement Route Guards: CanActivate interface is deprecated (DEPRECATED API)
+        Lines 233-246: the Do example implements the CanActivate interface returning
+        boolean | UrlTree. CanActivate was deprecated in Angular 15.0. Angular 15+ recommends
+        functional guards (e.g., canActivate: [() => inject(AuthService).isAuthenticated()]).
+        The router retains backward compatibility but a security rule teaching route protection
+        should not lead with a deprecated interface as the Do pattern when a simpler, supported
+        replacement exists.
+        Fix required: replace the CanActivate class example with a functional guard using
+        inject(); retain the class-based form as a legacy-compatible alternative with a
+        deprecation notice.
+
+      ISSUE 4 — Validate Dynamic URLs and Validate Form Inputs: *ngIf is superseded syntax (DEPRECATED SYNTAX)
+        Lines 79 and 179: Do examples use *ngIf structural directives. Angular 17 stabilized
+        built-in control flow (@if/@for/@switch) as the recommended syntax replacing *ngIf/*ngFor.
+        The angular.dev documentation and ng generate schematics default to the new control flow
+        in Angular 17+. Teaching *ngIf as the primary Do pattern in a file targeting Angular 17+
+        misaligns with current Angular guidance.
+        Fix required: update *ngIf usages in Do examples to @if{} control flow blocks; note that
+        *ngIf remains valid in NgModule-based applications for backward compatibility.
+
+      Non-blocking observations (no status change):
+      - All Do examples use NgModule-style class components (no standalone: true metadata).
+        Angular 17 made standalone components the default for ng generate component. The examples
+        work in NgModule projects but do not reflect Angular 17+ defaults. Advisory: add
+        standalone: true to component metadata or note that examples target NgModule-based projects.
+      - OWASP A01:2025 (Broken Access Control) is not referenced. The Route Guards Why text
+        (line 271) correctly notes servers must still validate, but a cross-reference to A01:2025
+        would reinforce the boundary between client-side UX guards and server-side authorization.
+        Advisory only.
+      - Validate API Responses Do example (line 288) imports zod without listing it as a
+        prerequisite. A note that zod is a third-party dependency would help readers unfamiliar
+        with the library. Advisory.
+      - CSP meta tag example (line 345) includes style-src 'unsafe-inline'. This is required for
+        Angular global stylesheets in many default build configurations, but a comment advising
+        evaluation of nonce-based CSP for Component styles would add useful nuance for teams that
+        can avoid the blanket unsafe-inline allowance.
+      - Quick Reference table (line 430) uses CWE-922 for both the Auth Interceptor and State
+        Management rules. CWE-312 (Cleartext Storage of Sensitive Information) is more precise
+        for the localStorage-token pattern. CWE-922 is accurate; CWE-312 is the NVD preferred
+        child CWE. Advisory only.
+    issues_filed: []
