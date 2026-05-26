@@ -4344,4 +4344,57 @@ audited_rules:
         primary recommendation for sensitive operations. ISSUE 4 only affects the
         secondary per-session isolation pattern; the primary disable-memory guidance is
         unaffected and correct.
+
+  - path: rules/rag/chunking/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 7 rules + security checklist. Code parses. CWE IDs (CWE-20, CWE-400,
+      CWE-502, CWE-770, CWE-778) are valid and correctly mapped. Three blocking issues found.
+
+      ISSUE 1 — Cross-security-domain chunk boundary leakage: NOT COVERED (MISSING RULE)
+        No rule addresses the case where a chunk boundary falls inside a document set that
+        spans multiple access-control domains (e.g., a splitter processes a concatenated
+        corpus containing both public and confidential documents; overlap or a fixed-size
+        split carries confidential text into a chunk nominally belonging to the public
+        segment). This is distinct from chunk-size DoS and from metadata provenance.
+        The checklist item "chunk boundary leakage across security domains" has no
+        corresponding rule implementation in the file.
+        Fix required: add a rule covering document-level access classification tags that
+        must be carried per chunk, with a guard that rejects splits that would merge
+        content from different access tiers into a single chunk.
+
+      ISSUE 2 — Overlap reveals adjacent confidential data: NOT COVERED (MISSING RULE)
+        The Chunk Size Limits rule validates overlap ratio (≤25%) to prevent resource
+        waste, but no rule addresses the semantic confidentiality risk: a chunk overlap
+        window that spans the boundary between a confidential paragraph and a public
+        paragraph copies confidential text into the adjacent public chunk. The
+        overlap is validated for size, not for what content it carries.
+        Fix required: add guidance (at minimum advisory level) that overlap should be
+        disabled or zeroed at document boundaries when the corpus spans multiple
+        sensitivity tiers, and that overlap windows must not cross access-control
+        segment boundaries.
+
+      ISSUE 3 — PII detection per chunk before embedding: PARTIALLY COVERED (GAP)
+        The NER-Based Chunking Security rule detects and redacts named entity types
+        (PERSON, ORG, GPE). However, PII detection before embedding is a distinct
+        control that applies to all chunking strategies (including RecursiveCharacter and
+        SemanticChunker paths), not only NER-based splits. A regex or dedicated PII
+        scanner (e.g., Presidio, scrubadub) should run on every chunk regardless of the
+        splitter used, before the chunk is passed to the embedding model. No rule covers
+        the general pre-embedding PII scan path.
+        Fix required: add a rule or extend Metadata Preservation to require a PII scan
+        pass on each chunk prior to embedding, independent of whether NER chunking is used.
+
+      Non-blocking observations (no status change):
+      - OWASP LLM01 ref lacks year tag (should be "OWASP LLM01:2023"). Advisory only;
+        does not change status.
+      - langchain_experimental.text_splitter.SemanticChunker is used in the Semantic
+        Boundary Security rule. langchain-experimental is deprecated/unmaintained in
+        LangChain v0.3+ (2024). Advisory; the rule logic is correct but the import path
+        will break for users on current LangChain.
+      - Markdown-aware chunking (preserving code-block boundaries) is absent from both
+        rules and checklist. The checklist item in the audit spec is not present in the
+        file's own checklist. Advisory; no corresponding rule was promised by the file.
     issues_filed: []
