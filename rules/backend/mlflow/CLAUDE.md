@@ -20,6 +20,7 @@ Security rules for MLflow experiment tracking and model registry in Claude Code.
 **Do**:
 ```python
 import mlflow
+import time
 from mlflow.tracking import MlflowClient
 import hashlib
 import os
@@ -66,52 +67,57 @@ def register_secure_model(
     return model_info
 
 # Safe: Load model with verification
-def load_verified_model(model_uri: str, expected_hash: str = None):
-    # Validate model URI format
-    if not model_uri.startswith(("models:/", "runs:/")):
-        raise ValueError("Invalid model URI format")
-
-    # Load model info first
+def load_verified_model(model_name: str, alias: str = "champion"):
     client = MlflowClient()
 
-    if model_uri.startswith("models:/"):
-        parts = model_uri.replace("models:/", "").split("/")
-        model_name = parts[0]
-        version = parts[1] if len(parts) > 1 else "latest"
+    # Resolve the alias to a concrete version before loading.
+    # Use alias-based addressing (MLflow 2.9+). The stage API
+    # (get_latest_versions / current_stage / transition_model_version_stage)
+    # is deprecated since MLflow 2.9 and returns None for alias-managed versions.
+    model_version = client.get_model_version_by_alias(model_name, alias)
 
-        # Get model version details
-        if version == "latest":
-            versions = client.get_latest_versions(model_name)
-            if not versions:
-                raise ValueError(f"No versions found for {model_name}")
-            model_version = versions[0]
-        else:
-            model_version = client.get_model_version(model_name, version)
+    # Confirm the version carries the approval tag written during promotion.
+    # Alias assignment alone does not guarantee the approval workflow ran.
+    tags = model_version.tags
+    if tags.get("approved_by") is None:
+        raise ValueError(
+            f"Model {model_name}@{alias} lacks an approval tag; "
+            "run promote_model() before loading."
+        )
 
-        # Check model stage/tags for approval
-        if model_version.current_stage not in ["Production", "Staging"]:
-            raise ValueError("Model not approved for use")
+    # Build the canonical alias URI.
+    model_uri = f"models:/{model_name}@{alias}"
 
-    # Load the model
+    # WARNING: load_model() deserializes pickle artifacts for most flavors
+    # (sklearn, keras, pytorch, custom pyfunc). Loading from an untrusted or
+    # unverified artifact store is direct RCE — see CVE-2023-30172 and related
+    # advisories that document active exploitation of unprotected MLflow servers
+    # precisely because artifacts are pickle-based. URI validation (above) is
+    # necessary but not sufficient. The artifact store itself must be
+    # access-controlled so that only signed, reviewed artifacts can be written.
+    # Verify source provenance before calling this function in any pipeline that
+    # pulls from an external or shared registry.
     model = mlflow.pyfunc.load_model(model_uri)
 
     return model
 
-# Safe: Model stage transitions with approval
+# Safe: Alias-based promotion with approval tags
+# Replaces the deprecated transition_model_version_stage() API (removed in MLflow 3.x).
 def promote_model(
     model_name: str,
     version: str,
-    target_stage: str,
+    alias: str,          # e.g. "champion", "challenger", "staging"
     approver: str
 ):
     client = MlflowClient()
 
-    # Validate target stage
-    valid_stages = ["Staging", "Production", "Archived"]
-    if target_stage not in valid_stages:
-        raise ValueError(f"Invalid stage: {target_stage}")
+    # Validate alias against the project-approved set
+    valid_aliases = {"staging", "champion", "challenger", "archived"}
+    if alias not in valid_aliases:
+        raise ValueError(f"Invalid alias: {alias}")
 
-    # Add approval tag before transition
+    # Record approval provenance before assigning the alias.
+    # These tags survive alias reassignment and provide an audit trail.
     client.set_model_version_tag(
         model_name, version,
         "approved_by", approver
@@ -121,39 +127,39 @@ def promote_model(
         "approval_time", str(int(time.time()))
     )
 
-    # Transition with archival of previous version
-    client.transition_model_version_stage(
-        model_name, version, target_stage,
-        archive_existing_versions=True
-    )
+    # Assign the alias atomically. All consumers using
+    # models:/<model_name>@<alias> URIs immediately resolve to this version.
+    client.set_registered_model_alias(model_name, alias, version)
 ```
 
 **Don't**:
 ```python
-# VULNERABLE: Load any model URI
+# VULNERABLE: Load any model URI without provenance verification
 model = mlflow.pyfunc.load_model(user_provided_uri)
+# load_model() deserializes pickle — user-controlled URI is direct RCE.
 
-# VULNERABLE: No stage validation
+# VULNERABLE: No alias/approval validation before load
 def deploy_model(model_name: str):
     model = mlflow.pyfunc.load_model(f"models:/{model_name}/latest")
-    # Could be unapproved model
+    # "latest" resolves without any approval check.
 
-# VULNERABLE: Direct production deployment
+# VULNERABLE: Deprecated stage API — returns None in MLflow 2.9+ for
+# alias-managed versions; broken in MLflow 3.x.
 client.transition_model_version_stage(
     model_name, version, "Production"
-    # No approval process
+    # No approval process and deprecated since MLflow 2.9.
 )
 
-# VULNERABLE: Pickle serialization
+# VULNERABLE: Pickle serialization stored as a raw artifact
 import pickle
 with mlflow.start_run():
     pickle.dump(model, open("model.pkl", "wb"))
-    mlflow.log_artifact("model.pkl")  # RCE risk
+    mlflow.log_artifact("model.pkl")  # RCE risk on any consumer load
 ```
 
-**Why**: Uncontrolled model loading enables supply chain attacks through poisoned models. No approval process allows untested models in production.
+**Why**: Uncontrolled model loading enables supply chain attacks through poisoned models. Most MLflow flavors serialize artifacts as pickle; loading from an untrusted or access-uncontrolled artifact store is direct RCE (CVE-2023-30172). No approval workflow allows untested models in production. The deprecated stage API silently returns None for alias-managed versions in MLflow 2.9+ and is removed in MLflow 3.x.
 
-**Refs**: OWASP LLM05, CWE-502, MITRE ATLAS AML.T0010
+**Refs**: OWASP LLM03:2025 (Supply Chain), CWE-502, MITRE ATLAS AML.T0010
 
 ---
 
@@ -361,13 +367,15 @@ def download_verified_artifact(
 
 # Safe: Artifact access control via MLflow server
 """
-# mlflow server configuration
+# --app-name basic-auth enables built-in authentication.
+# IMPORTANT: unauthenticated mode is the default in MLflow 2.x — this flag
+# must be set explicitly. CVE-2023-30172 targeted servers running without it.
 mlflow server \
     --backend-store-uri postgresql://... \
     --default-artifact-root s3://mlflow-artifacts/ \
     --host 127.0.0.1 \
     --port 5000 \
-    --app-name basic-auth  # Require authentication
+    --app-name basic-auth
 """
 
 # Safe: Signed URLs for artifact access
@@ -411,15 +419,15 @@ def download_artifact(run_id: str, path: str):
 artifact_path = client.download_artifacts(run_id, "script.py")
 exec(open(artifact_path).read())  # RCE
 
-# VULNERABLE: Public artifact access
+# VULNERABLE: Public artifact access — unauthenticated mode is the default
 """
 mlflow server \
-    --host 0.0.0.0 \
-    # No authentication
+    --host 0.0.0.0
+    # No --app-name basic-auth flag; server is open to the network by default.
 """
 ```
 
-**Why**: Artifacts may contain sensitive model weights, training data, or configuration. Improper access control enables data theft.
+**Why**: Artifacts may contain sensitive model weights, training data, or configuration. Improper access control enables data theft. CVE-2023-30172 exploited the default unauthenticated posture of MLflow servers exposed to the network.
 
 **Refs**: CWE-22, CWE-311, OWASP A01:2025
 
@@ -437,7 +445,8 @@ mlflow server \
 ```python
 # Safe: MLflow server with authentication
 """
-# Start with authentication
+# --app-name basic-auth is NOT the default. Omitting it starts the server
+# with no authentication — the configuration exploited by CVE-2023-30172.
 mlflow server \
     --backend-store-uri postgresql://user:password@host/mlflow \
     --default-artifact-root s3://secure-bucket/artifacts \
@@ -490,6 +499,9 @@ db_uri = (
 )
 
 # Safe: Kubernetes deployment with security
+# Pin the image tag to a specific digest or version — never use :latest,
+# which is mutable and breaks reproducibility guarantees required by the
+# containers/docker rules.
 """
 apiVersion: apps/v1
 kind: Deployment
@@ -503,7 +515,7 @@ spec:
         runAsUser: 1000
       containers:
       - name: mlflow
-        image: mlflow-server:latest
+        image: ghcr.io/mlflow/mlflow:v2.14.3  # pin to a specific release tag
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -529,7 +541,7 @@ spec:
 mlflow server \
     --host 0.0.0.0 \
     --port 5000
-    # No authentication
+    # No --app-name basic-auth; unauthenticated by default (CVE-2023-30172)
 """
 
 # VULNERABLE: Hardcoded credentials
@@ -551,6 +563,12 @@ mlflow server \
     --backend-store-uri sqlite:///mlflow.db
     # Not suitable for multi-user production
 """
+
+# VULNERABLE: Mutable image tag
+"""
+image: mlflow-server:latest
+# :latest resolves to a different image on each pull; breaks supply chain integrity.
+"""
 ```
 
 **Why**: Exposed MLflow servers allow unauthorized access to models, experiments, and potentially sensitive training data.
@@ -563,7 +581,7 @@ mlflow server \
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Secure model registration and loading | strict | OWASP LLM05, CWE-502 |
+| Secure model registration and loading | strict | OWASP LLM03:2025, CWE-502 |
 | Protect experiment data and parameters | strict | CWE-200, CWE-532 |
 | Secure artifact storage and access | strict | CWE-22, CWE-311 |
 | Secure MLflow server configuration | strict | OWASP A01:2025, CWE-306 |
@@ -572,4 +590,5 @@ mlflow server \
 
 ## Version History
 
+- **v2.0.0** - Fix stale OWASP LLM ref (LLM05→LLM03:2025); replace deprecated stage API with alias-based model management; add pickle/RCE warning to load_model(); clarify --app-name basic-auth is not default; pin Kubernetes image tag
 - **v1.0.0** - Initial MLflow security rules

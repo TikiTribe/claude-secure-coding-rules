@@ -128,7 +128,7 @@ def load_any_model(path):
 
 **Why**: Unrestricted model repositories allow loading malicious models, excessive resource consumption, or arbitrary code execution through unsafe serialization formats.
 
-**Refs**: OWASP LLM05, CWE-502, CWE-400
+**Refs**: OWASP LLM03:2025, CWE-502, CWE-400
 
 ---
 
@@ -178,7 +178,7 @@ optimization {
 # docker-compose.yml
 services:
   triton:
-    image: nvcr.io/nvidia/tritonserver:23.10-py3
+    image: nvcr.io/nvidia/tritonserver:24.05-py3
     deploy:
       resources:
         limits:
@@ -395,7 +395,7 @@ ensemble_scheduling {
 
 **Why**: Ensemble pipelines can have unvalidated data flow between models, creating injection points or enabling resource exhaustion through cascading effects.
 
-**Refs**: OWASP LLM04, CWE-20, CWE-400
+**Refs**: OWASP LLM03:2025, CWE-20, CWE-400
 
 ---
 
@@ -429,16 +429,12 @@ tritonserver \\
     --allow-cpu-metrics=false
 """
 
-# Safe: Python client with authentication
+# Safe: Python client with mTLS — pass cert paths directly to InferenceServerClient
 import tritonclient.grpc as grpcclient
-import ssl
 
 def create_secure_client(url: str, cert_path: str):
-    # Load certificates
-    ssl_context = grpcclient.ssl_context_for_root_certs(
-        cert_path + "/ca.crt"
-    )
-
+    # InferenceServerClient accepts PEM-encoded bytes for mTLS directly;
+    # no separate ssl context object is needed.
     client = grpcclient.InferenceServerClient(
         url=url,
         ssl=True,
@@ -450,7 +446,7 @@ def create_secure_client(url: str, cert_path: str):
     return client
 
 # Safe: Request validation
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 import numpy as np
 
 class InferenceRequest(BaseModel):
@@ -458,14 +454,16 @@ class InferenceRequest(BaseModel):
     inputs: dict
     request_id: str
 
-    @validator("model_name")
+    @field_validator("model_name")
+    @classmethod
     def validate_model(cls, v):
         allowed = ["classifier", "detector", "embedder"]
         if v not in allowed:
             raise ValueError(f"Model not allowed: {v}")
         return v
 
-    @validator("inputs")
+    @field_validator("inputs")
+    @classmethod
     def validate_inputs(cls, v):
         for name, data in v.items():
             arr = np.array(data)
@@ -610,7 +608,7 @@ class UnsafeModel:
 
 **Why**: Custom backends run with server privileges and can access system resources, making input validation and sandboxing critical.
 
-**Refs**: CWE-94, CWE-78, OWASP LLM06
+**Refs**: CWE-94, CWE-78, OWASP LLM05:2025
 
 ---
 
@@ -618,9 +616,9 @@ class UnsafeModel:
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Secure model repository configuration | strict | OWASP LLM05, CWE-502 |
+| Secure model repository configuration | strict | OWASP LLM03:2025, CWE-502 |
 | Enforce GPU and memory isolation | strict | CWE-400, CWE-770 |
-| Validate ensemble pipeline security | strict | OWASP LLM04, CWE-20 |
+| Validate ensemble pipeline security | strict | OWASP LLM03:2025, CWE-20 |
 | Secure gRPC and HTTP endpoints | strict | OWASP A01:2025, CWE-306 |
 | Sandbox custom backend code | strict | CWE-94, CWE-78 |
 
@@ -628,4 +626,5 @@ class UnsafeModel:
 
 ## Version History
 
+- **v2.0.0** - Updated OWASP LLM references to 2025 numbering; fixed gRPC client API; updated Docker image tag to 24.x; migrated to Pydantic v2 field_validator
 - **v1.0.0** - Initial Triton Inference Server security rules
