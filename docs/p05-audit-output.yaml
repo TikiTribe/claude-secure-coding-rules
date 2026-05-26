@@ -4445,3 +4445,239 @@ audited_rules:
       - APOC CVE surface: rule correctly identifies dangerous procedure categories and
         requires an explicit allowlist. Addresses the CVE class adequately.
     issues_filed: []
+
+  - path: rules/rag/_core/retrieval-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited all 7 rules: Chunk Sanitization, Context Stuffing Prevention, Semantic Bypass
+      Detection, Score Manipulation Prevention, Membership Inference Protection, Hybrid Search
+      Security, Reranker Output Validation. Six issues found (4 Critical, 2 Major).
+
+      ISSUE 1 — OWASP refs missing :2025 suffix throughout (CRITICAL / STANDARDS VERSION)
+        Every OWASP LLM reference in the file uses bare "OWASP LLM01 (Prompt Injection)" with
+        no year suffix. The project standard requires :2025 to distinguish the current OWASP
+        LLM Top 10 2025 from the retired 2023 v1.1. Lines 155, 157, 274 cite "OWASP LLM01"
+        without :2025.
+        Fix required: append :2025 to all OWASP LLM refs (e.g., "OWASP LLM01:2025").
+
+      ISSUE 2 — RAG poisoning via crafted documents not mapped to LLM03:2025 or LLM08:2025
+        (CRITICAL / MISSING REQUIRED COVERAGE)
+        The audit checklist requires explicit citation of LLM03:2025 (Training Data Poisoning)
+        and LLM08:2025 (Vector and Embedding Weaknesses) for the RAG document-poisoning vector.
+        Neither appears anywhere in the file. The Context Stuffing rule covers the attack
+        (flooding index with malicious docs) but omits the governing OWASP categories. The
+        Chunk Sanitization Why section cites only LLM01; poisoned-document retrieval also falls
+        under LLM08:2025 (vector store integrity).
+        Fix required: add "OWASP LLM03:2025 (Training Data Poisoning), OWASP LLM08:2025
+        (Vector and Embedding Weaknesses)" to Refs of Context Stuffing Prevention and Chunk
+        Sanitization rules.
+
+      ISSUE 3 — No rule for ACL enforcement at retrieval time (CRITICAL / MISSING COVERAGE)
+        The audit checklist requires a rule enforcing access-control lists at retrieval time,
+        not as a post-retrieval filter. No such rule exists. Post-retrieval filtering is a
+        known weak pattern: documents outside a users ACL are fetched and scored before being
+        dropped, creating timing-attack and information-leakage surfaces. The correct pattern
+        pushes tenant/user context into the vector DB query as a metadata filter so
+        non-authorized documents are never fetched.
+        Fix required: add a new rule "ACL Enforcement at Retrieval Time" (strict) showing
+        metadata filter injection into the vector DB query (e.g., filter={"tenant_id":
+        user.tenant_id}) with a Don't example showing post-retrieval ACL filtering.
+
+      ISSUE 4 — No rule for cross-tenant retrieval isolation (CRITICAL / MISSING COVERAGE)
+        The audit checklist requires a dedicated rule for cross-tenant retrieval isolation.
+        None exists. The Membership Inference rule covers query-rate attacks per user_id but
+        not the structural isolation of separate tenant namespaces or collections in the vector
+        store. Without this, a misconfigured query silently crosses tenant boundaries.
+        Fix required: add a rule "Cross-Tenant Retrieval Isolation" (strict) covering
+        per-tenant namespace or collection separation, mandatory tenant_id filter injection,
+        and a validation step that asserts all returned chunk metadata matches the requesting
+        tenant before any content is used.
+
+      ISSUE 5 — No rule for query-side injection into vector DB queries (MAJOR / MISSING
+        COVERAGE)
+        The audit checklist requires a rule covering query-side injection into vector DB
+        queries. Chunk Sanitization addresses injection payloads in retrieved content
+        (document-side), but no rule addresses user-supplied query strings that contain
+        metadata filter syntax or operator keywords (e.g., Qdrant filter JSON, Weaviate
+        GraphQL operators, Pinecone namespace overrides) injected into the vector DB query
+        itself. This is the retrieval-layer analog of SQL injection.
+        Fix required: add a rule "Vector DB Query Injection Prevention" (strict) showing
+        parameterized or allowlisted metadata filter construction, with a Don't example of
+        directly interpolating user input into filter dicts or query strings.
+
+      ISSUE 6 — Regex denylist presented as primary strict injection defense (MAJOR /
+        DEPRECATED MITIGATION)
+        The Chunk Sanitization rule (level: strict) presents INJECTION_PATTERNS, a regex
+        denylist, as the primary control. OWASP LLM01:2025 guidance explicitly states that
+        denylist and pattern-matching approaches are insufficient as a primary defense against
+        prompt injection because adversarial rephrasing, encoding variations, and novel attack
+        strings bypass them. The files encoded_attack pattern only matches base64/hex/rot13
+        prefixed strings, missing arbitrary encoding schemes.
+        Fix required: add a Why note that the regex denylist is a secondary signal only;
+        primary defenses are structural separation (system/user context delimiters, separate
+        turn markers) and LLM-side output validation. Retain the sanitizer as defense-in-depth
+        but document its limitations.
+
+      Non-blocking observations (no status change):
+      - CWE-94, CWE-693, CWE-345, CWE-20: all valid IDs correctly mapped to rule contexts.
+      - MITRE ATLAS AML.T0043 (Data Poisoning) and AML.T0024 (Membership Inference):
+        plausible technique IDs; ATLAS live site inaccessible for confirmation but consistent
+        with prior audit decisions treating these as unverifiable-but-retained.
+      - MITRE ATLAS AML.T0051 (LLM Prompt Injection) in line 157: same technique cited in
+        prior passing files; retained as unverifiable-but-plausible.
+      - All 7 rules Python code parses correctly given correct imports. No undefined methods,
+        broken validators, or no-op resource limits found.
+      - ScoreManipulationDetector score_history can grow unbounded between 10000-cap
+        truncation points (minor implementation concern, not a security issue).
+    issues_filed: []
+
+  - path: rules/rag/_core/vector-store-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Connection Security
+      - Multi-Tenant Namespace Isolation
+      - Query Injection Prevention
+      - Index Access Control
+      - Data Lineage and Provenance
+      - Backup Encryption
+      - Vector Distance Attack Prevention
+      - Cross-Tenant Query Filtering
+    notes: |
+      Audited all 8 rule sections. Code parses correctly throughout; no broken imports,
+      missing methods, or undefined variables. OWASP 2025 refs use :2025 qualifiers
+      correctly (A01, A02, A03 all present). CWE IDs are all valid: CWE-319, CWE-798,
+      CWE-284, CWE-863, CWE-89, CWE-943, CWE-732, CWE-778, CWE-779, CWE-311, CWE-312,
+      CWE-200. No deprecated mitigations. No self-contradictions.
+
+      Four defects found — two blocking, two coverage gaps.
+
+      ISSUE 1 — Fake MITRE ATLAS technique ID (BLOCKING / STANDARDS REF)
+        The Vector Distance Attack Prevention Refs line cites "MITRE ATLAS ML04".
+        MITRE ATLAS does not use an ML04 identifier. ATLAS techniques use the AML.T
+        prefix (e.g., AML.T0024, AML.T0025 for inversion/membership inference).
+        "ML04" is not a valid ATLAS technique ID; no technique with this identifier
+        exists in the ATLAS matrix. This mirrors the fake "AML.T0000" class of defect
+        found in _core/ and backend/ files.
+        Fix required: replace "MITRE ATLAS ML04" with a valid ATLAS technique ID
+        applicable to embedding inversion and membership inference attacks. If the
+        exact ID cannot be confirmed, note "(ATLAS technique ID unverified)" per
+        prior audit convention rather than citing a fabricated identifier.
+
+      ISSUE 2 — Data Lineage rule missing OWASP ref (BLOCKING / STANDARDS REF)
+        The Data Lineage and Provenance rule Refs line cites only GDPR Article 30,
+        CCPA, CWE-778, and CWE-779. No OWASP reference is present. Data lineage and
+        access audit logging map to OWASP A09:2025 (Security Logging and Monitoring
+        Failures). Omitting the OWASP mapping is inconsistent with all other rules in
+        this file and the wider corpus standard (every rule includes at least one
+        OWASP ref).
+        Fix required: add "OWASP A09:2025 (Security Logging and Monitoring Failures)"
+        to the Data Lineage rule Refs line.
+
+      COVERAGE GAP 1 — Missing LLM08:2025 (Vector and Embedding Weaknesses) citation
+        The file covers vector store security but cites no OWASP LLM Top 10 reference
+        anywhere in the document. LLM08:2025 is precisely "Vector and Embedding
+        Weaknesses" — the canonical OWASP entry for this domain. Its absence means
+        the file is unlinked from the LLM-specific standard it most directly addresses.
+        Fix required: add "OWASP LLM08:2025 (Vector and Embedding Weaknesses)" to the
+        Refs lines of at minimum the Multi-Tenant Namespace Isolation, Cross-Tenant
+        Query Filtering, and Vector Distance Attack Prevention rules. The Quick
+        Reference table should also note the LLM08:2025 mapping.
+
+      COVERAGE GAP 2 — No rules for rate limiting, admin API hardening, or replication
+        trust boundaries (MISSING COVERAGE)
+        The audit checklist requires rate limiting on similarity search endpoints, admin
+        API hardening, and replication trust boundary controls. None of the eight rules
+        address these attack surfaces. Similarity search ANN queries are computationally
+        expensive and trivially exploitable for DoS; no rate-limiting rule exists. Admin
+        APIs (Milvus management port, Qdrant collections admin, pgvector superuser
+        grants) require hardening; no admin API rule exists. Replication channels (Milvus
+        etcd/pulsar, Qdrant peer sync, pgvector streaming replication) cross trust
+        boundaries and require mutual TLS; no replication trust rule exists.
+        Fix required: add at minimum a warning-level rule covering rate limiting on
+        query endpoints and an advisory-level rule covering admin API and replication
+        channel hardening.
+
+      Non-blocking observations (no status change):
+      - enforce_retention() uses a dummy zero-vector query to find expired documents.
+        Zero-vector distance ordering is arbitrary and may miss documents in some index
+        configurations. Not a security defect; a documentation gap only.
+      - backup_milvus_collection() writes a cleartext temp file to /tmp before
+        encrypting. The os.remove() cleanup mitigates persistence, but mkstemp() with
+        mode 0o600 would be stronger. Non-blocking; recommend as fix-opportunity note.
+      - Fernet symmetric key loaded from BACKUP_ENCRYPTION_KEY env var with no
+        key-rotation mechanism shown. Non-blocking at advisory level.
+    issues_filed: []
+
+  - path: rules/rag/embeddings/api-embeddings/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 10 rules covering OpenAI, Cohere, Voyage AI, and Jina embedding APIs.
+      Code parses. CWE IDs are valid (CWE-798, CWE-532, CWE-1188, CWE-131, CWE-704,
+      CWE-400, CWE-754, CWE-770, CWE-404, CWE-20 -- all correctly mapped). No
+      self-contradictions found. Five issues found:
+
+      ISSUE 1 -- OWASP LLM refs missing :2025 version qualifier (STANDARDS NON-CONFORMANCE / BLOCKING)
+        All nine OWASP LLM citations (LLM04, LLM06, LLM10) appear without the :2025
+        suffix required by the p0.5 audit spec. Affected lines: 138 (LLM06), 260 (LLM04),
+        392 (LLM10), 510 (LLM04), 652 (LLM04), 796 (LLM04), 977 (LLM04), 1157 (LLM10),
+        1349 (LLM10), 1523 (LLM04). Each must read OWASP LLM04:2025, OWASP LLM06:2025,
+        or OWASP LLM10:2025 respectively.
+        Fix required: append :2025 to all OWASP LLM references throughout the file.
+
+      ISSUE 2 -- text-embedding-ada-002 listed as supported without deprecation warning (DEPRECATED API / BLOCKING)
+        Line 167 lists text-embedding-ada-002 in the MODELS dict as a currently supported
+        model alongside text-embedding-3-small and text-embedding-3-large. Line 1185
+        prices it in the cost tracker. OpenAI deprecated text-embedding-ada-002 in January
+        2024 and retired it in April 2025. Presenting it as a peer option without a
+        deprecation warning instructs users to configure a model that no longer accepts
+        requests, causing silent production failures.
+        Fix required: remove text-embedding-ada-002 from MODELS and PRICING, or add a
+        clearly marked deprecation note and migration guidance to text-embedding-3-small.
+
+      ISSUE 3 -- PII redaction before third-party API transmission absent (COVERAGE GAP / BLOCKING)
+        No rule or pattern addresses PII detection and redaction before text is sent to
+        OpenAI, Cohere, Voyage, or Jina. Sending PII to third-party embedding APIs
+        creates regulatory exposure (GDPR Art. 46 cross-border transfers, CCPA, HIPAA
+        for health data) and vendor data-retention risk. This gap is specific to
+        API-based embeddings; self-hosted models do not share it.
+        Fix required: add a strict-level rule covering PII scanning (presidio, scrubadub,
+        or equivalent) before batch submission, referencing CWE-359, OWASP LLM06:2025,
+        and applicable privacy regulations.
+
+      ISSUE 4 -- Per-tenant API key isolation absent (COVERAGE GAP / BLOCKING)
+        No rule addresses multi-tenant deployments where different customers must use
+        isolated API keys to prevent cross-tenant cost attribution, rate-limit sharing,
+        or data commingling at the provider level. The API Key Security rule covers
+        single-org scoping (OPENAI_ORG_ID) but not per-tenant key mapping. In SaaS RAG
+        systems a shared key lets one tenant's abuse exhaust another's TPM quota or
+        produce cross-tenant billing.
+        Fix required: add a warning-level rule covering per-tenant key stores, referencing
+        CWE-732, OWASP LLM06:2025.
+
+      ISSUE 5 -- Data residency and vendor data retention policies absent (COVERAGE GAP / BLOCKING)
+        No rule addresses: (a) whether providers store or train on submitted text
+        (OpenAI zero-retention API policy vs. opt-in training data use; Cohere and Voyage
+        retention terms); (b) cross-border data transfer considerations when embedding PII
+        or regulated data via non-domestic API endpoints; (c) DPA (Data Processing
+        Agreement) requirements. For regulated industries using Voyage domain models
+        (voyage-law-2, voyage-finance-1) this is not optional guidance.
+        Fix required: add an advisory-level rule covering vendor data retention review,
+        DPA requirements, and endpoint geography selection, referencing GDPR Art. 28,
+        NIST AI RMF GV-6.2, and applicable provider documentation.
+
+      Non-blocking observations:
+      - load_api_key_from_vault (lines 104-113): bare except silently returns empty string
+        on vault failure, deferring the error to the client constructor. Soft issue; does
+        not change status.
+      - NIST AI RMF refs use informal labels rather than function/category codes.
+        Consistent with prior passing audits; not a blocker.
+      - CWE-404 on Long Context Security (line 977) is tangential to chunking; CWE-119
+        would be tighter. Not blocking.
+    issues_filed: []
