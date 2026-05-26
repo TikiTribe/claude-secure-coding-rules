@@ -603,3 +603,44 @@ register_query = """
 **Why**: Replication streams contain all graph data and transactions. Unencrypted replication exposes data to network sniffing. Unauthorized replica registration allows attackers to exfiltrate data or inject malicious transactions. Replication must use internal networks with TLS.
 
 **Refs**: CWE-319 (Cleartext Transmission), CWE-306 (Missing Authentication), OWASP A05:2025 (Security Misconfiguration)
+
+---
+
+<!-- audit_trail:
+- file: rules/rag/graph/memgraph/CLAUDE.md
+  date: 2026-05-26
+  auditor: p0.5
+  status: failed
+  defects:
+    - id: D1
+      description: >
+        gqlalchemy TLS API incorrect. Memgraph(encrypted=True) is not a valid
+        gqlalchemy constructor kwarg; that pattern belongs to the neo4j driver.
+        gqlalchemy uses bolt+s:// URI or ca/cert/key SSL kwargs. Multiple rules
+        show encrypted=True on gqlalchemy connections, which silently ignores TLS.
+    - id: D2
+      description: >
+        pymgclient not mentioned. The file covers gqlalchemy and the neo4j driver
+        but omits pymgclient, the other supported native Memgraph Python client.
+        bolt+s:// TLS URI scheme is also absent from all application-level examples.
+    - id: D3
+      description: >
+        LOAD CSV trust gap. No rule covers LOAD CSV with untrusted or
+        user-supplied URLs, which can cause SSRF or load malicious data.
+    - id: D4
+      description: >
+        Memgraph Lab UI auth not covered. No rule addresses Lab default
+        credentials, unauthenticated Lab exposure, or network-isolation requirements
+        for the web UI.
+    - id: D5
+      description: >
+        OWASP LLM Top 10 2025 refs missing. No rule references the LLM Top 10;
+        for a RAG-context file prompt-injection (LLM01:2025) and insecure output
+        handling (LLM02:2025) are directly applicable.
+    - id: D6
+      description: >
+        MAGE module trust gap. The MAGE rule covers resource limits but not
+        module provenance: --query-modules-directory permissions, C shared-library
+        signing, Python module source vetting, and restricting which modules load
+        in production are all absent.
+-->
