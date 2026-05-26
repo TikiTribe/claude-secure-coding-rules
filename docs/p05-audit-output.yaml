@@ -4069,7 +4069,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/ray-serve/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
