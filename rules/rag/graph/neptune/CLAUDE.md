@@ -162,7 +162,92 @@ def traverse_unsafe(g, start_id: str, edge: str):
 
 **Why**: Gremlin injection allows attackers to modify graph traversals, potentially dropping vertices/edges, exfiltrating data, or causing denial of service. Neptune's Gremlin endpoint executes submitted strings as code. Parameterized traversals using the Python API bind values safely without interpretation.
 
-**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2021 (Injection), CWE-94 (Code Injection)
+**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2025 (Injection), CWE-94 (Code Injection)
+
+---
+
+## Rule: openCypher Injection Prevention
+
+**Level**: `strict`
+
+**When**: Building openCypher queries against Neptune with user input
+
+**Do**: Use parameterized MATCH/RETURN statements with named parameters; never interpolate user values into the query string
+
+```python
+import boto3
+import json
+from typing import Any
+
+def find_document_nodes(session, endpoint: str, doc_id: str, max_hops: int = 2):
+    """Parameterized MATCH query — doc_id never touches the query string."""
+    # Clamp depth to prevent unbounded traversal (LLM06:2025 guard)
+    max_hops = min(max(1, max_hops), 4)
+
+    query = (
+        "MATCH (d:Document {id: $docId})-[*1..$hops]-(related) "
+        "RETURN related LIMIT 100"
+    )
+    # Parameters are transmitted as a separate JSON object, not interpolated
+    params = {"docId": doc_id, "hops": max_hops}
+
+    # Neptune openCypher HTTP endpoint via boto3 neptunedata client
+    client = session.client("neptunedata", endpoint_url=f"https://{endpoint}:8182")
+    response = client.execute_open_cypher_query(
+        openCypherQuery=query,
+        parameters=json.dumps(params)
+    )
+    return response.get("results", [])
+
+def search_entities_by_label(
+    session, endpoint: str, label: str, property_name: str, search_value: str
+):
+    """Whitelist node labels and property names; bind the search value as a parameter."""
+    allowed_labels = {"Document", "User", "Organization", "Concept"}
+    allowed_properties = {"title", "name", "category", "status"}
+
+    if label not in allowed_labels:
+        raise ValueError(f"Disallowed label: {label}")
+    if property_name not in allowed_properties:
+        raise ValueError(f"Disallowed property: {property_name}")
+    if len(search_value) > 256:
+        raise ValueError("Search value too long")
+
+    # label and property_name come from whitelists — safe to interpolate.
+    # search_value is a bound parameter — never interpolated.
+    query = f"MATCH (n:{label}) WHERE n.{property_name} CONTAINS $val RETURN n LIMIT 50"
+    params = {"val": search_value}
+
+    client = session.client("neptunedata", endpoint_url=f"https://{endpoint}:8182")
+    response = client.execute_open_cypher_query(
+        openCypherQuery=query,
+        parameters=json.dumps(params)
+    )
+    return response.get("results", [])
+```
+
+**Don't**: Concatenate user values into openCypher query strings
+
+```python
+# VULNERABLE: Direct interpolation — attacker controls graph traversal
+def find_unsafe(session, endpoint, doc_id: str):
+    # Attacker input: "x') MATCH (n) DETACH DELETE n //"
+    query = f"MATCH (d:Document {{id: '{doc_id}'}}) RETURN d"
+    # Injection deletes the entire graph
+    client = session.client("neptunedata", endpoint_url=f"https://{endpoint}:8182")
+    client.execute_open_cypher_query(openCypherQuery=query)
+
+# VULNERABLE: Unvalidated label from user input
+def search_unsafe(session, endpoint, label: str, value: str):
+    query = f"MATCH (n:{label} {{name: '{value}'}}) RETURN n"
+    # Attacker supplies label "x}) RETURN 1 UNION MATCH (n" to alter query structure
+    client = session.client("neptunedata", endpoint_url=f"https://{endpoint}:8182")
+    client.execute_open_cypher_query(openCypherQuery=query)
+```
+
+**Why**: Neptune accepts openCypher alongside Gremlin and SPARQL. The `execute_open_cypher_query` API accepts a `parameters` argument that binds values server-side. Skipping it and interpolating user input directly into the query string lets attackers alter MATCH patterns, inject DETACH DELETE, or exfiltrate data across node labels. Agent-driven RAG traversals (LLM06:2025) amplify the risk because the LLM controls query construction autonomously.
+
+**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2025 (Injection), LLM06:2025 (Excessive Agency), AWS Neptune openCypher Developer Guide
 
 ---
 
@@ -281,7 +366,7 @@ def filter_unsafe(sparql, property_value: str):
 
 **Why**: SPARQL injection allows attackers to modify queries to extract unauthorized data, enumerate the entire graph, or bypass access controls. Unescaped string literals and unvalidated URIs enable query structure manipulation. Proper escaping and URI validation prevent interpretation of special characters.
 
-**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2021 (Injection), CWE-89 (SQL Injection)
+**Refs**: CWE-943 (NoSQL Injection), OWASP A03:2025 (Injection), CWE-89 (SQL Injection)
 
 ---
 
@@ -427,6 +512,7 @@ ec2.authorize_security_group_ingress(
 import boto3
 import json
 from datetime import datetime, timedelta
+from typing import List
 
 def enable_neptune_audit_logging(cluster_identifier: str, s3_bucket: str):
     """Enable Neptune audit logs with S3 export."""
@@ -542,9 +628,184 @@ neptune.modify_db_cluster(
 # Cannot detect: Who modified cluster settings, IAM changes
 ```
 
-**Why**: Without audit logging, security incidents cannot be detected, investigated, or proven for compliance. Neptune audit logs capture query patterns, and CloudTrail captures API calls for configuration changes. Both are essential for detecting injection attempts, unauthorized access, data exfiltration, and meeting compliance requirements (SOC2, HIPAA, GDPR).
+**Why**: Without audit logging, security incidents cannot be detected, investigated, or proven for compliance. Neptune audit logs capture query patterns, and CloudTrail captures API calls for configuration changes. Both are essential for detecting injection attempts, unauthorized access, data exfiltration, and meeting compliance requirements (SOC2, HIPAA, GDPR). In RAG pipelines, audit logs are the primary control for detecting sensitive data leakage through graph traversal (LLM02:2025).
 
-**Refs**: CWE-778 (Insufficient Logging), OWASP A09:2021 (Security Logging and Monitoring Failures), AWS Neptune Audit Logs
+**Refs**: CWE-778 (Insufficient Logging), OWASP A09:2025 (Security Logging and Monitoring Failures), LLM02:2025 (Sensitive Information Disclosure), AWS Neptune Audit Logs
+
+---
+
+## Rule: Cross-Account IAM Access for Neptune
+
+**Level**: `strict`
+
+**When**: Granting another AWS account access to a Neptune cluster (shared analytics, hub-and-spoke RAG pipelines, multi-tenant environments)
+
+**Do**: Use IAM role trust policies scoped to a specific cross-account role ARN; restrict Neptune permissions to the exact cluster ARN; use short-lived STS tokens
+
+```python
+import boto3
+import json
+
+def create_cross_account_neptune_role(
+    trusted_account_id: str,
+    trusted_role_name: str,
+    cluster_arn: str,
+    current_account_id: str,
+) -> str:
+    """
+    Create an IAM role in the Neptune-owning account that the trusted account
+    can assume. Returns the new role ARN.
+
+    Trust is scoped to a specific role in the trusted account, not the entire
+    account, to enforce least-privilege cross-account access.
+    """
+    iam = boto3.client("iam")
+
+    # Trust policy: only the named role in the named account may assume this role.
+    # aws:PrincipalArn in the Condition ensures the exact role is matched even
+    # when the trusted account later adds more roles.
+    trust_policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowCrossAccountAssume",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": f"arn:aws:iam::{trusted_account_id}:role/{trusted_role_name}"
+                },
+                "Action": "sts:AssumeRole",
+                "Condition": {
+                    "StringEquals": {
+                        "aws:PrincipalArn": (
+                            f"arn:aws:iam::{trusted_account_id}:role/{trusted_role_name}"
+                        )
+                    }
+                }
+            }
+        ]
+    }
+
+    # Permission policy: read-only Neptune data-plane actions, scoped to one cluster.
+    permission_policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "NeptuneReadOnly",
+                "Effect": "Allow",
+                "Action": [
+                    "neptune-db:ReadDataViaQuery",
+                    "neptune-db:GetQueryStatus",
+                    "neptune-db:CancelQuery",
+                ],
+                # Scope to the exact cluster ARN — never use "*"
+                "Resource": cluster_arn,
+            }
+        ]
+    }
+
+    role_name = f"neptune-cross-acct-{trusted_account_id[:8]}"
+
+    iam.create_role(
+        RoleName=role_name,
+        AssumeRolePolicyDocument=json.dumps(trust_policy),
+        Description=(
+            f"Cross-account Neptune read access for account {trusted_account_id}"
+        ),
+        MaxSessionDuration=3600,  # 1 hour — short-lived tokens
+        Tags=[
+            {"Key": "TrustedAccount", "Value": trusted_account_id},
+            {"Key": "ClusterArn", "Value": cluster_arn},
+        ],
+    )
+
+    iam.put_role_policy(
+        RoleName=role_name,
+        PolicyName="NeptuneReadOnlyPolicy",
+        PolicyDocument=json.dumps(permission_policy),
+    )
+
+    return f"arn:aws:iam::{current_account_id}:role/{role_name}"
+
+
+def assume_cross_account_neptune_role(role_arn: str, session_name: str) -> dict:
+    """
+    Called from the trusted account to obtain short-lived credentials
+    for the Neptune-owning account's role.
+    """
+    sts = boto3.client("sts")
+
+    response = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=session_name,
+        DurationSeconds=900,  # 15 minutes — minimum viable session
+    )
+    return response["Credentials"]
+
+
+def validate_cross_account_trust_policy(role_name: str) -> list:
+    """Audit an existing role's trust policy for overly-broad principals."""
+    iam = boto3.client("iam")
+    issues = []
+
+    role = iam.get_role(RoleName=role_name)["Role"]
+    trust = role["AssumeRolePolicyDocument"]
+
+    for stmt in trust.get("Statement", []):
+        principal = stmt.get("Principal", {})
+
+        # Wildcard principal grants access to any AWS identity
+        if principal == "*" or principal.get("AWS") == "*":
+            issues.append(f"CRITICAL: Role {role_name} trusts wildcard principal")
+
+        # Entire-account principal without Condition is too broad
+        aws_principals = principal.get("AWS", [])
+        if isinstance(aws_principals, str):
+            aws_principals = [aws_principals]
+        for arn in aws_principals:
+            if arn.endswith(":root") and not stmt.get("Condition"):
+                issues.append(
+                    f"WARNING: Role {role_name} trusts account root without Condition — "
+                    "scope to a specific role ARN"
+                )
+
+    return issues
+```
+
+**Don't**: Use wildcard principals, trust entire accounts without conditions, or grant write access across accounts
+
+```python
+# VULNERABLE: Wildcard principal — any AWS identity can assume this role
+trust_policy = {
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"AWS": "*"},  # Anyone in AWS
+        "Action": "sts:AssumeRole"
+    }]
+}
+
+# VULNERABLE: Entire account without Condition — any role/user in that account
+trust_policy = {
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:root"},  # Too broad
+        "Action": "sts:AssumeRole"
+        # No Condition to restrict to a specific role
+    }]
+}
+
+# VULNERABLE: Cross-account write permissions on Neptune
+permission_policy = {
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": "neptune-db:*",   # Includes WriteDataViaQuery, DeleteDataViaQuery
+        "Resource": "*"             # All clusters in the account
+    }]
+}
+```
+
+**Why**: Cross-account Neptune access requires two gates: the trust policy on the IAM role (who may assume it) and the permission policy (what they can do once assumed). A wildcard or over-broad trust policy lets any identity in the trusted account assume the role, not just the intended service. Granting write permissions across accounts violates least-privilege and enables data destruction or exfiltration from a compromised third-party workload. Agent-driven RAG pipelines (LLM06:2025) that autonomously assume cross-account roles amplify the blast radius of misconfigured trust.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-732 (Incorrect Permission Assignment), OWASP A03:2025 (Injection), LLM06:2025 (Excessive Agency), AWS IAM Cross-Account Access, AWS Neptune IAM Database Authentication
 
 ---
 
@@ -553,13 +814,16 @@ neptune.modify_db_cluster(
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
 | IAM authentication | strict | CWE-287, CWE-798 |
-| Gremlin injection prevention | strict | CWE-943, OWASP A03:2021 |
-| SPARQL injection prevention | strict | CWE-943, CWE-89 |
+| Gremlin injection prevention | strict | CWE-943, OWASP A03:2025 |
+| openCypher injection prevention | strict | CWE-943, OWASP A03:2025, LLM06:2025 |
+| SPARQL injection prevention | strict | CWE-943, CWE-89, OWASP A03:2025 |
 | VPC security configuration | strict | CWE-284, CWE-732 |
-| CloudTrail audit logging | warning | CWE-778, OWASP A09:2021 |
+| CloudTrail audit logging | warning | CWE-778, OWASP A09:2025, LLM02:2025 |
+| Cross-account IAM access | strict | CWE-284, CWE-732, LLM06:2025 |
 
 ---
 
 ## Version History
 
+- **v2.0.0** - Add openCypher injection rule, cross-account IAM rule; update OWASP refs to 2025; add LLM Top 10 2025 refs
 - **v1.0.0** - Initial Amazon Neptune security rules
