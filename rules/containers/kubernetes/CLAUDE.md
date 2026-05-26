@@ -688,7 +688,11 @@ resources:
   - resources:
       - secrets
     providers:
-      - aescbc:
+      # aesgcm: AES-GCM authenticated encryption, available since K8s 1.25.
+      # aescbc was deprecated in K8s 1.28 and removed in K8s 1.30.
+      # For production, prefer the kms provider (envelope encryption) to avoid
+      # distributing raw key material to each API server node.
+      - aesgcm:
           keys:
             - name: key1
               secret: <base64-encoded-32-byte-key>
@@ -898,8 +902,10 @@ spec:
     imagePullPolicy: Always
 
   - name: sidecar
-    # If using tag, must use Always
-    image: myregistry.io/sidecar:v2.0.0
+    # All production images must use digest references per the Image Supply Chain
+    # Verification rule. imagePullPolicy: Always is an additional freshness control,
+    # not a substitute for a digest pin.
+    image: myregistry.io/sidecar:v2.0.0@sha256:<digest>
     imagePullPolicy: Always
 
 ---
@@ -1515,7 +1521,9 @@ resources:
       - secrets
       - configmaps
     providers:
-      - aescbc:
+      # aesgcm: AES-GCM authenticated encryption, available since K8s 1.25.
+      # aescbc was deprecated in K8s 1.28 and removed in K8s 1.30.
+      - aesgcm:
           keys:
             - name: key1
               secret: <base64-32-byte-key>
