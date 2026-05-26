@@ -204,8 +204,7 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 @Module({
   imports: [
     ThrottlerModule.forRoot({
-      ttl: 60,
-      limit: 10,
+      throttlers: [{ ttl: 60000, limit: 10 }],
     }),
   ],
   providers: [
@@ -221,7 +220,7 @@ export class AppModule {}
 @Controller('auth')
 export class AuthController {
   @Post('login')
-  @Throttle(5, 60)  // 5 requests per minute
+  @Throttle({ default: { limit: 5, ttl: 60000 } })  // 5 requests per minute
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
