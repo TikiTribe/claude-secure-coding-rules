@@ -158,7 +158,7 @@ export const useUserStore = defineStore('user', {
 
 **Why**: Client-side state is accessible to XSS attacks. Store tokens in httpOnly cookies.
 
-**Refs**: CWE-922, OWASP A02:2025
+**Refs**: CWE-922, OWASP A07:2025
 
 ---
 
@@ -330,12 +330,11 @@ export const fetchUser = async (id) => {
 </template>
 
 <script setup>
-// Component that fetches protected data
-const AdminPanel = defineAsyncComponent(async () => {
-  // API returns 403 if not authorized
-  const data = await api.get('/admin/data');
-  // ... render with data
-});
+import { defineAsyncComponent } from 'vue';
+
+// Lazy-load the component; server enforces authorization inside the component.
+// The factory must return a Promise that resolves to a component module.
+const AdminPanel = defineAsyncComponent(() => import('./AdminPanel.vue'));
 </script>
 ```
 
