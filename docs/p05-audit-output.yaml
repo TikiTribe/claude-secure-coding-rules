@@ -3145,7 +3145,7 @@ audited_rules:
         note about using GOPROXY=https://proxy.golang.org,direct with GONOSUMCHECK="".
     issues_filed: []
   - path: rules/backend/express/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4397,4 +4397,51 @@ audited_rules:
       - Markdown-aware chunking (preserving code-block boundaries) is absent from both
         rules and checklist. The checklist item in the audit spec is not present in the
         file's own checklist. Advisory; no corresponding rule was promised by the file.
+    issues_filed: []
+
+  - path: rules/rag/graph/neo4j/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules against p0.5 checklist. Two blocking defects found.
+
+      ISSUE 1 — Neo4j Python driver 5.x API breakage in two places (BROKEN Do / CRITICAL)
+        Line 39: trust=neo4j.TRUST_SYSTEM_CA_SIGNED_CERTIFICATES
+          The TRUST_* symbolic constants were deprecated in 4.x and removed entirely in
+          5.x. Importing neo4j.TRUST_SYSTEM_CA_SIGNED_CERTIFICATES on a 5.x install
+          raises AttributeError, making the secure client fail at construction time.
+        Line 1233: trust=ssl.CERT_REQUIRED
+          The Bolt connection rule passes an ssl module integer constant as the trust
+          parameter. The 5.x driver does not accept ssl.CERT_REQUIRED here; it expects
+          a neo4j.TrustSystemCAs() or neo4j.TrustCustomCAs() object. This also raises
+          TypeError at construction time on a 5.x install.
+        Fix required: replace both with neo4j.TrustSystemCAs() (or neo4j.TrustCustomCAs()
+        with an explicit CA bundle path for self-signed certs); import from neo4j directly.
+
+      ISSUE 2 — All OWASP refs cite :2021, no :2025 or LLM:2025 refs (STANDARDS GAP / BLOCKING)
+        Every Refs line in every rule cites the 2021 edition:
+          A01:2021, A02:2021, A03:2021, A05:2021.
+        The audit spec requires :2025 suffixes. No OWASP LLM Top 10 2025 refs appear
+        anywhere in the file despite LLM-relevant risks (SSRF via apoc.load.json, vector
+        index abuse, embedding exfiltration).
+        Additional Resources section links to OWASP Top 10 without year anchoring and
+        to APOC 4.4 docs (outdated; current is 5.x).
+        Fix required: update all OWASP A0x refs to :2025; add OWASP LLM:2025 refs to
+        at minimum APOC (LLM06:2025 Excessive Agency / LLM02:2025 Insecure Output Handling)
+        and Vector Index rules (LLM02:2025); update Additional Resources links to 5.x docs.
+
+      Non-blocking observations (no status change):
+      - Cypher injection parameterization: correct. All Do examples use session.run() with
+        parameter dicts; no f-string interpolation of user data in parameterizable positions.
+        Property-name and relationship-type injection handled via allowlists before insertion.
+      - APOC SSRF risk: explicitly covered. apoc.http.allow.*=false and the note that
+        apoc.load.json with untrusted URLs constitutes SSRF are present in the Don't block.
+      - bolt+s:// TLS enforcement: present and correct. URI validation in SecureBoltConnection
+        enforces bolt+s:// or neo4j+s:// and raises ValueError on plain bolt://.
+      - Role-based subgraph isolation: tenant_id property filter on every parameterized
+        query plus Cypher GRANT ... WHERE clauses provide layered subgraph isolation.
+      - LDAP/SSO: not covered. The RBAC rule addresses only native auth. Advisory omission.
+      - APOC CVE surface: rule correctly identifies dangerous procedure categories and
+        requires an explicit allowlist. Addresses the CVE class adequately.
     issues_filed: []
