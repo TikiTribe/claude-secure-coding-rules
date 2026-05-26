@@ -55,6 +55,7 @@ data = yaml.load(user_input, Loader=yaml.Loader)
 
 **Do**:
 ```python
+import re
 import subprocess
 import shlex
 
@@ -269,14 +270,20 @@ session_id = random.randint(0, 999999)
 
 **Do**:
 ```python
-import bcrypt
-# Or: from argon2 import PasswordHasher
+from argon2 import PasswordHasher
+# Legacy alternative: import bcrypt
 
-def hash_password(password: str) -> bytes:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))
+# Argon2id is the OWASP A02:2025 preferred algorithm
+ph = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=2)
 
-def verify_password(password: str, hashed: bytes) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed)
+def hash_password(password: str) -> str:
+    return ph.hash(password)
+
+def verify_password(password: str, hashed: str) -> bool:
+    return ph.verify(hashed, password)
+
+# bcrypt is legacy-acceptable when migrating existing stores
+# bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))
 ```
 
 **Don't**:

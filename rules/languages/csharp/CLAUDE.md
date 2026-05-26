@@ -153,10 +153,18 @@ using Microsoft.AspNetCore.Identity;
 var token = new byte[32];
 RandomNumberGenerator.Fill(token);
 
-// AES encryption
-using var aes = Aes.Create();
-aes.KeySize = 256;
-aes.Mode = CipherMode.GCM;
+// AES-GCM encryption (.NET 8+)
+// AesGcm is the correct class; CipherMode.GCM does not exist in System.Security.Cryptography.
+var key = new byte[32]; // 256-bit key
+RandomNumberGenerator.Fill(key);
+using var aesGcm = new AesGcm(key, tagSizeInBytes: 16);
+var nonce = new byte[AesGcm.NonceByteSizes.MaxSize]; // 12 bytes
+RandomNumberGenerator.Fill(nonce);
+var plaintext = System.Text.Encoding.UTF8.GetBytes("sensitive data");
+var ciphertext = new byte[plaintext.Length];
+var tag = new byte[16];
+aesGcm.Encrypt(nonce, plaintext, ciphertext, tag);
+// Transmit or store: nonce + tag + ciphertext (all three are required for decryption)
 
 // Password hashing with Identity
 var hasher = new PasswordHasher<User>();
