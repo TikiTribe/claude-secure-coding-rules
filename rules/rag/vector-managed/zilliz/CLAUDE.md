@@ -867,3 +867,162 @@ def bulk_insert(client: MilvusClient, collection_name: str, vectors: list):
 **Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), OWASP API4:2023 (Unrestricted Resource Consumption)
 
 ---
+
+## Rule: Private Cluster Connectivity via VPC Peering or Private Endpoint
+
+**Level**: `strict`
+
+**When**: Connecting application services to Zilliz Cloud clusters in production environments
+
+**Do**:
+```python
+import os
+from pymilvus import MilvusClient
+
+# Production clusters must be reached via a private endpoint URI provisioned
+# through Zilliz Cloud Console -> Cluster -> Network -> Private Link / VPC Peering.
+# The private endpoint URI resolves only within the peered VPC; it is never
+# reachable from the public internet.
+#
+# AWS:  configure PrivateLink; URI pattern: in01-<id>.privatelink.<region>.aws.zilliz.com
+# GCP:  configure VPC peering; URI pattern: in01-<id>.gcp-<region>.cloud.zilliz.com (private zone)
+# Azure: configure Private Endpoint; URI pattern: in01-<id>.privatelink.<region>.azure.zilliz.com
+
+ZILLIZ_URI = os.environ["ZILLIZ_URI"]   # Private endpoint URI from environment
+ZILLIZ_TOKEN = os.environ["ZILLIZ_TOKEN"]
+
+def _assert_private_uri(uri: str) -> None:
+    """Reject public-facing Zilliz endpoints before connecting."""
+    import urllib.parse
+    host = urllib.parse.urlparse(uri).hostname or ""
+    if ".serverless." in host or ".public." in host:
+        raise ValueError(
+            f"Production connections must use a private endpoint, not: {host}"
+        )
+
+_assert_private_uri(ZILLIZ_URI)
+
+client = MilvusClient(
+    uri=ZILLIZ_URI,
+    token=ZILLIZ_TOKEN,
+    secure=True,  # TLS is required even on private endpoints
+)
+```
+
+**Don't**:
+```python
+import os
+from pymilvus import MilvusClient
+
+# VULNERABLE: Public serverless endpoint exposed to the internet
+client = MilvusClient(
+    uri="https://in01-abc123.serverless.gcp-us-west1.cloud.zilliz.com",
+    token=os.environ["ZILLIZ_TOKEN"],
+)
+
+# VULNERABLE: Disabling TLS on the assumption that "it's internal"
+client = MilvusClient(
+    uri=os.environ["ZILLIZ_URI"],
+    token=os.environ["ZILLIZ_TOKEN"],
+    secure=False,  # Never disable TLS, even on private networks
+)
+```
+
+**Why**: Traffic over the public internet is exposed to interception and SSRF-pivot attacks. A private endpoint or VPC peering confines the data path to the cloud provider's backbone and removes the attack surface of a public IP. Disabling TLS on an internal link removes the mutual authentication guarantee and violates NIST SP 800-52 Rev 2 guidance on TLS everywhere.
+
+**Refs**: CWE-319 (Cleartext Transmission of Sensitive Information), OWASP API8:2023 (Security Misconfiguration), NIST SP 800-52 Rev 2
+
+---
+
+## Rule: Server-Enforced RBAC via pymilvus Role Grants
+
+**Level**: `strict`
+
+**When**: Granting application identities access to collections or partitions in a Milvus/Zilliz cluster
+
+**Do**:
+```python
+from pymilvus import MilvusClient
+
+def provision_collection_role(
+    admin_client: MilvusClient,
+    role_name: str,
+    collection_name: str,
+    username: str,
+) -> None:
+    """
+    Create a server-enforced role, grant it collection-scoped privileges,
+    and bind it to a user. All checks run inside the Milvus RBAC engine;
+    no application-level naming-convention bypass is possible.
+    """
+    # 1. Create the role if it does not already exist.
+    existing_roles = {r["name"] for r in admin_client.list_roles()}
+    if role_name not in existing_roles:
+        admin_client.create_role(role_name=role_name)
+
+    # 2. Grant minimum privileges for read-only search access.
+    #    object_type="Collection" scopes the grant to one named collection.
+    READ_PRIVILEGES = ["Query", "Search", "GetLoadingProgress"]
+    for privilege in READ_PRIVILEGES:
+        admin_client.grant_privilege(
+            role_name=role_name,
+            object_type="Collection",
+            object_name=collection_name,   # Specific collection, never wildcard "*"
+            privilege=privilege,
+        )
+
+    # 3. Bind the role to the application user.
+    admin_client.grant_role(role_name=role_name, username=username)
+
+
+def revoke_collection_role(
+    admin_client: MilvusClient,
+    role_name: str,
+    collection_name: str,
+    username: str,
+) -> None:
+    """Revoke role binding and remove collection privileges (least privilege)."""
+    admin_client.revoke_role(role_name=role_name, username=username)
+
+    READ_PRIVILEGES = ["Query", "Search", "GetLoadingProgress"]
+    for privilege in READ_PRIVILEGES:
+        admin_client.revoke_privilege(
+            role_name=role_name,
+            object_type="Collection",
+            object_name=collection_name,
+            privilege=privilege,
+        )
+```
+
+**Don't**:
+```python
+from pymilvus import MilvusClient
+
+# VULNERABLE: Naming-convention check is application-layer only.
+# Any caller with a valid token can bypass it by connecting directly to the cluster.
+def verify_collection_access(collection_name: str, tenant_id: str) -> bool:
+    expected_prefix = f"tenant_{tenant_id}_"
+    return collection_name.startswith(expected_prefix)  # Not enforced by the server
+
+
+# VULNERABLE: Wildcard privilege grants give a role access to every collection.
+def grant_all_collections(admin_client: MilvusClient, role_name: str) -> None:
+    admin_client.grant_privilege(
+        role_name=role_name,
+        object_type="Collection",
+        object_name="*",   # Wildcard grants access to all current and future collections
+        privilege="Search",
+    )
+
+
+# VULNERABLE: Using the root/admin account for application queries.
+def search_as_root(uri: str, query_vector: list) -> list:
+    root_client = MilvusClient(uri=uri, token="root:Milvus")
+    return root_client.search(collection_name="documents", data=[query_vector], limit=10)
+```
+
+**Why**: Application-layer naming-convention checks are not enforced by the Milvus RBAC engine. A client that connects directly to the cluster with any valid token can call any collection. Server-side role grants enforce access inside the Milvus access control layer regardless of which client library or raw gRPC caller is used. Wildcard grants (`object_name="*"`) and root credentials violate least-privilege and give any compromised token full cluster access.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-269 (Improper Privilege Management), OWASP API1:2023 (Broken Object Level Authorization), OWASP LLM03:2025
+
+---
