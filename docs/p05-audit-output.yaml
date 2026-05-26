@@ -5361,3 +5361,153 @@ audited_rules:
         CWE-400, CWE-208, CWE-829, CWE-269, CWE-311, CWE-312, CWE-770: all
         valid, non-retired IDs, correctly mapped to rule categories.
     issues_filed: []
+
+  - path: rules/rag/observability/langsmith/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules. traceable(process_inputs=...) and traceable(enabled=False) parse
+      correctly against langsmith 0.1.131 (and 0.8.5). Core security topics are present:
+      PII redaction before logging, LANGCHAIN_API_KEY / LANGSMITH_API_KEY rotation, project
+      access controls, trace retention policy. Self-hosted LangSmith guidance is absent.
+      Four blocking issues found.
+
+      ISSUE 1 — list_workspace_members() and invite_to_workspace(): NONEXISTENT METHODS
+        The Project and Workspace Isolation rule (Do example, lines 177 and 207) calls
+        client.list_workspace_members() and client.invite_to_workspace(). Neither method
+        exists in langsmith Client at any released version (confirmed against 0.1.131 source;
+        grep across full package returns zero hits). The same pattern repeats in the
+        Monitoring Dashboard Access Control rule (lines 705-706). Workspace membership
+        management is handled through the LangSmith UI and REST API directly, not through
+        a Python SDK method. Code using these calls will raise AttributeError at runtime.
+        Fix required: remove both calls; replace with a comment stating that workspace
+        membership is managed via the LangSmith UI or the /api/v1/workspaces REST endpoint
+        with a bearer token, and show the requests-based equivalent if an API example is
+        needed.
+
+      ISSUE 2 — create_project(trace_retention_days=...): NONEXISTENT PARAMETER
+        The Project and Workspace Isolation Do example (line 173) passes
+        trace_retention_days=30 to client.create_project(). The actual signature accepts
+        only: project_name, description, metadata, upsert, project_extra,
+        reference_dataset_id. There is no trace_retention_days parameter. This call will
+        raise TypeError at runtime.
+        Fix required: remove trace_retention_days kwarg from create_project(); note that
+        retention is configured in LangSmith project Settings UI, not via the SDK.
+
+      ISSUE 3 — update_project(project_name, trace_retention_days=...): TWO SIGNATURE ERRORS
+        The Export and Retention Policies Do example (lines 600-602) calls
+        client.update_project(project_name, trace_retention_days=retention_days). The
+        actual signature takes project_id (a UUID, not a project name string) as the
+        first positional argument and accepts no trace_retention_days parameter (valid
+        kwargs: name, description, metadata, project_extra, end_time). Both the
+        positional type and the kwarg name are wrong; the call raises TypeError.
+        Fix required: replace with a comment explaining that retention is set in the UI,
+        or show a correct update_project call using project_id and a supported parameter.
+
+      ISSUE 4 — share_dataset(share_with=..., permission=...) and create_dataset(is_public=True):
+        FABRICATED SIGNATURES
+        The Dataset Security rule Do example (lines 279-283) calls
+        client.share_dataset(dataset_id=..., share_with=email, permission="read").
+        The actual share_dataset signature accepts only dataset_id or dataset_name and
+        returns a public share link (DatasetShareSchema). It has no share_with or
+        permission parameters; per-user access grants do not exist in the SDK.
+        Additionally, create_dataset() has no is_public parameter (line 249 in the Don't
+        example); the actual signature accepts only dataset_name, description, data_type,
+        inputs_schema, outputs_schema, and metadata. Both calls raise TypeError.
+        Fix required: remove share_dataset(share_with=..., permission=...) and is_public
+        from create_dataset; replace with guidance that dataset sharing and visibility are
+        managed in the LangSmith UI, not through the SDK.
+
+      ISSUE 5 — OWASP/LLM refs lack year tags and LLM06 maps to wrong 2025 control
+        All five Refs lines cite OWASP identifiers without year qualifiers: OWASP LLM06,
+        OWASP LLM01, OWASP A03 Injection. The audit spec requires :2025 year tags.
+        In OWASP LLM Top 10 2025, sensitive data disclosure is LLM02:2025 (Sensitive
+        Information Disclosure); LLM06:2025 is Excessive Agency. Using LLM06 without a
+        year tag resolves to the wrong control for practitioners using the 2025 edition.
+        Fix required: append :2025 to all OWASP A0x and LLM0x refs; update LLM06 refs
+        in API key and PII rules to LLM02:2025; update Hub rule LLM01 to LLM01:2025.
+
+      Non-blocking observations (no status change):
+      - LANGSMITH_API_KEY vs LANGCHAIN_API_KEY: SDK accepts both (LANGSMITH_API_KEY has
+        priority in 0.1.x). Using both across Do/Don't examples is not an error.
+      - LANGCHAIN_TRACING_V2 and LANGCHAIN_PROJECT env vars: valid for 0.1.x and 0.8.x.
+      - traceable(process_inputs=redact_run_inputs): confirmed valid parameter in
+        langsmith.run_helpers; pre-send PII filtering approach is correct.
+      - traceable(enabled=False): confirmed valid; correctly suppresses tracing.
+      - create_feedback(score=, comment=, source_info=): all valid parameters.
+      - Self-hosted LangSmith for sensitive data: no rule covers on-prem deployment.
+        The audit spec lists this as a required topic. Advisory gap; no rule for it was
+        explicitly committed in the file structure, but worth a future addition.
+      - hub.pull() and hub.push(): valid langchain (not langsmith) SDK calls; correctly
+        scoped to LangChain Hub integration.
+    issues_filed: []
+
+  - path: rules/rag/vector-managed/azure-ai-search/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 7 rules: API Key and RBAC Security, Semantic Ranking Security,
+      Hybrid Search Security, Azure OpenAI Integration, Index Schema Security,
+      Skillset Security, Data Source Connection.
+
+      ISSUE 1 — OWASP LLM Top 10 :2025 refs absent (BLOCKING)
+        No OWASP LLM Top 10 citations appear anywhere in the file. Azure AI Search
+        is frequently used as the retrieval backend in RAG pipelines and the rules
+        cover prompt-injection-adjacent risks (filter bypass, result manipulation,
+        tenant data leakage) that map directly to OWASP LLM01:2025 (Prompt Injection)
+        and OWASP LLM06:2025 (Excessive Agency / data exfiltration via retrieval).
+        At minimum, the Hybrid Search Security and Index Schema Security rules should
+        reference OWASP LLM01:2025 and OWASP LLM06:2025.
+        Fix required: add OWASP LLM01:2025 and OWASP LLM06:2025 references to
+        Hybrid Search Security and Index Schema Security Refs lines.
+
+      ISSUE 2 — Search.in() filter injection not covered (BLOCKING)
+        The audit spec requires coverage of Search.in() filter SQL-like injection.
+        The Hybrid Search Security rule demonstrates OData single-quote escaping
+        (value.replace("'", "''")) and field/operator allowlisting, but does not
+        address the Search.in() function specifically. Search.in(field, 'val1,val2')
+        accepts a comma-delimited string parameter; if user input is concatenated
+        into that string without escaping the delimiter or quoting individual values,
+        an attacker can inject additional values to widen the filter. No rule, code
+        example, or advisory covers this vector.
+        Fix required: add a code example or advisory note in Hybrid Search Security
+        (or a dedicated filter rule) showing safe Search.in() construction, building
+        the value list from a validated list rather than a raw user-supplied comma string.
+
+      ISSUE 3 — Customer-Managed Keys (CMK) for encryption not covered (BLOCKING)
+        The audit spec requires coverage of CMK for encryption at rest. No rule,
+        code example, or reference addresses Azure AI Search's double-encryption
+        option via customer-managed keys in Azure Key Vault. For regulated workloads
+        (HIPAA, PCI-DSS, FedRAMP) this is a mandatory control. Index Schema Security
+        and Data Source Connection are the natural locations for this guidance.
+        Fix required: add at minimum an advisory-level rule or note covering
+        EncryptionKey configuration on SearchIndex and SearchIndexerDataSourceConnection,
+        referencing Azure Key Vault Managed HSM as the key store.
+
+      ISSUE 4 — Private endpoint / VNet isolation not covered (BLOCKING)
+        The audit spec requires coverage of private endpoint for VNet isolation.
+        No rule addresses disabling public network access on the search service,
+        configuring shared private link resources, or enforcing IP firewall rules.
+        Without this, all other auth controls can be bypassed by network-level
+        access to the public endpoint.
+        Fix required: add an advisory-level rule covering public_network_access=Disabled,
+        private endpoint configuration, and IP firewall rules for the search service.
+
+      Non-blocking observations (no status change):
+      - Code blocks in Don't sections (blocks 9, 11, 13) use Ellipsis literal as a
+        positional argument after keyword arguments, which Python 3 rejects at parse
+        time. These appear only in anti-pattern illustrations, not in Do examples;
+        rule intent is unambiguous. Advisory only.
+      - azure-search-documents 11.x API surface is correctly used throughout:
+        SearchClient, SearchIndexClient, VectorizedQuery, VectorizableTextQuery,
+        AzureOpenAIVectorizer, VectorFilterMode, and QueryType all match the 11.x SDK.
+        No deprecated API calls detected.
+      - OWASP A01:2025, A03:2025, A07:2025, A10:2025 refs are correctly formatted
+        with :2025 suffix.
+      - Managed identity preferred over key-based auth: covered.
+      - Query key vs admin key separation: covered.
+      - Semantic ranker auth and configuration validation: covered.
+      - Document-level security trimming via allowed_groups OData filter: covered.
+    issues_filed: []
