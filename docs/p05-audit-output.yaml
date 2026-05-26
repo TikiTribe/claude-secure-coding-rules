@@ -6005,7 +6005,7 @@ audited_rules:
       - GraphQL depth/complexity limits not covered; add advisory or warning rule for
         QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, and reverse-proxy limiting on /v1/graphql
       - Raft consensus port (8300) and mTLS requirement absent from Replication Security rule
-
+    re_audit_notes: |
       RE-AUDIT 2026-05-26: Blocking issues NOT fixed. Status remains failed.
       - FAIL (LLM 2025 refs absent): No OWASP LLM Top 10 :2025 refs in the file; no LLM06:2025 in Module Configuration Refs.
       - FAIL (GraphQL depth/complexity): No QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, or reverse-proxy limiting rule added.
