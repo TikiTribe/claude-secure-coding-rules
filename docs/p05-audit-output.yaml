@@ -2391,3 +2391,94 @@ audited_rules:
         $env/static/private boundary at build time with a module resolution error.
         Advisory: clarify "This is a build error, not a silent runtime failure."
     issues_filed: []
+
+  - path: rules/frontend/vue/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Never Use v-html with User Input
+      - Sanitize Dynamic Attribute Values
+      - Don't Store Sensitive Data in Client State
+      - Validate Form Inputs
+      - Include CSRF Tokens in Requests
+      - Validate API Responses
+      - Don't Trust Client-Side Authorization
+      - Implement Navigation Guards
+    notes: |
+      Audited all 8 rule sections. Two distinct blocking issues found: one is an
+      undefined identifier (missing import in a Do example), one is a wrong OWASP 2025
+      category number. The file is otherwise well-formed: all examples use Vue 3
+      Composition API with <script setup>, defineProps, ref/reactive/computed.
+      createRouter from vue-router 4 with beforeEach returning a route location is
+      correct. State examples use Pinia defineStore (correct for Vue 3; Vuex mention on
+      line 121 is acceptable as Vuex 4 is maintenance-compatible). DOMPurify with a
+      computed sanitizedHtml is the correct v-html mitigation pattern. No Vue 2 Options
+      API present. All Don't examples reflect real vulnerability patterns.
+
+      No fabricated CWE IDs beyond the wrong-category issue below. CWE-79 (XSS),
+      CWE-918 (SSRF), CWE-20 (Improper Input Validation), CWE-352 (CSRF), CWE-922
+      (Insecure Storage), CWE-602 (Client-Side Enforcement of Server-Side Security),
+      CWE-862 (Missing Authorization) are all valid and correctly applied.
+
+      ISSUE 1 — Component Security Do example: defineAsyncComponent used without import (CODE BUG / CRITICAL)
+        Line 334: const AdminPanel = defineAsyncComponent(async () => { ... })
+        The <script setup> block at lines 332-339 calls defineAsyncComponent but never
+        imports it. In Vue 3 (including <script setup>), defineAsyncComponent is not a
+        global; it must be imported from 'vue':
+          import { defineAsyncComponent } from 'vue';
+        Without the import, the component raises ReferenceError: defineAsyncComponent
+        is not defined when the template renders AdminPanel. The Do example is intended
+        to demonstrate that the API call in the async loader returns 403 when the user
+        is not authorized, but the component cannot mount at all. A developer copying
+        this example gets a runtime error unrelated to the security pattern being taught.
+        Additionally, the defineAsyncComponent factory pattern shown is semantically
+        incorrect: the factory must return a component definition (e.g., a lazy import
+        () => import('./AdminPanel.vue')), not fetch data and leave the return value
+        undefined. A factory returning undefined causes a second silent render failure.
+        Fix required: (a) add "import { defineAsyncComponent } from 'vue'" to the
+        <script setup> block; (b) restructure so the factory returns an imported
+        component module and the API data fetch occurs inside that component's setup()
+        or onMounted() hook; or replace with a simpler pattern that fetches protected
+        data inside a regular component's setup() and demonstrates the 403 enforcement.
+
+      ISSUE 2 — State Management Refs: OWASP A02:2025 is wrong category for CWE-922 (STANDARDS MISMATCH)
+        Line 161: "Refs: CWE-922, OWASP A02:2025"
+        In this project's taxonomy (rules/_core/owasp-2025.md, line 124), A02:2025 is
+        "Security Misconfiguration" — covers default credentials, verbose error messages,
+        and missing security headers. CWE-922 (Insecure Storage of Sensitive Information)
+        is not in the A02:2025 CWE set. The rule addresses authentication tokens stored
+        in localStorage where XSS can read them. The correct 2025 category is A07:2025
+        "Authentication Failures" (covers insecure credential storage; successor to
+        A07:2021 Identification and Authentication Failures).
+        The same misclassification appears in react/CLAUDE.md (line 135) and
+        angular/CLAUDE.md (line 155) — copy-paste propagation of the same authoring
+        error across the frontend rule set.
+        Fix required: replace "OWASP A02:2025" with "OWASP A07:2025" on line 161;
+        apply the same fix to react/CLAUDE.md and angular/CLAUDE.md in a follow-on pass.
+
+      Non-blocking observations (no status change):
+      - Sanitize Dynamic Attribute Values rule (line 111): the Why text states "arbitrary
+        image URLs enable SSRF." In a pure client-side Vue app, an unvalidated <img :src>
+        causes a browser-initiated request, not a server-side request forgery. CWE-918
+        (SSRF) applies only when a server proxies or fetches the URL on behalf of the
+        client (SSR, image optimization proxy). The claim is valid for SSR deployments
+        but misleading for client-only apps. Advisory: qualify with "when the server
+        proxies the image URL" or replace CWE-918 with CWE-601 (Open Redirect) for the
+        pure client-side case.
+      - Sanitize Dynamic Attribute Values rule (lines 58-111): the only rule in the file
+        without an OWASP A0x:2025 Refs entry. The parallel v-html rule (line 54) cites
+        OWASP A05:2025 (Injection), which also applies to javascript: URL injection.
+        Advisory: add OWASP A05:2025 to this rule's Refs for consistency.
+      - State Management When clause (line 121): "Pinia or Vuex." Pinia is the officially
+        recommended state management library for Vue 3 (Vuex 4 is maintenance-only, no
+        new features since 2023). The Do example correctly uses Pinia only. A brief note
+        that Pinia is the recommended choice for new Vue 3 projects would be useful context.
+        Advisory only.
+      - Component Security Do example (lines 332-339): beyond the import bug in ISSUE 1,
+        a const defined inline in <script setup> is not registered as a component by name
+        in the template. In <script setup>, only top-level imported components are
+        automatically available to the template via their identifier. This is a second
+        independent reason the Do example fails at runtime.
+    issues_filed: []
