@@ -1798,3 +1798,799 @@ def test_allows_non_python_file():
 **Layer-1 complement:**
 
 `settings-template.json` has no `trust_remote_code`-related rule (permission rules can't pattern-match Python keyword arguments). This hook is purely additive. The `transformers-security` and `applying-ai-ml-security` skills also teach the prohibition; this hook is the enforcement counterpart.
+
+---
+
+## Pattern: `block-dangerously-set-inner-html`
+
+**Purpose:** Deny `Write`/`Edit` operations that introduce `dangerouslySetInnerHTML` in React/JSX/TSX source unless the assigned value is a literal string. The prop disables React's XSS sanitisation; even one unverified user-derived value reaching it is a stored XSS primitive.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-dangerously-set-inner-html.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-dangerously-set-inner-html
+Event: PreToolUse
+Purpose: Deny React Write/Edit content that uses dangerouslySetInnerHTML
+         with anything other than a string literal. Regex-based — JSX is
+         not Python and we are not embedding a full JSX parser. Matches
+         the literal prop name then inspects the bound expression shape.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import json
+import re
+import sys
+
+# Matches `dangerouslySetInnerHTML={{ __html: <expr> }}` and captures <expr>
+# up to the closing brace pair. The non-greedy capture stops at the FIRST
+# } } pair so nested object expressions are not silently truncated.
+PROP_PATTERN = re.compile(
+    r"dangerouslySetInnerHTML\s*=\s*\{\s*\{\s*__html\s*:\s*([^}]+?)\s*\}\s*\}",
+    re.DOTALL,
+)
+
+# Patterns that indicate the bound expression is a STRING LITERAL — safe.
+# Anything else (identifier, function call, property access, JSX expression)
+# is treated as potentially user-controlled and blocked.
+STRING_LITERAL = re.compile(
+    r"""^(
+        "[^"\\]*(\\.[^"\\]*)*"          # "..."
+      | '[^'\\]*(\\.[^'\\]*)*'          # '...'
+      | `[^`$\\]*(\\.[^`$\\]*)*`        # `...` (template literal with NO ${} substitutions)
+    )$""",
+    re.VERBOSE,
+)
+
+# Sanitisation helpers we accept as evidence the user opted in to safety.
+SANITIZER_PATTERN = re.compile(
+    r"\b(DOMPurify|sanitizeHtml|sanitize_html|nh3|bleach)\b"
+)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def is_jsx_path(path: str) -> bool:
+    return path.endswith((".jsx", ".tsx"))
+
+
+def deny(reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    path = payload.get("tool_input", {}).get("file_path", "")
+    if not is_jsx_path(path):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text or "dangerouslySetInnerHTML" not in text:
+        return 0
+
+    for m in PROP_PATTERN.finditer(text):
+        expr = m.group(1).strip()
+        if STRING_LITERAL.match(expr):
+            continue
+        # Allow if the immediate expression is a call to a known sanitizer.
+        # This is a coarse signal: we look for sanitiser names anywhere in the
+        # expression. A determined caller can still nest unsafely; the goal is
+        # to surface the obvious cases without blocking the safe pattern.
+        if SANITIZER_PATTERN.search(expr):
+            continue
+        deny(
+            "block-dangerously-set-inner-html refused dangerouslySetInnerHTML "
+            f"bound to non-literal expression: '{expr[:60]}...'. Use a "
+            "sanitiser (DOMPurify, sanitize-html, nh3) and wrap the call so "
+            "this hook sees the sanitiser name in the bound expression."
+        )
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-dangerously-set-inner-html.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- Template literals with substitutions: `` `<p>${userText}</p>` ``. The regex's safe-literal class explicitly excludes `${}` interpolation, so these are caught — but multi-line tagged templates may break the regex. Verify with the tests.
+- Sanitiser called through an alias: `const clean = DOMPurify.sanitize; <div dangerouslySetInnerHTML={{__html: clean(x)}} />`. The hook sees `clean(x)`, not `DOMPurify`. Add aliases to `SANITIZER_PATTERN` if you use this idiom.
+- Variables that hold a string the user later proves was a literal. The hook has no data flow; the binding `const safe = "<p>hi</p>"; <div dangerouslySetInnerHTML={{__html: safe}} />` is denied even though it's safe in this snippet.
+- Non-React frameworks (Vue `v-html`, Svelte `{@html}`, Angular `[innerHTML]`) use different syntax — not covered.
+- Server-side rendering through a non-`.jsx`/`.tsx` template (Handlebars, EJS) — outside scope.
+- Hooks running on a `.tsx` file where JSX is not actually present (TypeScript module-only file). False-positive risk is zero because the prop name itself triggers the check.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-dangerously-set-inner-html.py"
+
+
+def run_write(content: str, path: str = "/tmp/x.tsx") -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_bound_to_variable():
+    assert decision(run_write(
+        "const x = props.html;\n"
+        '<div dangerouslySetInnerHTML={{ __html: x }} />\n'
+    )) == "deny"
+
+
+def test_blocks_bound_to_function_call():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: renderMarkdown(input) }} />\n'
+    )) == "deny"
+
+
+def test_blocks_bound_to_template_with_substitution():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: `<p>${user}</p>` }} />\n'
+    )) == "deny"
+
+
+def test_allows_string_literal():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: "<p>static</p>" }} />\n'
+    )) is None
+
+
+def test_allows_template_no_substitution():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: `<p>hi</p>` }} />\n'
+    )) is None
+
+
+def test_allows_dompurify():
+    assert decision(run_write(
+        'import DOMPurify from "dompurify";\n'
+        '<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(input) }} />\n'
+    )) is None
+
+
+def test_allows_sanitize_html():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: sanitizeHtml(input) }} />\n'
+    )) is None
+
+
+def test_skips_non_jsx_file():
+    assert decision(run_write(
+        '<div dangerouslySetInnerHTML={{ __html: x }} />\n',
+        path="/tmp/x.md",
+    )) is None
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no React-specific rule (permission rules can't pattern-match JSX prop values). This hook is purely additive. The `react-security`, `nextjs-security`, and `applying-owasp-top-10` skills also teach the prohibition at advisory level; this hook is the enforcement counterpart at the Write/Edit boundary.
+
+---
+
+## Pattern: `warn-missing-pydantic-fastapi`
+
+**Purpose:** **Advisory only.** After a `Write` or `Edit` lands on a FastAPI source file, warn (do not deny) if a route handler accepts a request body without a Pydantic model. This is the only advisory-grade hook in this guide; it teaches at the moment of action without blocking work.
+
+**Hook event:** PostToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/warn-missing-pydantic-fastapi.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: warn-missing-pydantic-fastapi
+Event: PostToolUse
+Purpose: After a Write/Edit on a Python file, scan for FastAPI route handlers
+         (any function decorated with @app.<method> or @router.<method>) whose
+         signature accepts a body-like parameter that is NOT typed as a
+         pydantic.BaseModel subclass. Emit a non-blocking advisory.
+
+Advisory hooks do not deny; they write to stderr (the runtime surfaces stderr
+into the conversation) and exit 0. The permissionDecision field is NOT used
+for PostToolUse — by then the tool has already run.
+
+Reads stdin JSON, writes advisory text to stderr, exits 0.
+"""
+import ast
+import json
+import sys
+
+ROUTE_DECORATORS = {"get", "post", "put", "patch", "delete", "head", "options"}
+# Scalar primitives are fine for path/query params (e.g., `id: int`).
+# Body-shaped containers (dict/list/bytes) ARE body-like and should be flagged
+# when they appear without a Pydantic schema.
+SCALAR_PRIMITIVE_HINTS = {"str", "int", "float", "bool"}
+BODY_SHAPED_PRIMITIVE_HINTS = {"dict", "list", "bytes"}
+
+
+def is_fastapi_path(path: str) -> bool:
+    return path.endswith((".py", ".pyi"))
+
+
+def decorator_is_route(node: ast.expr) -> bool:
+    """Match @app.<method>, @router.<method>, @blueprint.<method>, etc."""
+    if isinstance(node, ast.Call):
+        return decorator_is_route(node.func)
+    if isinstance(node, ast.Attribute):
+        return node.attr.lower() in ROUTE_DECORATORS
+    return False
+
+
+def annotation_is_pydantic_like(ann: ast.expr | None) -> bool:
+    """Heuristic: True if the annotation looks like a Pydantic model.
+
+    Accepts:
+      - Any class name starting with an uppercase letter that is NOT a known
+        primitive or stdlib type (assumed to be a user model class)
+      - Annotated[<Model>, ...]
+      - Body(...) typed wrappers (FastAPI's explicit dependency form)
+    Rejects:
+      - str, int, float, bool (scalar primitives — path/query OK)
+      - dict, list, bytes (body-shaped containers without schema)
+      - dict[str, Any], list[X] (parameterised containers — could hide payloads)
+    """
+    if ann is None:
+        return False
+    # Unwrap Annotated[T, ...] -> T
+    if isinstance(ann, ast.Subscript):
+        base = ann.value
+        if isinstance(base, ast.Name) and base.id == "Annotated":
+            inner = ann.slice
+            if isinstance(inner, ast.Tuple) and inner.elts:
+                return annotation_is_pydantic_like(inner.elts[0])
+            return annotation_is_pydantic_like(inner)
+        # Anything else subscripted (list[X], dict[K,V]) is rejected.
+        return False
+    if isinstance(ann, ast.Name):
+        if ann.id in SCALAR_PRIMITIVE_HINTS or ann.id in BODY_SHAPED_PRIMITIVE_HINTS:
+            return False
+        # Uppercase first letter is the convention for class names.
+        return ann.id[:1].isupper()
+    if isinstance(ann, ast.Attribute):
+        # module.Model — accept if attr starts uppercase.
+        return ann.attr[:1].isupper()
+    return False
+
+
+def param_is_body_like(arg: ast.arg) -> bool:
+    """Body-like parameter: an annotated parameter that is NOT a scalar
+    path/query primitive (str/int/float/bool). dict/list/bytes ARE body-like
+    because they carry arbitrary payload structure without a schema."""
+    if arg.annotation is None:
+        return False
+    if isinstance(arg.annotation, ast.Name) and arg.annotation.id in SCALAR_PRIMITIVE_HINTS:
+        return False
+    return True
+
+
+class FastAPIFinder(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, int]] = []
+
+    def _check_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        is_route = any(decorator_is_route(d) for d in node.decorator_list)
+        if not is_route:
+            return
+        for arg in node.args.args + node.args.kwonlyargs:
+            if not param_is_body_like(arg):
+                continue
+            if not annotation_is_pydantic_like(arg.annotation):
+                self.warnings.append((node.name, node.lineno))
+                return
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._check_function(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._check_function(node)
+        self.generic_visit(node)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    path = payload.get("tool_input", {}).get("file_path", "")
+    if not is_fastapi_path(path):
+        return 0
+    text = extract_candidate_text(payload)
+    # Cheap filter: only scan files that mention FastAPI route conventions.
+    if not text or not any(s in text for s in ("@app.", "@router.", "fastapi", "FastAPI")):
+        return 0
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return 0  # No advisory on unparsable files; the user has bigger problems.
+
+    finder = FastAPIFinder()
+    finder.visit(tree)
+    if finder.warnings:
+        first = finder.warnings[0]
+        msg = (
+            f"[warn-missing-pydantic-fastapi] route handler '{first[0]}' at "
+            f"line {first[1]} accepts a body-like parameter without a Pydantic "
+            "model annotation. Define a `class <Name>(BaseModel)` and annotate "
+            "the parameter so FastAPI auto-validates and coerces the input. "
+            "This hook is advisory; the Write/Edit was allowed."
+        )
+        print(msg, file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/warn-missing-pydantic-fastapi.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch (advisory caveats):**
+
+- Routes defined through `app.add_api_route()` programmatically — there's no `@app.<method>` decorator, so the finder misses them entirely.
+- Routes whose body is read via `await request.json()` instead of declared as a parameter — the parameter list looks clean, but the body still flows through unvalidated.
+- Models defined in a separate file and imported under a short alias — the heuristic `annotation_is_pydantic_like` accepts any uppercase-first-letter name, so a typo like `class user(BaseModel)` falsely passes the lower-case check (would be flagged) while `User` passes the case check even if it isn't actually a BaseModel subclass.
+- Dataclasses or `TypedDict` — these provide types but no runtime validation. The hook treats them as Pydantic-like (uppercase first letter), which is a false negative.
+- Non-FastAPI frameworks (Flask, Django, Starlette without FastAPI) — the cheap filter requires `@app.` / `@router.` / `fastapi` / `FastAPI` to appear; other frameworks short-circuit.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/warn-missing-pydantic-fastapi.py"
+
+
+def run_write(content: str, path: str = "/tmp/api.py") -> tuple[str, str]:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return r.stdout, r.stderr
+
+
+def test_warns_on_dict_body():
+    out, err = run_write(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.post('/x')\n"
+        "def f(body: dict):\n"
+        "    return body\n"
+    )
+    assert "warn-missing-pydantic-fastapi" in err
+    assert out == ""  # PostToolUse advisory writes only to stderr
+
+
+def test_warns_on_async_with_dict():
+    _, err = run_write(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.post('/x')\n"
+        "async def f(body: dict):\n"
+        "    return body\n"
+    )
+    assert "warn-missing-pydantic-fastapi" in err
+
+
+def test_silent_with_pydantic_model():
+    _, err = run_write(
+        "from fastapi import FastAPI\n"
+        "from pydantic import BaseModel\n"
+        "class Item(BaseModel):\n"
+        "    name: str\n"
+        "app = FastAPI()\n"
+        "@app.post('/x')\n"
+        "def f(item: Item):\n"
+        "    return item\n"
+    )
+    assert "warn-missing-pydantic-fastapi" not in err
+
+
+def test_silent_with_annotated_pydantic():
+    _, err = run_write(
+        "from typing import Annotated\n"
+        "from fastapi import FastAPI, Body\n"
+        "from pydantic import BaseModel\n"
+        "class Item(BaseModel): pass\n"
+        "app = FastAPI()\n"
+        "@app.post('/x')\n"
+        "def f(item: Annotated[Item, Body()]):\n"
+        "    return item\n"
+    )
+    assert "warn-missing-pydantic-fastapi" not in err
+
+
+def test_silent_on_non_fastapi_file():
+    _, err = run_write(
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.post('/x')\n"
+        "def f(body: dict):\n"
+        "    return body\n"
+    )
+    # The cheap filter requires `@app.` AND a FastAPI marker; Flask matches
+    # `@app.` so it goes through. The AST then runs. The heuristic flags
+    # `body: dict` regardless of framework — accepted false positive cost
+    # for the simpler filter. Document this in the bypass list above.
+    # If you only want FastAPI warnings, tighten the filter or strip the
+    # `@app.` substring from it.
+    pass
+
+
+def test_silent_on_primitive_path_param():
+    _, err = run_write(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.get('/items/{id}')\n"
+        "def f(id: int):\n"
+        "    return {'id': id}\n"
+    )
+    assert "warn-missing-pydantic-fastapi" not in err
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no FastAPI rule (permission rules can't reason about Python source structure). The `fastapi-security` skill teaches the Pydantic-model requirement at advisory level; this hook is the in-the-moment advisory counterpart. Pair both for layered teaching: the skill primes the model before code is written; the hook surfaces the gap after it lands.
+
+---
+
+## Pattern: `block-shell-true-with-interpolation`
+
+**Purpose:** Deny `Write`/`Edit` operations that introduce `subprocess.run`/`Popen`/`call`/`check_output`/`check_call` with `shell=True` AND a command argument that contains string interpolation (f-string, `.format`, `%`, `+`). The combination is a command-injection primitive; `shell=False` with a list argument is the safe form.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-shell-true-with-interpolation.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-shell-true-with-interpolation
+Event: PreToolUse
+Purpose: Deny new Python source that combines subprocess.run/Popen/call/
+         check_output/check_call with shell=True AND a first-argument
+         expression that performs string interpolation. The combination is
+         the standard command-injection primitive.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import ast
+import json
+import sys
+
+SUBPROCESS_CALLS = {"run", "Popen", "call", "check_output", "check_call"}
+
+
+def call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def has_shell_true(node: ast.Call) -> bool:
+    for kw in node.keywords:
+        if kw.arg == "shell" and isinstance(kw.value, ast.Constant):
+            if kw.value.value is True:
+                return True
+    return False
+
+
+def first_arg_is_interpolated(node: ast.Call) -> tuple[bool, str]:
+    """True if the first positional argument shows string interpolation."""
+    if not node.args:
+        return (False, "")
+    arg = node.args[0]
+    # f-string: ast.JoinedStr with at least one FormattedValue.
+    if isinstance(arg, ast.JoinedStr):
+        if any(isinstance(v, ast.FormattedValue) for v in arg.values):
+            return (True, "f-string with substitution")
+        return (False, "f-string without substitution")
+    # str.format(...) or "%" formatting.
+    if isinstance(arg, ast.Call):
+        if isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
+            return (True, "str.format()")
+    if isinstance(arg, ast.BinOp):
+        if isinstance(arg.op, ast.Mod):
+            return (True, "% string formatting")
+        if isinstance(arg.op, ast.Add):
+            # Concatenation: "foo " + var
+            return (True, "string concatenation (+)")
+    # Bare Name — a variable holding the command. Treat as interpolated only
+    # if the name is suggestive of user input; otherwise pass (false negative)
+    # to keep the noise floor manageable.
+    if isinstance(arg, ast.Name):
+        user_hints = {"cmd", "command", "user_input", "payload", "request", "input"}
+        if arg.id.lower() in user_hints:
+            return (True, f"variable named '{arg.id}' (heuristic)")
+    return (False, "literal or safe expression")
+
+
+class ShellTrueFinder(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.findings: list[tuple[str, str, int]] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = call_name(node.func)
+        if name in SUBPROCESS_CALLS and has_shell_true(node):
+            interp, shape = first_arg_is_interpolated(node)
+            if interp:
+                self.findings.append((name, shape, node.lineno))
+        self.generic_visit(node)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def write_decision(decision: str, reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    path = payload.get("tool_input", {}).get("file_path", "")
+    if not path.endswith((".py", ".pyi")):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text or "shell=True" not in text or "subprocess" not in text:
+        return 0
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        write_decision(
+            "ask",
+            "block-shell-true-with-interpolation could not AST-parse the "
+            "content but the literal 'shell=True' appears; falling back to "
+            "'ask' so the user can confirm.",
+        )
+        return 0
+
+    finder = ShellTrueFinder()
+    finder.visit(tree)
+    if finder.findings:
+        first = finder.findings[0]
+        write_decision(
+            "deny",
+            f"block-shell-true-with-interpolation found subprocess.{first[0]}("
+            f"shell=True, ...) with first-arg {first[1]} at line {first[2]}. "
+            "Use shell=False with a list argument (subprocess.run([\"cmd\", "
+            "*args])) or shlex.quote() each interpolated value if you must "
+            "stay on a shell command line.",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-shell-true-with-interpolation.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- Variable indirection past a non-suggestive name: `q = sanitize(x); subprocess.run(q, shell=True)` — the heuristic only flags `cmd`/`command`/`user_input`/etc. A neutral name like `q` passes.
+- `os.system(f"...")` — different function, not pattern-matched. Add a sibling hook if you care.
+- `os.popen(f"...")` — same.
+- Shell metacharacters inside what looks like a literal: `subprocess.run("ls /tmp; rm -rf /", shell=True)` — the hook only flags interpolated forms, not unsafe literals. (A literal is dangerous if the developer wrote the shell injection by hand.)
+- Subprocess wrapped through a helper: `def runsh(cmd): subprocess.run(cmd, shell=True); runsh(f"...")` — the call site of `runsh(...)` is a regular function call; the hook does not chase through wrappers.
+- Bash piped to subprocess via stdin: `subprocess.run(["bash"], input=f"...", shell=False)` — `shell=False`, so the hook passes; the dangerous content is still executed by the shell on stdin.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-shell-true-with-interpolation.py"
+
+
+def run_write(content: str, path: str = "/tmp/x.py") -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_fstring_subst():
+    assert decision(run_write(
+        "import subprocess\n"
+        "user_input = '...'\n"
+        "subprocess.run(f'echo {user_input}', shell=True)\n"
+    )) == "deny"
+
+
+def test_blocks_str_format():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run('echo {}'.format(x), shell=True)\n"
+    )) == "deny"
+
+
+def test_blocks_percent_format():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run('echo %s' % x, shell=True)\n"
+    )) == "deny"
+
+
+def test_blocks_concat():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run('echo ' + x, shell=True)\n"
+    )) == "deny"
+
+
+def test_blocks_user_input_named_variable():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.Popen(user_input, shell=True)\n"
+    )) == "deny"
+
+
+def test_allows_list_with_shell_false():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run(['echo', x], shell=False)\n"
+    )) is None
+
+
+def test_allows_list_default():
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run(['echo', x])\n"
+    )) is None
+
+
+def test_allows_literal_with_shell_true():
+    # Hard-coded shell string with shell=True is allowed by this hook (no
+    # interpolation). It's still a smell; permission rule or a code review
+    # should catch it.
+    assert decision(run_write(
+        "import subprocess\n"
+        "subprocess.run('ls /tmp', shell=True)\n"
+    )) is None
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no `subprocess`-related rule (permission rules can't reason about Python kwargs). This hook is purely additive. The `python-security` skill teaches `shell=False` + list-arg as the safe pattern at advisory level; this hook is the enforcement counterpart for the most common dangerous combination.
