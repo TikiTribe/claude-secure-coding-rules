@@ -6166,3 +6166,84 @@ audited_rules:
         technique ID (ATLAS uses AML.T-prefixed IDs). Advisory only; appears in a
         single advisory-level rule.
     issues_filed: []
+
+  - path: rules/rag/observability/arize-phoenix/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Secure Trace Ingestion
+      - Embedding Drift Monitoring Protection
+      - Evaluation Dataset Protection
+      - LLM-as-Judge Security
+      - Retrieval Metrics Collection Security
+      - Local vs Hosted Deployment Security
+      - Export and Data Retention Security
+      - Vector Store Integration Security
+    notes: |
+      4 Critical API defects and 2 standards errors found. All code parses
+      syntactically (ast.parse passes), but multiple imports and parameter
+      calls reference APIs that do not exist in current arize-phoenix (v16.0.0).
+
+      ISSUE 1 — px.launch_app() called with fabricated parameters (CRITICAL)
+        Rules "Secure Trace Ingestion" (line 27) and "Local vs Hosted Deployment
+        Security" (line 498) call px.launch_app(enable_auth=True,
+        ssl_certfile=..., ssl_keyfile=..., allowed_origins=...). The actual
+        launch_app() signature accepts only: trace, host, port, root_path,
+        run_in_thread, notebook_environment, use_temp_dir. None of the auth/TLS/
+        CORS params exist. Phoenix UI auth is configured via PHOENIX_ENABLE_AUTH
+        and PHOENIX_SECRET environment variables and the "phoenix serve" CLI,
+        not Python API arguments. Every Do example using these params is a no-op.
+        Fix required: replace px.launch_app() auth params with PHOENIX_ENABLE_AUTH
+        / PHOENIX_SECRET env-var configuration; note that TLS termination is
+        handled by a reverse proxy, not by phoenix itself.
+
+      ISSUE 2 — phoenix.evals.EmbeddingDrift does not exist (CRITICAL)
+        Rule "Embedding Drift Monitoring Protection" (line 97) imports
+        "from phoenix.evals import EmbeddingDrift". EmbeddingDrift was part of
+        legacy evals 1.0, deprecated and removed in v12+ (CHANGELOG PR #12239:
+        "deprecate evals 1.0 and remove legacy experiments module"). The class
+        is absent from all current phoenix-evals source files. Raises ImportError.
+        Fix required: remove EmbeddingDrift; rewrite using current phoenix.evals
+        API (run_evals, llm_classify) or scipy.spatial distance functions.
+
+      ISSUE 3 — phoenix.trace.opentelemetry.OpenInferenceSpan does not exist (CRITICAL)
+        Rule "Vector Store Integration Security" (line 692) imports
+        "from phoenix.trace.opentelemetry import OpenInferenceSpan" and uses it
+        as a context manager. No OpenInferenceSpan class exists in
+        phoenix.trace.opentelemetry; the module exports OTel encoding utilities,
+        not a tracer. GitHub code search returns 0 results for OpenInferenceSpan
+        across the entire Arize-ai org. Raises ImportError at runtime.
+        Fix required: replace with standard OTel tracer pattern using
+        opentelemetry.trace.get_tracer() and openinference SemanticConventions.
+
+      ISSUE 4 — phoenix.datasets.Dataset does not exist (CRITICAL)
+        Rule "Evaluation Dataset Protection" (line 189) imports
+        "from phoenix.datasets import Dataset" and calls Dataset.from_file()
+        and Dataset.from_url(). The current src/phoenix/datasets/ directory
+        contains only an "evaluators" subdirectory; no Dataset class exists.
+        Raises ImportError at runtime.
+        Fix required: remove Dataset.from_file/from_url; rewrite using pandas
+        or pathlib with explicit sha256 integrity checks.
+
+      ISSUE 5 — OWASP LLM refs wrong number and missing :2025 qualifier (STANDARDS)
+        Line 80: "OWASP LLM06 (Sensitive Information Disclosure)" — in OWASP
+        LLM Top 10 2025, LLM06 is "Excessive Agency"; Sensitive Information
+        Disclosure is LLM02:2025. Wrong number and no year tag.
+        Line 349: "OWASP LLM01 (Prompt Injection)" — correct name for 2025 but
+        missing :2025 qualifier.
+        Fix required: change LLM06 ref to "OWASP LLM02:2025 (Sensitive
+        Information Disclosure)"; add :2025 qualifier to LLM01 ref.
+
+      ISSUE 6 — OTLP exporter TLS and collector-side filter coverage absent (MISSING)
+        Audit spec requires: (a) explicit rule that OTel traces export
+        INPUT_VALUE/OUTPUT_VALUE by default — PII risk not addressed as a rule;
+        (b) OTLP exporter TLS and bearer token via phoenix.otel.register(
+        endpoint=..., headers=...); (c) OTel collector attribute_filter processor
+        pattern for stripping PII before hosted Phoenix ingestion.
+        Fix required: add a rule covering phoenix.otel.register() secure
+        configuration and an advisory covering collector-side attribute filters,
+        with explicit note that INPUT_VALUE and OUTPUT_VALUE are exported by
+        default and must be masked if prompts/responses contain PII.
+    issues_filed: []
