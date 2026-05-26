@@ -3034,6 +3034,12 @@ audited_rules:
       - Command injection Do example uses POSIX fork/execlp. Correct on POSIX but
         non-portable to Windows. Advisory only.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (strncpy in Do): strncpy and safe_copy() removed from the Do block; replaced
+        with std::string-based copy (std::string name = user_input) and a snprintf alternative
+        for mandatory char* destinations; strncpy appears only in the Don't block.
+    issues_filed: []
+
   - path: rules/languages/r/CLAUDE.md
     status: passed
     reviewed_by: rocklambros
@@ -4225,4 +4231,117 @@ audited_rules:
       - Untrusted tokenizer.json source check is not explicitly addressed; the
         trust_remote_code=False coverage is correct but does not discuss the
         tokenizer.json attack surface independently.
+    issues_filed: []
+
+  - path: rules/backend/crewai/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Implement Agent Trust Boundaries
+      - Secure Task Delegation
+      - Isolate Crew Memory
+      - Validate Agent Tool Usage
+      - Validate Crew Outputs
+    notes: |
+      Audited all 5 rule sections. Five blocking defects found across API correctness,
+      standards refs, and code bugs. No deprecated denylist mitigations for prompt
+      injection. Don't examples reflect real attack classes (privilege escalation via
+      delegation, path traversal in output_file, arbitrary code execution via exec()).
+
+      OWASP LLM 2023->2025 NUMBERING: YES — applies throughout this file.
+        All four OWASP LLM inline citations use 2023 (v1.1) numbers without :2025 qualifiers.
+        Three carry the wrong number when read against the 2025 taxonomy:
+          - LLM08 (lines 78, 148, Quick Ref lines 369-370): In 2025 LLM08:2025 is
+            "Vector and Embedding Weaknesses." Excessive Agency (the 2023 LLM08 intent
+            for both trust-boundary and delegation rules) is LLM06:2025.
+            Fix: change "OWASP LLM08" to "OWASP LLM06:2025" at both inline Refs lines
+            and in the Quick Reference table.
+          - LLM07 (line 292, Quick Ref line 372): In 2025 LLM07:2025 is "System Prompt
+            Leakage." Insecure Plugin/Tool Design (the 2023 LLM07 intent for the tool
+            validation rule) maps to LLM06:2025 (Excessive Agency).
+            Fix: change "OWASP LLM07" to "OWASP LLM06:2025" at line 292 and Quick Ref.
+          - LLM02 (line 361, Quick Ref line 373): In 2025 LLM02:2025 is "Sensitive
+            Information Disclosure." Insecure Output Handling (the 2023 LLM02 intent)
+            is LLM05:2025 "Improper Output Handling."
+            Fix: change "OWASP LLM02" to "OWASP LLM05:2025" at line 361 and Quick Ref.
+          - LLM01 (line 222): correct category name (Prompt Injection), missing :2025
+            qualifier only. Fix: add :2025 qualifier.
+
+      ISSUE 1 — human_input on Agent is not a valid crewai parameter (API BUG / BLOCKING)
+        Line 56: create_write_agent() passes human_input=require_approval to Agent().
+        In crewai 0.x, human_input is a Task-level parameter, not an Agent-level
+        parameter. Agent() does not accept human_input; the kwarg is silently ignored
+        by Pydantic's extra='ignore' model config, meaning the Do example claims to
+        enforce human-in-loop approval on write agents but provides no such control at
+        runtime. Any agent created via create_write_agent() acts without human approval
+        regardless of the require_approval argument. This is the primary security control
+        for high-impact write operations in the SecureCrewFactory pattern, and it is a no-op.
+        Fix required: move human_input=True to the Task level for tasks assigned to
+        write agents; remove human_input from Agent() instantiation.
+
+      ISSUE 2 — Process not imported in the Secure Task Delegation Do block (CODE BUG / BLOCKING)
+        The Do block (line 90) imports "from crewai import Task, Crew" but uses
+        Process.sequential at line 115 (Crew process= argument). Process is not
+        imported. This raises NameError: name 'Process' is not defined when the Crew is
+        instantiated. The Don't block at line 128 uses Process.hierarchical with the same
+        missing import. Both examples fail at runtime before any security controls run.
+        Fix required: change import to "from crewai import Task, Crew, Process" in the
+        Do block. Add the same import to the Don't block for consistency.
+
+      ISSUE 3 — SecureFileReadTool: missing Path import and unwired args_schema (CODE BUG / BLOCKING)
+        The SecureFileReadTool Do block (line 236) does not import Path. The _run()
+        method (line 247) calls Path("/app/data").resolve() and file_path.is_relative_to(),
+        both of which raise NameError: name 'Path' is not defined at the first invocation.
+        Additionally, the inner InputSchema class (line 244) is defined but never
+        registered via the class-level args_schema field. In crewai's BaseTool, input
+        validation is triggered only when args_schema: Type[BaseModel] is declared as a
+        class attribute. Without "args_schema = InputSchema" in the class body, crewai
+        bypasses Pydantic validation and passes the raw string to _run(), rendering the
+        regex pattern constraint on filename a dead control. The path traversal guard in
+        _run() still executes (once NameError is fixed) but the claimed input validation
+        does not apply.
+        Fix required: add "from pathlib import Path" to the Do block imports; add
+        "args_schema: Type[BaseModel] = InputSchema" as a class attribute on
+        SecureFileReadTool after the description field; add "from typing import Type" if
+        not already present.
+
+      ISSUE 4 — memory_config is not a Crew() parameter in crewai 0.x (API BUG / BLOCKING)
+        Line 187: Crew() is called with memory_config={"path": self.memory_path}.
+        The crewai 0.x Crew class does not accept a memory_config keyword argument; the
+        documented parameters are agents, tasks, process, verbose, manager_llm, config,
+        max_rpm, language, memory, cache, embedder, full_output, step_callback,
+        task_callback, share_crew, and output_log_file. Passing an unknown kwarg causes
+        a Pydantic ValidationError at Crew instantiation or is silently ignored. In either
+        case the per-crew memory path isolation that SecureCrew.run() is designed to enforce
+        is not applied. The comment "Memory isolated to this crew instance" is false.
+        Fix required: remove memory_config from Crew(); note that crewai 0.x provides no
+        public path-based memory isolation API; recommend an external vector store per
+        crew_id, or use the embedder config to point to a separate collection/namespace.
+
+      ISSUE 5 — parse_raw() removed in Pydantic v2 (DEPRECATED API / BLOCKING)
+        Line 317: CrewOutput.parse_raw(result.raw) uses the Pydantic v1 parse_raw()
+        class method. Pydantic v2 (the default install since 2023 and a crewai 0.28+
+        dependency) removed parse_raw() entirely; calling it raises AttributeError. In
+        a crewai 0.x environment with Pydantic v2, the output validation guard fails
+        immediately on the first crew result, leaving all downstream sanitization
+        (sanitize_text, contains_sensitive_patterns) unreachable.
+        Fix required: replace "CrewOutput.parse_raw(result.raw)" with
+        "CrewOutput.model_validate_json(result.raw)"; add a try/except
+        pydantic.ValidationError to catch malformed JSON in the crew output.
+
+      Non-blocking observations (no status change):
+      - MITRE ATLAS AML.T0051 (line 78): same technique cited in agent-security.md and
+        rag-security.md. Retained as unverifiable but plausible per prior audit decisions.
+        ATLAS live site remains inaccessible for confirmation.
+      - Quick Reference table (lines 369-373): OWASP LLM refs mirror the inline Refs
+        citations. No separate fix needed; applying the inline corrections will also fix
+        the Quick Reference table.
+      - CWE-863, CWE-269, CWE-200, CWE-359, CWE-78, CWE-22, CWE-94: all valid and
+        correctly mapped to their respective rule categories. No retired or fabricated IDs.
+      - Disabling memory entirely (memory=False) in Isolate Crew Memory is the correct
+        primary recommendation for sensitive operations. ISSUE 4 only affects the
+        secondary per-session isolation pattern; the primary disable-memory guidance is
+        unaffected and correct.
     issues_filed: []
