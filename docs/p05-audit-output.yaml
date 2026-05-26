@@ -2823,3 +2823,57 @@ audited_rules:
       - unsafe read_value() Do example has a correct # Safety doc comment and minimal
         unsafe block. Satisfies the unsafe block discipline checklist item.
     issues_filed: []
+
+  - path: rules/languages/julia/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Avoid Dangerous Metaprogramming
+      - Secure System Commands
+      - Use Type Annotations for Security
+      - Manage Package Dependencies Securely
+      - Secure Serialization
+      - Prevent Data Leakage
+      - Secure HTTP Operations
+      - Use Cryptographic Randomness
+      - Prevent Path Traversal
+    notes: |
+      Audited all 9 rule sections across 7 categories. One blocking defect: Distributed.jl
+      remote execution risks are absent despite being a checklist-required topic for Julia.
+      All other checklist items pass.
+
+      Julia 1.10/1.11 syntax: PASS. Multiple dispatch, type annotations, RandomDevice(),
+      Meta.parse, Serialization.deserialize, JSON3, JLD2 usage is correct throughout.
+
+      Standards refs: PASS. All CWE IDs are valid. OWASP refs use 2025 A0x numbering.
+      No year-qualifier inconsistency (these are web OWASP refs, not LLM Top 10).
+
+      Julia-specific checklist:
+        eval/Meta.parse on untrusted -> RCE: COVERED (strict, lines 50-51, correct).
+        Type safety / avoiding Any: COVERED (warning rule, type annotations enforced).
+        Serialization.deserialize on untrusted: COVERED (strict, line 253, recommends
+          JSON3 and flags JLD2 from untrusted as dangerous). Arrow.jl not mentioned but
+          JSON3 is a sound alternative per the checklist.
+        Distributed.jl remote execution risks: NOT COVERED. No rule or mention of
+          @spawnat, remotecall(), RemoteChannel, addprocs(), or worker trust boundaries.
+
+      No deprecated mitigations. HTTP.get with require_ssl_verification=false is a real
+      HTTP.jl kwarg. RandomDevice() is the current Julia CSPRNG interface. No
+      self-contradictions found. All Don't examples reflect real Julia vulnerabilities.
+
+      ISSUE 1 — Distributed.jl remote execution risks absent (COVERAGE GAP / BLOCKING)
+        Julia's Distributed standard library exposes @spawnat, remotecall(),
+        remotecall_fetch(), addprocs(), and RemoteChannel for multi-process computing.
+        Untrusted code passed to @spawnat or remotecall() on a worker executes with the
+        same permissions as the worker process. addprocs() from untrusted input can
+        spawn arbitrary worker processes. There is no rule, note, or mention of these
+        risks anywhere in the file. The checklist explicitly requires Distributed.jl
+        remote execution risks to be covered.
+        Fix required: add a strict-level rule covering: (a) never pass user-supplied
+        expressions to @spawnat or remotecall(); (b) validate and allowlist any code
+        path that triggers addprocs(); (c) authenticate and authorize worker connections;
+        (d) note that RemoteChannel data must be validated on receipt because workers
+        may be compromised. Appropriate refs: CWE-94, CWE-78, OWASP A03:2025.
+    issues_filed: []
