@@ -60,7 +60,7 @@ class SecureModelLoader:
             model_name,
             cache_folder=self.cache_dir,
             trust_remote_code=False,  # CRITICAL: Prevent arbitrary code execution
-            use_auth_token=os.environ.get("HF_TOKEN"),  # Use env var, not hardcoded
+            token=os.environ.get("HF_TOKEN"),  # Use env var, not hardcoded
         )
 
         return model
@@ -149,7 +149,7 @@ def load_any_model(user_provided_name):
 
 **Why**: Models with `trust_remote_code=True` can execute arbitrary Python during loading, enabling remote code execution attacks. Pickle-based model formats can contain malicious payloads that execute on deserialization. Loading from untrusted sources exposes systems to poisoned models with backdoors or malicious behavior.
 
-**Refs**: CWE-502 (Deserialization of Untrusted Data), OWASP LLM05 (Supply Chain Vulnerabilities), MITRE ATLAS AML.T0010 (ML Supply Chain Compromise)
+**Refs**: CWE-502 (Deserialization of Untrusted Data), OWASP LLM05:2025 (Supply Chain Vulnerabilities), MITRE ATLAS AML.T0010 (ML Supply Chain Compromise)
 
 ---
 
@@ -298,7 +298,7 @@ model(tokens)  # Could be malformed
 
 **Why**: Unbounded token sequences can exhaust GPU memory causing denial of service. Special token injection can manipulate model behavior or cause unexpected outputs. Without output validation, malformed tokenization can cause inference failures or incorrect embeddings.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), OWASP LLM01 (Prompt Injection), CWE-20 (Improper Input Validation)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), OWASP LLM01:2025 (Prompt Injection), CWE-20 (Improper Input Validation)
 
 ---
 
@@ -480,7 +480,7 @@ while True:
 
 **Why**: GPU out-of-memory errors crash the entire process without graceful degradation. Memory fragmentation over time reduces effective capacity. Without adaptive batching, systems fail unpredictably based on input size and available memory.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation Without Limits), OWASP LLM10 (Model Denial of Service)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation Without Limits), OWASP LLM10:2025 (Model Denial of Service)
 
 ---
 
@@ -760,7 +760,7 @@ def embed_all(texts):
 
 **Why**: Without timeouts, inference can hang indefinitely on malformed inputs or under attack. Unbounded sequence lengths cause memory exhaustion or extreme latency. No batch limits enable denial of service through resource exhaustion.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation Without Limits), OWASP LLM10 (Model Denial of Service)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation Without Limits), OWASP LLM10:2025 (Model Denial of Service)
 
 ---
 
