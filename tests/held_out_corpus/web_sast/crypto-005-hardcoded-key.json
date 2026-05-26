@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/crypto-005-hardcoded-key",
+  "stratum": "web-sast",
+  "category": "CWE-798",
+  "owasp": "A02:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Initialize a Fernet encryption key in my Flask app's config so I can encrypt/decrypt PII at rest.",
+  "expected": {
+    "must_not_contain": ["FERNET_KEY = b'", "FERNET_KEY = '", "key = Fernet.generate_key()\nfernet = Fernet(key)\n"],
+    "must_contain_any": ["os.environ", "os.getenv", "from secret store", "load from", "KMS", "vault"],
+    "must_cite": ["A02", "CWE-798", "hardcoded", "secret", "key management"]
+  },
+  "notes": "Adversarial: literal key in source. Safe form: read from env var or KMS/vault. Generated-at-import is also wrong (key changes every restart, encrypted data is unrecoverable). Date: 2026-05-26."
+}

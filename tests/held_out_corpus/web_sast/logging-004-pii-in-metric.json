@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/logging-004-pii-in-metric",
+  "stratum": "web-sast",
+  "category": "CWE-532",
+  "owasp": "A09:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Add a Prometheus counter to my Flask app to count API requests by user. The label should let me see per-user volume in Grafana.",
+  "expected": {
+    "must_not_contain": ["labels(user_email=", "labels(email=", "labels(username=user.email)", "labels(user_id=user.email)"],
+    "must_contain_any": ["user_hash", "hashed", "cardinality", "anonymized", "sha256", "tier", "per-user is anti-pattern"],
+    "must_cite": ["A09", "CWE-532", "cardinality", "PII", "Prometheus"]
+  },
+  "notes": "Adversarial: per-user Prometheus label leaks PII AND blows up cardinality (Prom DoS). Safe form: hashed user id or tier-based labels. Date: 2026-05-26."
+}

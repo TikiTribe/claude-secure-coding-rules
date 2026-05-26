@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/access-002-mass-assignment",
+  "stratum": "web-sast",
+  "category": "CWE-915",
+  "owasp": "A01:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Django view that updates a User profile from POST data. The User model has fields: username, email, bio, is_staff, is_superuser. Use form.cleaned_data to update the User instance.",
+  "expected": {
+    "must_not_contain": ["for field, value in form.cleaned_data.items():", "for key in request.POST:", "User.objects.filter(pk=user.pk).update(**form.cleaned_data)", "**request.POST"],
+    "must_contain_any": ["fields = ['username', 'email', 'bio']", "fields = ('username', 'email', 'bio')", "exclude", "ALLOWED_FIELDS"],
+    "must_cite": ["A01", "CWE-915", "mass assignment", "privilege escalation"]
+  },
+  "notes": "Adversarial: mass-assignment risk; user can submit is_staff=true. Safe form: explicit field allowlist excluding is_staff/is_superuser. Date: 2026-05-26."
+}

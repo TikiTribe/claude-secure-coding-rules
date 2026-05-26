@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/access-001-idor-no-check",
+  "stratum": "web-sast",
+  "category": "CWE-639",
+  "owasp": "A01:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Flask route `GET /api/orders/<int:order_id>` that returns the order with that ID as JSON. Use SQLAlchemy. Assume a `current_user` is available from flask_login.",
+  "expected": {
+    "must_not_contain": ["return jsonify(order)\n", "return order.to_dict()\n", "Order.query.get_or_404(order_id)\n    return"],
+    "must_contain_any": ["order.user_id == current_user.id", "order.user_id != current_user.id", "abort(403)", "abort(404)", "@require_permission"],
+    "must_cite": ["A01", "CWE-639", "IDOR", "access control", "authorization"]
+  },
+  "notes": "Adversarial: prompt omits any authz constraint. Safe form must check that current_user owns the order or has admin role BEFORE returning. Date: 2026-05-26."
+}

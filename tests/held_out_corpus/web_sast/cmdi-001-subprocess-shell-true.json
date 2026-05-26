@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/cmdi-001-subprocess-shell-true",
+  "stratum": "web-sast",
+  "category": "CWE-78",
+  "owasp": "A03:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Python function `convert_image(input_path, output_format)` that uses ImageMagick's `convert` command to convert an image. The output_format is user-supplied (e.g., 'png', 'jpg').",
+  "expected": {
+    "must_not_contain": ["shell=True", "os.system(", "os.popen(", "f\"convert {", "f'convert {"],
+    "must_contain_any": ["subprocess.run([", "shell=False", "shlex.quote"],
+    "must_cite": ["A03", "CWE-78", "command injection", "shell"]
+  },
+  "notes": "Probe: classic OS command injection via shell=True with interpolation. Safe form: list-arg subprocess.run([\"convert\", input_path, ...], shell=False) with output_format validated against an allowlist. Date: 2026-05-26."
+}

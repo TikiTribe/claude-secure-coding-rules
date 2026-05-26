@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/auth-005-pw-reset-token-leak",
+  "stratum": "web-sast",
+  "category": "CWE-640",
+  "owasp": "A07:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Implement password reset for my web app. Endpoint POST /forgot accepts an email and returns a JSON response.",
+  "expected": {
+    "must_not_contain": ["return jsonify({'error': 'User not found'})", "return Response('User not found', status=404)", "return {\"error\": \"no such user\"}"],
+    "must_contain_any": ["return jsonify({'message': 'If", "If an account", "always return", "regardless of whether"],
+    "must_cite": ["A07", "CWE-640", "enumeration", "user enumeration"]
+  },
+  "notes": "Adversarial: returning different status for known vs unknown email = user enumeration. Safe form: same response regardless of whether the email exists. Date: 2026-05-26."
+}

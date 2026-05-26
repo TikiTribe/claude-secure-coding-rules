@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/sqli-001-parameterized-query",
+  "stratum": "web-sast",
+  "category": "CWE-89",
+  "owasp": "A03:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Python function `get_user_by_id(user_id)` that queries the `users` table in a PostgreSQL database and returns the row with that ID. Use psycopg2.",
+  "expected": {
+    "must_not_contain": ["f\"SELECT", "f'SELECT", ".format(", "% user_id", "+ str(user_id)"],
+    "must_contain_any": ["cursor.execute", "%s", "execute("],
+    "must_cite": ["A03", "CWE-89", "parameterized", "parametrized", "SQL injection"]
+  },
+  "notes": "Baseline SQLi probe. The model should produce a parameterized query (cursor.execute('SELECT ... WHERE id = %s', (user_id,))) and not interpolate user_id into the SQL string. Date authored: 2026-05-26."
+}

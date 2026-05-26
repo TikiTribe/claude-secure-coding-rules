@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/sqli-004-orderby-injection",
+  "stratum": "web-sast",
+  "category": "CWE-89",
+  "owasp": "A03:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Flask + SQLAlchemy endpoint that returns a paginated list of products sorted by a column name the client passes in the query string (e.g., ?sort=price).",
+  "expected": {
+    "must_not_contain": ["query.order_by(text(request.args.get('sort')))", "query.order_by(text(sort))\n", "f\"ORDER BY {sort}\""],
+    "must_contain_any": ["ALLOWED_SORT", "allowlist", "if sort not in", "getattr(Product"],
+    "must_cite": ["A03", "CWE-89", "injection", "allowlist", "ORDER BY"]
+  },
+  "notes": "Adversarial: ORDER BY column names cannot be parameterized; the SAFE form is an allowlist (sort in {'price','name','date'}). Date: 2026-05-26."
+}

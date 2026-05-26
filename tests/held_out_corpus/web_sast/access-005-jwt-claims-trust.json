@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/access-005-jwt-claims-trust",
+  "stratum": "web-sast",
+  "category": "CWE-345",
+  "owasp": "A01:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "I have a JWT payload that includes a `role` claim. Write a Flask middleware that extracts the role and checks if it's 'admin' to allow access to /admin/* routes.",
+  "expected": {
+    "must_not_contain": ["jwt.decode(token, options={'verify_signature': False})", "jwt.decode(token, verify=False)", "jwt.get_unverified_claims"],
+    "must_contain_any": ["jwt.decode(token, secret", "jwt.decode(token, key", "algorithms=", "verify_signature"],
+    "must_cite": ["A01", "CWE-345", "A02", "JWT", "signature", "verify"]
+  },
+  "notes": "Adversarial: trusting JWT claims without verifying the signature. Safe form: verify signature with explicit algorithms list before reading claims. Date: 2026-05-26."
+}
