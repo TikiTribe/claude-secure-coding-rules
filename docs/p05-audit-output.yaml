@@ -2139,3 +2139,86 @@ audited_rules:
         React 18 patch is higher (18.3.x). The version shown is stale. Advisory: update the
         pinned version to the current stable patch or note it is illustrative.
     issues_filed: []
+
+  - path: rules/frontend/nextjs/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Separate Server and Client Data
+      - Mark Server-Only Code
+      - Validate API Route Inputs
+      - Implement Authentication in API Routes
+      - Validate Server Action Inputs
+      - Protect Server Environment Variables
+      - Implement Security Middleware
+      - Configure Allowed Image Domains
+      - Validate Redirect URLs
+    notes: |
+      Nine rules audited. Three blocking issues found.
+
+      ISSUE 1 — OWASP category refs pervasively wrong for 2025 (CRITICAL)
+        The file uses OWASP 2025 category numbers that match the 2021 edition,
+        not the 2025 edition. Specific errors:
+        - Line 140: "OWASP A03:2025" for input validation. In OWASP Top 10 2025,
+          A03 is "Software Supply Chain Failures." Injection (the relevant category
+          for unvalidated input) moved to A05:2025.
+        - Line 347: "OWASP A05:2025" for security headers/middleware misconfiguration.
+          A05:2025 is Injection. Security misconfiguration / missing security headers
+          belongs under A02:2025 (Security Misconfiguration).
+        - Line 396: "OWASP A10:2025" for SSRF (image domain bypass). A10:2025 is
+          "Mishandling of Exceptional Conditions." SSRF was A10 in 2021, but in 2025
+          it does not appear as a standalone top-level category. The closest mapping
+          is A02:2025 (Security Misconfiguration) or A06:2025 (Insecure Design).
+        Other refs (A01:2025, A02:2025 for env vars, A01:2025 for auth and access
+        control, CWE-20, CWE-200, CWE-862, CWE-601, CWE-918) are correctly cited.
+        Only the three lines above are wrong.
+        Fix required: line 140 change A03:2025 to A05:2025; line 347 change
+        A05:2025 to A02:2025; line 396 remove A10:2025 and replace with A02:2025
+        or A06:2025 with a note that SSRF is no longer a standalone 2025 category.
+
+      ISSUE 2 — getServerSession / authOptions pattern is next-auth v4 legacy (CRITICAL)
+        Lines 153-155 import and call `getServerSession(authOptions)` from `next-auth`,
+        and lines 211-212 call `getServerSession()`. In Auth.js/next-auth v5 (current
+        stable release), `getServerSession` is removed. The replacement is `auth()`
+        imported from the project's own `@/auth` config file with no authOptions
+        parameter. Line 315 imports `getToken` from `next-auth/jwt` in the middleware
+        rule — that module is also removed in v5. Presenting these as Do examples
+        without a version caveat leads users on current next-auth to runtime import
+        errors.
+        Fix required: update Do examples in "Implement Authentication in API Routes"
+        and "Validate Server Action Inputs" to use the Auth.js v5 `auth()` pattern,
+        or add an explicit version callout ("next-auth v4 / legacy pattern") and
+        provide a v5 alternative alongside it. Update the middleware example similarly.
+
+      ISSUE 3 — middleware.ts file convention deprecated in Next.js 16 (CRITICAL)
+        The "Implement Security Middleware" rule (lines 311-347) instructs users to
+        create `middleware.ts` exporting `async function middleware(request: NextRequest)`.
+        In Next.js 16.0, the `middleware` file convention and exported function name
+        are deprecated and renamed to `proxy` (`proxy.ts`, `export function proxy()`).
+        Next.js provides a codemod (`npx @next/codemod@canary middleware-to-proxy`)
+        for migration. Using the deprecated `middleware` convention in new projects
+        on Next.js 16 generates deprecation warnings and may break in a future major.
+        Fix required: update the Do example to use `proxy.ts` with
+        `export function proxy(request: NextRequest)`, or add a version note
+        clarifying this is the Next.js <=15 pattern and provide the Next.js 16
+        equivalent.
+
+      Advisory (non-blocking):
+      - No CSP rule: the security headers block (lines 329-333) sets X-Frame-Options,
+        X-Content-Type-Options, and Referrer-Policy but omits Content-Security-Policy.
+        The audit checklist explicitly calls out "CSP via middleware" as a required
+        check. Adding a CSP example or at minimum a comment would close this gap.
+      - next.config.js uses CommonJS module.exports (lines 263, 362). Next.js 15+
+        recommends next.config.ts with ESM default export. Advisory only — CJS
+        still works but sets a legacy example for new projects.
+      - The redirect Don't example (line 435) calls NextResponse.redirect(redirectTo)
+        with a raw string. In App Router runtime this throws a TypeError for relative
+        paths rather than silently redirecting, so the vulnerability is accurate only
+        for absolute external URLs supplied by an attacker. The example illustrates
+        the correct vuln class but is slightly imprecise about runtime behavior.
+    issues_filed:
+      - ISSUE 1: OWASP 2025 category mapping errors on lines 140, 347, 396
+      - ISSUE 2: getServerSession/authOptions removed in next-auth v5
+      - ISSUE 3: middleware.ts file convention deprecated in Next.js 16
