@@ -53,7 +53,7 @@ CMD ["python3", "/app/app.py"]
 
 **Why**: Minimal images reduce attack surface by eliminating unnecessary packages, shells, and utilities that attackers could exploit. A typical Ubuntu image contains 100+ binaries that can be used for privilege escalation, lateral movement, or data exfiltration. Distroless images contain only the application and its runtime dependencies, dramatically reducing vulnerability count.
 
-**Refs**: CWE-250, CIS Docker Benchmark 4.1, NIST 800-190 Section 3.1
+**Refs**: CWE-250, CIS Docker Benchmark 4.1, NIST SP 800-190 Section 3.1
 
 ---
 
@@ -118,7 +118,7 @@ CMD ["node", "server.js"]
 
 **Why**: Container escape vulnerabilities allow attackers to break out of the container and access the host system. If the container runs as root (UID 0), a successful escape grants root privileges on the host. Running as non-root limits the blast radius of container escapes and prevents modification of system files within the container.
 
-**Refs**: CWE-250, CWE-269, CIS Docker Benchmark 4.1, NIST 800-190 Section 4.2.1
+**Refs**: CWE-250, CWE-269, CIS Docker Benchmark 4.1, NIST SP 800-190 Section 4.3
 
 ---
 
@@ -144,7 +144,7 @@ jobs:
         run: docker build -t myapp:${{ github.sha }} .
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@a20de5420d57c4102486cdd9349b532415f8050e # v0.30.0
         with:
           image-ref: 'myapp:${{ github.sha }}'
           format: 'sarif'
@@ -153,7 +153,7 @@ jobs:
           exit-code: '1'  # Fail on critical/high vulnerabilities
 
       - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
 ```
@@ -187,7 +187,7 @@ jobs:
 
 **Why**: Container images frequently contain vulnerabilities in base images, libraries, and dependencies. Without scanning, critical vulnerabilities like remote code execution flaws may be deployed to production. Automated scanning catches known CVEs before deployment and enforces security policies through CI/CD gates.
 
-**Refs**: CWE-1104, NIST 800-190 Section 3.2, CIS Docker Benchmark 4.4
+**Refs**: CWE-1104, NIST SP 800-190 Section 3.2, CIS Docker Benchmark 4.4
 
 ---
 
@@ -208,9 +208,10 @@ cosign sign --key cosign.key myregistry.io/myapp:v1.0.0
 # Verify signature before pulling
 cosign verify --key cosign.pub myregistry.io/myapp:v1.0.0
 
-# Sign with OIDC identity (keyless)
-cosign sign --oidc-issuer=https://token.actions.githubusercontent.com \
-  myregistry.io/myapp:v1.0.0
+# Sign with keyless OIDC identity in CI (cosign v2+)
+# OIDC token is auto-detected from the GitHub Actions environment
+# The --oidc-issuer flag was removed in cosign v2.0 (June 2023)
+cosign sign --yes myregistry.io/myapp@sha256:<digest>
 ```
 
 ```yaml
@@ -251,7 +252,7 @@ docker run untrusted-registry.io/someapp:latest
 
 **Why**: Without image signing, attackers can replace legitimate images with malicious versions through registry compromise, man-in-the-middle attacks, or typosquatting. Signed images provide cryptographic proof of origin and integrity, ensuring the image hasn't been modified since it was built by a trusted party.
 
-**Refs**: CWE-494, NIST 800-190 Section 3.3, SLSA Level 2
+**Refs**: CWE-494, NIST SP 800-190 Section 3.5, SLSA Build L2 (SLSA v1.1)
 
 ---
 
@@ -339,7 +340,7 @@ COPY credentials.json /app/credentials.json
 
 **Why**: Secrets embedded in container images are stored in image layers and can be extracted by anyone with access to the image. Build arguments are visible in image history. Even if secrets are deleted in later layers, they remain accessible in earlier layers. This exposes credentials to unauthorized access and makes rotation difficult.
 
-**Refs**: CWE-798, CWE-522, CIS Docker Benchmark 4.10, NIST 800-190 Section 4.2.3
+**Refs**: CWE-798, CWE-522, CIS Docker Benchmark 4.10, NIST SP 800-190 Section 4.3
 
 ---
 
@@ -418,7 +419,7 @@ spec:
 
 **Why**: A writable root filesystem allows attackers to modify application binaries, install backdoors, write malware, or modify configuration files. Read-only filesystems prevent persistent modifications and limit the impact of application compromise. Specific writable directories can be mounted for legitimate application needs.
 
-**Refs**: CWE-284, CIS Docker Benchmark 5.12, NIST 800-190 Section 4.2.2
+**Refs**: CWE-284, CIS Docker Benchmark 5.12, NIST SP 800-190 Section 4.3
 
 ---
 
@@ -474,7 +475,7 @@ docker run --cap-add=ALL myapp:latest
 
 **Why**: Linux capabilities divide root privileges into distinct units. Default container capabilities include dangerous permissions like CAP_NET_RAW (packet crafting), CAP_SYS_CHROOT (escape attempts), and CAP_SETUID (privilege escalation). Dropping all capabilities and adding back only required ones follows least privilege and reduces attack surface.
 
-**Refs**: CWE-250, CWE-269, CIS Docker Benchmark 5.3, NIST 800-190 Section 4.2.1
+**Refs**: CWE-250, CWE-269, CIS Docker Benchmark 5.3, NIST SP 800-190 Section 4.3
 
 ---
 
@@ -575,7 +576,7 @@ docker run --network db-net --network backend-net postgres:latest
 
 **Why**: Without network segmentation, a compromised container can access any other container, the Kubernetes API, cloud metadata services, and external networks. Network policies implement zero-trust networking by explicitly defining allowed communication patterns, limiting lateral movement and data exfiltration.
 
-**Refs**: CWE-284, CIS Kubernetes Benchmark 5.3, NIST 800-190 Section 4.3.2, NSA Kubernetes Hardening Guide
+**Refs**: CWE-284, CIS Kubernetes Benchmark 5.3, NIST SP 800-190 Section 4.3, NSA Kubernetes Hardening Guide
 
 ---
 
@@ -664,7 +665,7 @@ spec:
 
 **Why**: Containers without resource limits can consume all available host resources, causing denial of service to other containers. Attackers can exploit this through resource exhaustion attacks (fork bombs, memory leaks, crypto mining). Resource limits ensure fair sharing, prevent noisy neighbor problems, and limit the impact of compromised containers.
 
-**Refs**: CWE-400, CWE-770, CIS Docker Benchmark 5.10-5.14, NIST 800-190 Section 4.2.4
+**Refs**: CWE-400, CWE-770, CIS Docker Benchmark 5.10-5.14, NIST SP 800-190 Section 4.3
 
 ---
 
@@ -742,7 +743,7 @@ spec:
 
 **Why**: Without health checks, containers that have crashed, deadlocked, or become unresponsive continue running and receiving traffic. This leads to service degradation and makes security incidents harder to detect. Health checks enable automatic recovery, load balancer integration, and can detect compromise indicators.
 
-**Refs**: CIS Docker Benchmark 4.6, NIST 800-190 Section 4.4.1
+**Refs**: CIS Docker Benchmark 4.6, NIST SP 800-190 Section 4.4
 
 ---
 
@@ -817,7 +818,7 @@ RUN pip install -r requirements.txt
 
 **Why**: Container supply chains are targeted by attackers to distribute malware widely. Compromised base images, malicious packages, and tampered builds can affect thousands of deployments. Supply chain security measures including pinned versions, digest verification, SBOM generation, and provenance attestation provide assurance about the origin and integrity of container contents.
 
-**Refs**: CWE-1104, CWE-494, NIST 800-190 Section 3.3, SLSA Framework
+**Refs**: CWE-1104, CWE-494, NIST SP 800-190 Section 3.5, SLSA Framework
 
 ---
 
@@ -880,7 +881,7 @@ spec:
 
 **Why**: Public registries can host malicious images with similar names to legitimate ones (typosquatting). Without authentication, anyone can pull your private images if the registry is misconfigured. Using ImagePullPolicy: IfNotPresent means containers may run outdated, vulnerable images. Authenticated registries with access controls ensure only authorized images are deployed.
 
-**Refs**: CWE-284, CWE-494, CIS Docker Benchmark 3.1-3.5, NIST 800-190 Section 3.4
+**Refs**: CWE-284, CWE-494, CIS Docker Benchmark 2.1, NIST SP 800-190 Section 3.5
 
 ---
 
@@ -892,7 +893,18 @@ spec:
 
 **Do**: Implement runtime security monitoring and threat detection
 ```yaml
-# Falco rules for container runtime security
+# Falco lists and rules for container runtime security
+# List definitions are required; Falco refuses to load rules that reference undefined lists.
+# shell_binaries is a Falco built-in; define the rest explicitly.
+- list: expected_processes
+  items: [python3, node, java, nginx, gunicorn]
+
+- list: expected_parent_processes
+  items: [containerd-shim, runc]
+
+- list: allowed_shell_parents
+  items: [sshd, sudo]
+
 - rule: Unexpected Process in Container
   desc: Detect unexpected processes spawned in containers
   condition: >
@@ -921,7 +933,8 @@ spec:
   desc: Detect access to sensitive files
   condition: >
     open_read and container and
-    fd.name in (/etc/shadow, /etc/passwd, /etc/kubernetes/*)
+    (fd.name in (/etc/shadow, /etc/passwd) or
+     fd.name startswith "/etc/kubernetes/")
   output: >
     Sensitive file read in container
     (user=%user.name file=%fd.name container=%container.name)
@@ -930,6 +943,7 @@ spec:
 
 ```yaml
 # Kubernetes: Deploy Falco for runtime monitoring
+# Pin to a specific version tag; :latest violates the Image Immutability rule.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -943,7 +957,7 @@ spec:
     spec:
       containers:
       - name: falco
-        image: falcosecurity/falco:latest
+        image: falcosecurity/falco:0.38.2  # pin to a specific release
         securityContext:
           privileged: true  # Required for eBPF
         volumeMounts:
@@ -975,7 +989,7 @@ spec:
 
 **Why**: Build-time security scanning cannot detect runtime attacks such as container escapes, cryptomining, reverse shells, or zero-day exploits. Runtime security monitoring uses system call analysis, network monitoring, and behavioral detection to identify suspicious activity. This provides defense in depth and enables rapid incident response.
 
-**Refs**: NIST 800-190 Section 4.4, CIS Docker Benchmark 5.1
+**Refs**: NIST SP 800-190 Section 4.4, CIS Docker Benchmark 5.1
 
 ---
 
@@ -1044,7 +1058,7 @@ rules:
 
 **Why**: Audit logs are essential for security incident investigation, compliance requirements, and detecting unauthorized access. Without audit logging, it's impossible to determine what actions were taken, by whom, and when. This hampers incident response, forensic analysis, and compliance audits.
 
-**Refs**: CWE-778, CIS Kubernetes Benchmark 3.2, NIST 800-190 Section 4.4.2
+**Refs**: CWE-778, CIS Kubernetes Benchmark 3.2, NIST SP 800-190 Section 4.4
 
 ---
 
@@ -1113,4 +1127,4 @@ spec:
 
 **Why**: Mutable tags like `latest` or version tags can be overwritten, causing unexpected behavior when images are pulled. This breaks reproducibility, makes rollbacks unreliable, and can be exploited by attackers to inject malicious code. Digest-based references ensure the exact same image is always deployed.
 
-**Refs**: CWE-494, CIS Docker Benchmark 4.7, NIST 800-190 Section 3.2
+**Refs**: CWE-494, NIST SP 800-190 Section 3.2, SLSA v1.1 Build L3
