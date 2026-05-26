@@ -56,7 +56,7 @@ LANGSMITH_CONFIG = {
 
 **Why**: Exposed API keys allow attackers to access all traced data including prompts, responses, and evaluation results. LangSmith traces often contain sensitive business logic, user data, and system prompts that could be exploited.
 
-**Refs**: CWE-798 (Hardcoded Credentials), CWE-522 (Insufficiently Protected Credentials), OWASP LLM06
+**Refs**: CWE-798 (Hardcoded Credentials), CWE-522 (Insufficiently Protected Credentials), OWASP LLM02:2025
 
 ---
 
@@ -137,7 +137,7 @@ def get_user_profile(user_id: str):
 
 **Why**: LangSmith traces persist prompts, responses, and metadata that may contain PII, health data, financial information, or other sensitive content. This data is stored in LangSmith's infrastructure and visible to all workspace members.
 
-**Refs**: CWE-200 (Information Exposure), CWE-532 (Log Files), GDPR Article 5, OWASP LLM06
+**Refs**: CWE-200 (Information Exposure), CWE-532 (Log Files), GDPR Article 5, OWASP LLM02:2025
 
 ---
 
@@ -147,7 +147,7 @@ def get_user_profile(user_id: str):
 
 **When**: Setting up LangSmith projects for different environments or teams
 
-**Do**: Implement strict workspace and project isolation with RBAC
+**Do**: Implement strict project isolation with environment-scoped API keys and separate projects per environment
 
 ```python
 import os
@@ -159,32 +159,35 @@ PROJECT_NAME = f"myapp-{ENVIRONMENT}"
 
 os.environ["LANGCHAIN_PROJECT"] = PROJECT_NAME
 
-# Configure workspace-level isolation
 client = Client()
 
 def setup_project_isolation():
-    """Configure project with appropriate access controls"""
+    """Create an isolated project per environment.
 
-    # Create project with specific settings
+    create_project() accepts: project_name, description, metadata,
+    upsert, project_extra, reference_dataset_id.
+    Trace retention is NOT a parameter -- configure it in the LangSmith
+    project Settings UI (Organization -> Projects -> Settings -> Retention).
+    """
     project = client.create_project(
         project_name=PROJECT_NAME,
-        description=f"Production traces - restricted access",
-        # Set retention based on environment
-        trace_retention_days=30 if ENVIRONMENT == "production" else 7
+        description=f"{ENVIRONMENT} traces - restricted access",
+        metadata={"environment": ENVIRONMENT},
     )
-
-    # Verify workspace membership
-    workspace_members = client.list_workspace_members()
-    production_authorized = ["security-team", "sre-team"]
-
-    for member in workspace_members:
-        if ENVIRONMENT == "production" and member.role == "admin":
-            if member.email not in production_authorized:
-                raise SecurityError(
-                    f"Unauthorized admin in production workspace: {member.email}"
-                )
-
     return project
+
+# Workspace membership is managed through the LangSmith web UI or the
+# REST API directly (GET /api/v1/workspaces/<id>/members with a bearer
+# token). The Python SDK has no list_workspace_members() or
+# invite_to_workspace() methods; calls to those raise AttributeError.
+# Use the requests library for programmatic member inspection:
+#
+#   import requests
+#   resp = requests.get(
+#       f"{LANGSMITH_ENDPOINT}/api/v1/workspaces/{workspace_id}/members",
+#       headers={"X-API-Key": os.environ["LANGSMITH_API_KEY"]},
+#   )
+#   members = resp.json()
 
 # Use separate API keys per project
 def get_project_api_key(project: str) -> str:
@@ -193,24 +196,26 @@ def get_project_api_key(project: str) -> str:
     return get_secret(f"langsmith-{project}-api-key")
 ```
 
-**Don't**: Mix environments or use shared workspaces without access control
+**Don't**: Mix environments in a single project or pass nonexistent SDK parameters
 
 ```python
 # VULNERABLE: Same project for all environments
 os.environ["LANGCHAIN_PROJECT"] = "my-app"  # Dev and prod mixed
 
-# VULNERABLE: No workspace isolation
-client = Client()  # All users see all data
+# VULNERABLE: No project isolation - all users see all data
+client = Client()
 
-# VULNERABLE: Sharing production access broadly
-def grant_access(user_email: str):
-    client.invite_to_workspace(
-        email=user_email,
-        role="admin"  # Everyone gets admin
-    )
+# VULNERABLE: Nonexistent parameter raises TypeError at runtime
+project = client.create_project(
+    project_name="prod",
+    trace_retention_days=30  # No such parameter - raises TypeError
+)
+
+# VULNERABLE: Fabricated SDK methods raise AttributeError at runtime
+client.invite_to_workspace(email="user@example.com", role="admin")
 ```
 
-**Why**: Without proper isolation, development traces mix with production data, and unauthorized users can access sensitive production traces, system prompts, and evaluation results containing business logic.
+**Why**: Without proper isolation, development traces mix with production data, and unauthorized users can access sensitive production traces, system prompts, and evaluation results containing business logic. Calling nonexistent SDK methods raises AttributeError in production while test mocks may hide the error.
 
 **Refs**: CWE-284 (Improper Access Control), CWE-269 (Improper Privilege Management), NIST AC-3
 
@@ -222,20 +227,21 @@ def grant_access(user_email: str):
 
 **When**: Creating and managing datasets for LLM evaluation in LangSmith
 
-**Do**: Protect evaluation datasets with access controls and data sanitization
+**Do**: Protect evaluation datasets with sanitized data; control sharing through the LangSmith UI
 
 ```python
 from langsmith import Client
-from langsmith.schemas import Example
 
 client = Client()
 
-def create_secure_dataset(
-    name: str,
-    examples: list[dict],
-    is_public: bool = False
-) -> str:
-    """Create dataset with security controls"""
+def create_secure_dataset(name: str, examples: list[dict]) -> str:
+    """Create dataset with security controls.
+
+    create_dataset() accepts: dataset_name, description, data_type,
+    inputs_schema, outputs_schema, metadata.
+    There is no is_public parameter. Dataset visibility and sharing
+    are managed in the LangSmith UI (Dataset -> Share), not via the SDK.
+    """
 
     # Validate no PII in evaluation data
     sanitized_examples = []
@@ -244,7 +250,6 @@ def create_secure_dataset(
             raise ValueError("PII detected in evaluation dataset")
         sanitized_examples.append(example)
 
-    # Create private dataset by default
     dataset = client.create_dataset(
         dataset_name=name,
         description="Evaluation dataset - contains sanitized test data only",
@@ -265,35 +270,28 @@ def create_secure_dataset(
 
     return dataset.id
 
-def share_dataset_securely(dataset_id: str, team_emails: list[str]):
-    """Share dataset with specific team members only"""
+# Dataset sharing is workspace-level: use the LangSmith UI to share a
+# dataset with specific workspace members or generate a public share link.
+# share_dataset() returns a DatasetShareSchema with a public URL only;
+# it does NOT accept share_with= or permission= parameters for per-user
+# access grants. Per-user access requires managing workspace membership
+# through the UI or the REST API.
+def get_public_share_link(dataset_id: str) -> str:
+    """Return a public read-only link for a dataset (use with caution).
 
-    # Verify recipients are authorized
-    authorized_teams = get_authorized_evaluators()
-    for email in team_emails:
-        if email not in authorized_teams:
-            raise PermissionError(f"Unauthorized access request: {email}")
-
-    # Share with read-only access
-    for email in team_emails:
-        client.share_dataset(
-            dataset_id=dataset_id,
-            share_with=email,
-            permission="read"  # Not write/admin
-        )
+    Anyone with this URL can read the dataset. Only call for datasets
+    confirmed to contain no PII or secrets.
+    """
+    share_result = client.share_dataset(dataset_id=dataset_id)
+    return share_result.url
 ```
 
-**Don't**: Use production data in datasets or share broadly
+**Don't**: Use production data in datasets or pass fabricated SDK parameters
 
 ```python
 # VULNERABLE: Production data in evaluation dataset
 def create_eval_dataset():
-    # Using real user queries for evaluation
-    production_runs = client.list_runs(
-        project_name="production",
-        limit=1000
-    )
-
+    production_runs = client.list_runs(project_name="production", limit=1000)
     client.create_dataset(
         dataset_name="eval-dataset",
         examples=[
@@ -302,16 +300,23 @@ def create_eval_dataset():
         ]
     )
 
-# VULNERABLE: Public dataset with sensitive examples
+# VULNERABLE: is_public is not a parameter - raises TypeError at runtime
 client.create_dataset(
     dataset_name="company-eval",
-    is_public=True  # Anyone can access
+    is_public=True  # No such param - raises TypeError
+)
+
+# VULNERABLE: Fabricated share_dataset signature - raises TypeError at runtime
+client.share_dataset(
+    dataset_id=dataset_id,
+    share_with="user@example.com",  # No such param
+    permission="read"               # No such param
 )
 ```
 
-**Why**: Evaluation datasets often get shared more broadly than production traces. Using real production data exposes user queries and system responses to unauthorized parties, potentially including competitors accessing public datasets.
+**Why**: Evaluation datasets often get shared more broadly than production traces. Using real production data exposes user queries and system responses to unauthorized parties. Passing nonexistent SDK parameters raises TypeError in production while permissive test mocks may hide the error entirely.
 
-**Refs**: CWE-200 (Information Exposure), CWE-359 (Privacy Violation), OWASP LLM06
+**Refs**: CWE-200 (Information Exposure), CWE-359 (Privacy Violation), OWASP LLM02:2025
 
 ---
 
@@ -410,7 +415,7 @@ client.create_feedback(
 
 **Why**: Feedback endpoints can be abused for injection attacks or data manipulation. Unvalidated feedback corrupts evaluation metrics, and storing PII in feedback creates compliance risks and potential data exposure.
 
-**Refs**: CWE-20 (Input Validation), CWE-359 (Privacy Violation), OWASP A03 Injection
+**Refs**: CWE-20 (Input Validation), CWE-359 (Privacy Violation), OWASP A03:2021 Injection
 
 ---
 
@@ -510,7 +515,7 @@ prompt = hub.pull("some-org/prompt")  # Gets latest, may change
 
 **Why**: Hub prompts can contain prompt injection attacks or be modified by malicious actors. Loading unverified prompts allows attackers to inject malicious instructions. Publishing internal prompts publicly exposes system architecture and potential vulnerabilities.
 
-**Refs**: CWE-829 (Untrusted Sources), CWE-494 (Download Without Integrity Check), OWASP LLM01
+**Refs**: CWE-829 (Untrusted Sources), CWE-494 (Download Without Integrity Check), OWASP LLM01:2025
 
 ---
 
@@ -585,31 +590,34 @@ def export_traces_securely(
 
     return len(redacted_runs)
 
-def enforce_retention_policy(project_name: str):
-    """Delete traces beyond retention period"""
+def document_retention_policy(project_name: str):
+    """Record the retention policy applied to a project.
 
+    Trace retention in LangSmith is configured in the web UI:
+    Organization Settings -> Projects -> <project> -> Settings -> Retention.
+
+    The SDK's update_project() method accepts project_id (UUID, not a
+    name string), name, description, metadata, project_extra, and end_time.
+    It does NOT accept trace_retention_days. Passing that kwarg raises
+    TypeError; passing a project name instead of a project_id UUID also
+    raises TypeError. Both errors are runtime-only and may be hidden by
+    permissive test mocks.
+    """
     retention_days = RETENTION_POLICIES.get(
         get_project_environment(project_name),
         30  # Default
     )
 
-    cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
-
-    # Note: LangSmith handles retention through project settings
-    # This demonstrates the policy enforcement pattern
-    client.update_project(
-        project_name,
-        trace_retention_days=retention_days
-    )
-
+    # Log the policy for audit trail; enforcement is done in the UI.
     audit_log.info(
-        "retention_policy_applied",
+        "retention_policy_documented",
         project=project_name,
-        retention_days=retention_days
+        retention_days=retention_days,
+        note="Configure matching value in LangSmith project Settings UI"
     )
 ```
 
-**Don't**: Export data without controls or ignore retention requirements
+**Don't**: Export data without controls or call update_project with fabricated parameters
 
 ```python
 # VULNERABLE: Unrestricted export
@@ -621,15 +629,20 @@ def export_all_traces():
         for r in runs  # Full data, no redaction
     ]
 
-# VULNERABLE: No retention policy
-# Traces accumulate indefinitely with no cleanup
+# VULNERABLE: Two signature errors - raises TypeError at runtime
+# First arg must be a UUID project_id (not a name string),
+# and trace_retention_days is not a valid kwarg.
+client.update_project(
+    project_name,           # Wrong type: expects UUID
+    trace_retention_days=30  # Nonexistent parameter
+)
 
 # VULNERABLE: Unencrypted export
 with open("traces.json", "w") as f:
     json.dump(all_trace_data, f)  # Plain text sensitive data
 ```
 
-**Why**: Unbounded data retention increases exposure risk and may violate data protection regulations. Uncontrolled exports can leak sensitive data, and missing audit trails prevent forensic investigation of data breaches.
+**Why**: Unbounded data retention increases exposure risk and may violate data protection regulations. Uncontrolled exports can leak sensitive data, and missing audit trails prevent forensic investigation of data breaches. Calling SDK methods with fabricated signatures fails silently in permissive test mocks but raises TypeError in production.
 
 **Refs**: CWE-200 (Information Exposure), GDPR Article 17 (Right to Erasure), NIST AU-11 (Audit Record Retention)
 
@@ -641,7 +654,7 @@ with open("traces.json", "w") as f:
 
 **When**: Configuring access to LangSmith dashboards and monitoring views
 
-**Do**: Implement role-based access with audit logging for dashboard access
+**Do**: Use environment-scoped API keys and audit access patterns; manage workspace membership through the LangSmith UI
 
 ```python
 from langsmith import Client
@@ -654,7 +667,7 @@ class DashboardRole(Enum):
     ANALYST = "analyst"  # Metrics + trace inspection
     ADMIN = "admin"  # Full access including settings
 
-# Role permissions mapping
+# Role permissions mapping (reflects what each role sees in the UI)
 ROLE_PERMISSIONS = {
     DashboardRole.VIEWER: [
         "view_metrics",
@@ -680,55 +693,53 @@ ROLE_PERMISSIONS = {
     ]
 }
 
-def grant_dashboard_access(
+# Workspace member management is performed in the LangSmith UI
+# (Settings -> Members) or via the REST API with a bearer token.
+# The Python SDK has no invite_to_workspace() or list_workspace_members()
+# methods. Calls to those names raise AttributeError at runtime.
+#
+# REST-based member lookup (requests library):
+#
+#   import requests
+#   members = requests.get(
+#       f"{LANGSMITH_ENDPOINT}/api/v1/workspaces/{workspace_id}/members",
+#       headers={"X-API-Key": os.environ["LANGSMITH_API_KEY"]},
+#   ).json()
+
+def grant_dashboard_access_intent(
     user_email: str,
     role: DashboardRole,
     projects: list[str] | None = None
 ):
-    """Grant scoped dashboard access with audit logging"""
+    """Log a planned access grant for audit trail.
 
-    # Verify granter has permission
+    Execution requires a workspace admin to complete the invite in the
+    LangSmith UI or via the REST API.
+    """
     if not current_user_is_admin():
         raise PermissionError("Only admins can grant access")
 
-    # Log access grant
     audit_log.info(
-        "dashboard_access_granted",
+        "dashboard_access_requested",
         granter=get_current_user(),
         grantee=user_email,
         role=role.value,
-        projects=projects or "all"
+        projects=projects or "all",
+        action_required="Complete invite in LangSmith UI"
     )
-
-    # Grant workspace access with role
-    # Note: Actual API depends on LangSmith workspace management
-    client.invite_to_workspace(
-        email=user_email,
-        role=role.value
-    )
-
-    # Restrict to specific projects if specified
-    if projects:
-        restrict_to_projects(user_email, projects)
 
 def audit_dashboard_access():
     """Monitor and audit dashboard access patterns"""
 
-    # Get recent access logs
-    access_logs = get_workspace_access_logs(
-        days=7
-    )
+    access_logs = get_workspace_access_logs(days=7)
 
-    # Check for anomalies
     for log in access_logs:
-        # Alert on unusual patterns
         if is_unusual_access_pattern(log):
             security_alert.send(
                 f"Unusual dashboard access: {log.user} "
                 f"accessed {log.resource} at {log.timestamp}"
             )
 
-        # Alert on sensitive data access
         if log.action in ["export_data", "view_traces"]:
             audit_log.info(
                 "sensitive_access",
@@ -738,14 +749,15 @@ def audit_dashboard_access():
             )
 ```
 
-**Don't**: Grant broad access or skip access logging
+**Don't**: Call fabricated SDK methods or grant broad access without logging
 
 ```python
-# VULNERABLE: Everyone gets admin
+# VULNERABLE: invite_to_workspace does not exist in the Python SDK
+# - raises AttributeError at runtime
 def add_team_member(email: str):
     client.invite_to_workspace(
         email=email,
-        role="admin"  # No role differentiation
+        role="admin"  # Method does not exist
     )
 
 # VULNERABLE: No access logging
@@ -759,6 +771,73 @@ def get_public_dashboard_url(project: str):
     # Anyone with URL can access
 ```
 
-**Why**: Overly permissive dashboard access exposes traces containing system prompts, user queries, and model responses to unauthorized users. Without audit logging, security incidents cannot be properly investigated or attributed.
+**Why**: Overly permissive dashboard access exposes traces containing system prompts, user queries, and model responses to unauthorized users. Without audit logging, security incidents cannot be properly investigated or attributed. Calling nonexistent SDK methods raises AttributeError in production while broad test mocks hide the defect.
 
 **Refs**: CWE-284 (Improper Access Control), CWE-778 (Insufficient Logging), NIST AC-6 (Least Privilege)
+
+---
+
+## Rule: Self-Hosted LangSmith for Sensitive Data
+
+**Level**: `advisory`
+
+**When**: Processing data subject to regulatory constraints (HIPAA, GDPR, FedRAMP) or handling trade-secret-level system prompts
+
+**Do**: Deploy LangSmith on-premises or in a private cloud to keep trace data within your security boundary
+
+```python
+import os
+from langsmith import Client
+
+# Point the SDK at your self-hosted instance.
+# LANGSMITH_ENDPOINT must resolve to your internal deployment,
+# not the public api.smith.langchain.com endpoint.
+os.environ["LANGSMITH_ENDPOINT"] = os.environ["INTERNAL_LANGSMITH_URL"]
+os.environ["LANGSMITH_API_KEY"] = os.environ["INTERNAL_LANGSMITH_KEY"]
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+
+client = Client(
+    api_url=os.environ["LANGSMITH_ENDPOINT"],
+    api_key=os.environ["LANGSMITH_API_KEY"],
+)
+
+def verify_internal_langsmith():
+    """Confirm SDK is pointed at the internal instance, not the public cloud.
+
+    Fail closed if the internal endpoint is unreachable so regulated
+    workloads do not fall back to the public SaaS.
+    """
+    endpoint = os.environ.get("LANGSMITH_ENDPOINT", "")
+    public_endpoint = "https://api.smith.langchain.com"
+
+    if endpoint == public_endpoint or not endpoint:
+        raise RuntimeError(
+            "LANGSMITH_ENDPOINT must be set to an internal host for "
+            "regulated workloads. Refusing to start."
+        )
+
+    # Smoke-test connectivity -- fail closed rather than silently degrading
+    try:
+        client.list_projects(limit=1)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Internal LangSmith unreachable at {endpoint}: {exc}"
+        ) from exc
+```
+
+**Don't**: Send regulated or highly sensitive data to the public LangSmith cloud
+
+```python
+# VULNERABLE: Regulated data sent to public SaaS
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+# LANGSMITH_ENDPOINT not set -- defaults to api.smith.langchain.com
+
+@traceable(name="process_phi")
+def process_patient_record(record: dict) -> str:
+    # PHI leaves your network and is stored in LangSmith's SaaS infrastructure
+    return llm.invoke(f"Summarize: {record}")
+```
+
+**Why**: The public LangSmith SaaS stores traces in Langchain's infrastructure. HIPAA-covered entities that send PHI require a BAA with Langchain and appropriate controls, or must self-host to keep data fully within their boundary. Trade-secret system prompts are visible to all workspace members and to Langchain as the data processor. Self-hosting eliminates the third-party data-processor risk entirely.
+
+**Refs**: CWE-200 (Information Exposure), HIPAA §164.312, GDPR Article 28 (Data Processors), OWASP LLM02:2025
