@@ -9,6 +9,8 @@ Security rules for PostgreSQL pgvector extension implementations.
 | Connection Security | `strict` | Data interception, credential exposure |
 | SQL Injection Prevention | `strict` | Vector data exfiltration, data manipulation |
 | Row-Level Security | `strict` | Cross-tenant data leakage |
+| pg_hba.conf Authentication | `strict` | Unauthorized access, weak credential storage |
+| Partition by tenant_id | `strict` | Cross-tenant data leakage, planner bypass |
 | Index Security | `warning` | Performance degradation, DoS |
 | Extension Security | `warning` | Privilege escalation |
 | Backup Security | `strict` | Data exposure in backups |
@@ -103,7 +105,7 @@ conn = psycopg2.connect(
 
 **Why**: Unencrypted connections expose vector data and queries to network interception. Hardcoded credentials leak through version control and logs. Without certificate verification, connections are vulnerable to MITM attacks. Missing timeouts can cause resource exhaustion.
 
-**Refs**: OWASP A02:2021 (Cryptographic Failures), CWE-319, CWE-798, CWE-295
+**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-319, CWE-798, CWE-295
 
 ---
 
@@ -240,7 +242,7 @@ def vulnerable_format(conn, query_vector, filters):
 
 **Why**: SQL injection in vector operations can bypass tenant isolation, exfiltrate embeddings and metadata, modify or delete vector data, and execute arbitrary SQL commands. Parameterized queries prevent injection by separating code from data.
 
-**Refs**: OWASP A03:2021 (Injection), CWE-89, CWE-943
+**Refs**: OWASP A03:2025 (Injection), CWE-89, CWE-943
 
 ---
 
@@ -318,7 +320,7 @@ class SecurePgVectorStore:
 
         with self.conn.cursor() as cur:
             cur.execute("""
-                SELECT id, content, metadata,
+                SELECT id, tenant_id, content, metadata,
                        embedding <-> %s::vector AS distance
                 FROM vectors
                 ORDER BY distance
@@ -327,9 +329,9 @@ class SecurePgVectorStore:
 
             results = cur.fetchall()
 
-            # Defense in depth: verify results
+            # Defense in depth: verify tenant_id on every row (index 1)
             for row in results:
-                if str(row[0]) != tenant_id:
+                if str(row[1]) != tenant_id:
                     # This should never happen with proper RLS
                     raise SecurityError("RLS policy bypass detected")
 
@@ -419,7 +421,205 @@ CREATE POLICY bad_policy ON vectors
 
 **Why**: Application-level filtering can be bypassed through bugs, injection, or misconfiguration. RLS enforces tenant isolation at the database level, providing defense in depth. Without RLS, a single vulnerability can expose all tenant data.
 
-**Refs**: OWASP A01:2021 (Broken Access Control), CWE-284, CWE-863
+**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284, CWE-863
+
+---
+
+## Rule: pg_hba.conf Authentication
+
+**Level**: `strict`
+
+**When**: Configuring PostgreSQL host-based authentication for pgvector deployments
+
+**Do**: Require `scram-sha-256` for all host entries, restrict CIDR ranges, and reject `trust` or `md5`
+
+```conf
+# pg_hba.conf — secure configuration for pgvector deployments
+
+# TYPE  DATABASE    USER            ADDRESS         METHOD
+
+# Local unix-socket connections for superuser maintenance only
+local   all         postgres                        peer
+local   all         all                             reject
+
+# Application user: scram-sha-256 required, narrow CIDR
+host    vectordb    vector_app      10.0.1.0/24     scram-sha-256
+host    vectordb    vector_app      10.0.2.0/24     scram-sha-256
+
+# Replication — dedicated user, CIDR-restricted
+host    replication replicator      10.0.1.5/32     scram-sha-256
+
+# Reject everything else, including 0.0.0.0/0 catch-alls
+host    all         all             0.0.0.0/0       reject
+host    all         all             ::/0            reject
+```
+
+```python
+# Programmatic validation: audit pg_hba.conf entries before deployment
+import re
+from pathlib import Path
+
+FORBIDDEN_METHODS = {"trust", "md5", "password"}
+FORBIDDEN_CIDRS = {"0.0.0.0/0", "::/0"}
+
+def audit_pg_hba(hba_path: str) -> list[str]:
+    """Return list of policy violations found in pg_hba.conf."""
+    violations = []
+    path = Path(hba_path)
+
+    for lineno, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split()
+        # host/hostssl/hostnossl entries: TYPE DB USER ADDRESS METHOD
+        if parts[0] in {"host", "hostssl", "hostnossl"} and len(parts) >= 5:
+            address = parts[3]
+            method = parts[4]
+
+            if method in FORBIDDEN_METHODS:
+                violations.append(
+                    f"line {lineno}: method '{method}' forbidden — use scram-sha-256"
+                )
+            if address in FORBIDDEN_CIDRS:
+                violations.append(
+                    f"line {lineno}: CIDR '{address}' too broad — restrict to deployment subnet"
+                )
+
+    return violations
+```
+
+**Don't**: Use `trust`, `md5`, or unrestricted CIDRs in host entries
+
+```conf
+# VULNERABLE: trust allows passwordless access
+host    all         all             10.0.0.0/8      trust
+
+# VULNERABLE: md5 is cryptographically weak, vulnerable to offline cracking
+host    vectordb    vector_app      0.0.0.0/0       md5
+
+# VULNERABLE: open CIDR means any host can attempt authentication
+host    all         all             0.0.0.0/0       scram-sha-256
+```
+
+**Why**: `trust` grants unconditional access to any connecting host with no password required. `md5` is a broken hash; rainbow tables and offline cracking are trivial. A wide CIDR (0.0.0.0/0) turns every internet-connected machine into a potential attacker. Combining `scram-sha-256` with narrow CIDRs ensures only legitimate application hosts can authenticate, and credentials are never transmitted in a form susceptible to offline attack.
+
+**Refs**: OWASP A07:2025 (Identification and Authentication Failures), CWE-287, CWE-326, PostgreSQL docs §21.1
+
+---
+
+## Rule: Partition by tenant_id
+
+**Level**: `strict`
+
+**When**: Designing pgvector tables for multi-tenant deployments
+
+**Do**: Declare `PARTITION BY LIST (tenant_id)` so the planner prunes partitions per query and physical data is isolated per tenant
+
+```sql
+-- Partitioned vectors table — one partition per tenant
+CREATE TABLE vectors (
+    id          UUID        NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id   UUID        NOT NULL,
+    embedding   vector(1536) NOT NULL,
+    content     TEXT,
+    metadata    JSONB       DEFAULT '{}',
+    created_at  TIMESTAMP   DEFAULT NOW(),
+    updated_at  TIMESTAMP   DEFAULT NOW()
+) PARTITION BY LIST (tenant_id);
+
+-- Each tenant gets a dedicated partition
+-- Run once per onboarded tenant
+CREATE TABLE vectors_tenant_11111111_1111_1111_1111_111111111111
+    PARTITION OF vectors
+    FOR VALUES IN ('11111111-1111-1111-1111-111111111111');
+
+CREATE TABLE vectors_tenant_22222222_2222_2222_2222_222222222222
+    PARTITION OF vectors
+    FOR VALUES IN ('22222222-2222-2222-2222-222222222222');
+
+-- Index per partition (created automatically for each child table)
+CREATE INDEX ON vectors USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+CREATE INDEX ON vectors (tenant_id);
+
+-- RLS still required; partitioning is defense-in-depth, not a substitute
+ALTER TABLE vectors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vectors FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_policy ON vectors
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant')::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant')::uuid);
+```
+
+```python
+# Programmatic tenant partition creation
+import re
+import uuid
+
+def provision_tenant_partition(conn, tenant_id: str) -> None:
+    """Create a dedicated partition for a newly onboarded tenant."""
+    try:
+        uuid.UUID(tenant_id)
+    except ValueError:
+        raise ValueError(f"Invalid tenant_id UUID: {tenant_id!r}")
+
+    # Derive a safe partition table name from the UUID
+    safe_suffix = tenant_id.replace("-", "_")
+    partition_name = f"vectors_tenant_{safe_suffix}"
+
+    # Validate derived name against strict pattern before interpolation
+    if not re.fullmatch(r"vectors_tenant_[0-9a-f_]{35}", partition_name):
+        raise ValueError(f"Partition name failed safety check: {partition_name!r}")
+
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {partition_name}
+                PARTITION OF vectors
+                FOR VALUES IN (%s)
+        """, (tenant_id,))
+    conn.commit()
+
+# Query: planner automatically prunes to the matching partition
+async def tenant_vector_search(pool, tenant_id: str, query_vector: list,
+                                top_k: int = 10) -> list:
+    """Vector search that benefits from partition pruning."""
+    async with pool.acquire() as conn:
+        # Set tenant context for RLS
+        await conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", tenant_id
+        )
+        # The WHERE tenant_id = $2 clause enables partition pruning;
+        # only the matching child table is scanned.
+        return await conn.fetch("""
+            SELECT id, tenant_id, content, metadata,
+                   embedding <-> $1::vector AS distance
+            FROM vectors
+            WHERE tenant_id = $2
+            ORDER BY distance
+            LIMIT $3
+        """, query_vector, tenant_id, top_k)
+```
+
+**Don't**: Store all tenants in a single unpartitioned table and rely solely on a `WHERE tenant_id = ?` clause
+
+```sql
+-- RISKY: single table, no partitioning
+-- Planner must scan the full index across all tenants.
+-- A planner bug, misconfigured RLS, or missing WHERE clause
+-- exposes every tenant's data in one sequential scan.
+CREATE TABLE vectors (
+    id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    embedding vector(1536) NOT NULL,
+    content   TEXT
+);
+```
+
+**Why**: Partitioning enforces physical data isolation beyond what RLS alone provides. The planner prunes all non-matching partitions before scanning, so a missing or incorrect tenant filter cannot accidentally touch another tenant's rows at the storage level. Performance improves because each partition's HNSW/IVFFlat index covers only one tenant's vectors, reducing index size and improving recall accuracy at a given `ef_search`.
+
+**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284, PostgreSQL docs §5.11 (Table Partitioning)
 
 ---
 
@@ -791,7 +991,7 @@ chmod 644 /tmp/backup.sql
 
 **Why**: pgvector backups contain all embeddings and metadata, potentially including sensitive information. Unencrypted backups can be exfiltrated or tampered with. Integrity verification prevents restoring malicious backups.
 
-**Refs**: OWASP A02:2021 (Cryptographic Failures), CWE-311, CWE-312
+**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-311, CWE-312
 
 ---
 
@@ -920,6 +1120,7 @@ conn = psycopg2.connect(...)
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-01-20 | Initial release with 7 security rules |
+| 1.1 | 2026-05-26 | OWASP refs updated to 2025; added pg_hba.conf auth rule and partition-by-tenant_id rule; fixed RLS defense-in-depth column index |
 
 ---
 
@@ -928,5 +1129,7 @@ conn = psycopg2.connect(...)
 - [pgvector GitHub Repository](https://github.com/pgvector/pgvector)
 - [PostgreSQL Row-Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
 - [PostgreSQL SSL Configuration](https://www.postgresql.org/docs/current/ssl-tcp.html)
+- [PostgreSQL Table Partitioning](https://www.postgresql.org/docs/current/ddl-partitioning.html)
+- [PostgreSQL pg_hba.conf](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
 - [OWASP SQL Injection Prevention](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
 - [Core Vector Store Security Rules](../../_core/vector-store-security.md)
