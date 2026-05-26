@@ -657,3 +657,47 @@ def export_model_unsafe(model_name):
 ## Version History
 
 - **v1.0.0** - Initial TigerGraph security rules (extracted from Neptune file)
+
+---
+
+## Audit Log
+
+```yaml
+- audit: p0.5
+  date: 2026-05-26
+  file: rules/rag/graph/tigergraph/CLAUDE.md
+  status: failed
+  defects:
+    - id: API-1
+      severity: high
+      location: "create_resource_limited_connection(), line 352"
+      description: >
+        conn.setQueryTimeout() does not exist in pyTigerGraph 2.0.4. Raises
+        AttributeError at runtime. Timeout must be passed per-call via the
+        timeout parameter of runInstalledQuery(), which the file already does
+        correctly at line 370. Remove the setQueryTimeout() call.
+    - id: API-2
+      severity: high
+      location: "search_vertices_secure(), line 115"
+      description: >
+        conn.escapeString() does not exist in pyTigerGraph 2.0.4. Raises
+        AttributeError at runtime. This is the only non-parameterized query
+        path in the file; replace with a parameterized installed query or
+        remove the getVertices(where=...) pattern entirely.
+    - id: REF-1
+      severity: medium
+      location: "All Refs fields"
+      description: >
+        All OWASP references cite :2021 editions (A01:2021, A03:2021,
+        A05:2021). Audit spec requires :2025 refs. No OWASP LLM Top 10:2025
+        references present despite ML Workbench rule touching model inversion
+        and membership inference attacks.
+    - id: COV-1
+      severity: low
+      location: "file-level"
+      description: >
+        No rule covering TigerGraph UDF security (C++ UDFs must reside in
+        trusted path only; untrusted UDF uploads allow native code execution).
+        No dedicated REST++ endpoint authentication hardening rule beyond
+        connection-level token setup.
+```
