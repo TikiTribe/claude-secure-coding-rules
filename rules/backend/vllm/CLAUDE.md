@@ -20,8 +20,13 @@ Security rules for vLLM high-throughput inference in Claude Code.
 **Do**:
 ```python
 from vllm import LLM, SamplingParams
+import os
 
-# Safe: Separate engine per security boundary
+# Safe: Separate engine per security boundary.
+# disable_log_requests was removed in vLLM 0.6.x.
+# Suppress request logging with the env var or CLI flag instead:
+#   export VLLM_DISABLE_LOG_REQUESTS=1
+#   vllm serve <model> --disable-log-requests
 class SecureVLLMEngine:
     def __init__(self, model: str):
         self.llm = LLM(
@@ -31,7 +36,6 @@ class SecureVLLMEngine:
             max_model_len=4096,
             # Disable potentially unsafe features
             enable_prefix_caching=False,  # Prevents cross-request cache leaks
-            disable_log_requests=True  # Don't log sensitive prompts
         )
 
     def generate_isolated(self, prompt: str, user_id: str) -> str:
@@ -71,16 +75,15 @@ def serve_all_users(llm, requests):
     # All users share KV cache state
     return llm.generate(requests)
 
-# VULNERABLE: Logging sensitive prompts
-llm = LLM(
-    model="model",
-    disable_log_requests=False  # Logs all prompts
-)
+# VULNERABLE: Logging sensitive prompts.
+# VLLM_DISABLE_LOG_REQUESTS is unset, so every prompt is written to logs.
+# Pass --disable-log-requests to vllm serve or set the env var.
+llm = LLM(model="model")
 ```
 
 **Why**: Shared KV cache can leak information between users through prefix matching or timing attacks. PagedAttention optimizes memory but can create cross-request dependencies.
 
-**Refs**: OWASP LLM06, CWE-200, CWE-203
+**Refs**: OWASP LLM02:2025, CWE-200, CWE-203
 
 ---
 
@@ -93,7 +96,6 @@ llm = LLM(
 **Do**:
 ```python
 from vllm import LLM
-from vllm.config import CacheConfig
 
 # Safe: Secure memory configuration
 llm = LLM(
@@ -108,7 +110,10 @@ llm = LLM(
     block_size=16  # Standard block size
 )
 
-# Safe: Production configuration with limits
+# Safe: Production configuration with limits.
+# Request logging is suppressed via env var (vLLM 0.6.x+):
+#   export VLLM_DISABLE_LOG_REQUESTS=1
+# or pass --disable-log-requests when running `vllm serve`.
 class ProductionVLLMConfig:
     def __init__(self):
         self.config = {
@@ -117,7 +122,6 @@ class ProductionVLLMConfig:
             "max_model_len": 4096,
             "max_num_batched_tokens": 4096,
             "swap_space": 0,  # No disk swapping
-            "disable_log_requests": True,
             "enable_prefix_caching": False
         }
 
@@ -148,7 +152,7 @@ llm = LLM(
 
 **Why**: Improper memory configuration can lead to data leaks through swap files, OOM-based denial of service, or memory corruption attacks.
 
-**Refs**: CWE-401, CWE-400, OWASP LLM04
+**Refs**: CWE-401, CWE-400, OWASP LLM10:2025
 
 ---
 
@@ -251,7 +255,7 @@ def process_unlimited(llm, requests):
 
 **Why**: Continuous batching without isolation allows users to affect each other's requests through resource exhaustion or parameter leakage.
 
-**Refs**: OWASP LLM04, CWE-400, CWE-770
+**Refs**: OWASP LLM10:2025, CWE-400, CWE-770
 
 ---
 
@@ -342,23 +346,67 @@ os.environ["HF_TOKEN"] = "hf_1234567890abcdef"  # Exposed credential
 
 **Why**: Unverified models can contain malicious code in custom model definitions or poisoned weights that produce harmful outputs.
 
-**Refs**: OWASP LLM05, MITRE ATLAS AML.T0010, CWE-502
+**Refs**: OWASP LLM03:2025, MITRE ATLAS AML.T0010, CWE-502
 
 ---
 
 ## API Security
 
+### Rule: Authenticate the Built-in OpenAI-Compatible Server
+
+**Level**: `strict`
+
+**When**: Running `vllm serve` to expose the OpenAI-compatible REST API.
+
+**Do**:
+```bash
+# Safe: require a bearer token on every request
+export VLLM_API_KEY="$(openssl rand -hex 32)"
+vllm serve meta-llama/Llama-2-7b-chat-hf \
+    --api-key "$VLLM_API_KEY" \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --disable-log-requests
+```
+
+```python
+import os
+import requests
+
+# Safe: include the bearer token on every client call
+api_key = os.environ["VLLM_API_KEY"]
+resp = requests.post(
+    "http://127.0.0.1:8000/v1/completions",
+    headers={"Authorization": f"Bearer {api_key}"},
+    json={"model": "meta-llama/Llama-2-7b-chat-hf", "prompt": "Hello", "max_tokens": 64},
+    timeout=30,
+)
+resp.raise_for_status()
+```
+
+**Don't**:
+```bash
+# VULNERABLE: No API key — any network-reachable client can query the model
+vllm serve meta-llama/Llama-2-7b-chat-hf --host 0.0.0.0
+```
+
+**Why**: Without `--api-key` / `VLLM_API_KEY`, the built-in server accepts unauthenticated requests from any reachable host, enabling free inference, prompt injection, and resource exhaustion by arbitrary callers.
+
+**Refs**: OWASP A01:2025, OWASP LLM10:2025, CWE-306
+
+---
+
 ### Rule: Secure vLLM API Deployment
 
 **Level**: `strict`
 
-**When**: Deploying vLLM as an API service.
+**When**: Deploying vLLM behind a custom FastAPI service.
 
 **Do**:
 ```python
 from vllm import LLM, SamplingParams
 from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import os
 
 app = FastAPI()
@@ -369,8 +417,9 @@ class GenerationRequest(BaseModel):
     max_tokens: int = Field(default=512, le=2048, ge=1)
     temperature: float = Field(default=0.7, ge=0, le=2)
 
-    @validator("prompt")
-    def validate_prompt(cls, v):
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def validate_prompt(cls, v: str) -> str:
         # Check for injection patterns
         if any(pattern in v.lower() for pattern in [
             "ignore previous", "system:", "admin:"
@@ -382,13 +431,14 @@ class GenerationResponse(BaseModel):
     text: str
     finish_reason: str
 
-# Safe: Global engine with secure config
+# Safe: Global engine with secure config.
+# Request logging suppressed via VLLM_DISABLE_LOG_REQUESTS=1 env var
+# or --disable-log-requests on vllm serve.
 engine = LLM(
     model=os.environ["MODEL_NAME"],
     trust_remote_code=False,
     gpu_memory_utilization=0.8,
     max_model_len=4096,
-    disable_log_requests=True
 )
 
 # Safe: Rate limiting and authentication
@@ -462,6 +512,13 @@ async def get_config():
 
 # VULNERABLE: No rate limiting
 # Allows DoS through excessive requests
+
+# VULNERABLE: Pydantic v1 @validator (deprecated, removed in Pydantic v3)
+from pydantic import validator
+class BadRequest(BaseModel):
+    prompt: str
+    @validator("prompt")
+    def check(cls, v): return v  # Use @field_validator instead
 ```
 
 **Why**: Unprotected API endpoints enable DoS attacks, prompt injection, and abuse of compute resources.
@@ -558,8 +615,9 @@ def deploy_quant():
 |------|-------|-----------|
 | Isolate KV cache per request | strict | CWE-200, CWE-203 |
 | Validate PagedAttention configuration | strict | CWE-401, CWE-400 |
-| Implement request isolation in batches | strict | OWASP LLM04, CWE-770 |
-| Secure model source verification | strict | OWASP LLM05, CWE-502 |
+| Implement request isolation in batches | strict | OWASP LLM10:2025, CWE-770 |
+| Secure model source verification | strict | OWASP LLM03:2025, CWE-502 |
+| Authenticate built-in OpenAI server | strict | OWASP A01:2025, CWE-306 |
 | Secure vLLM API deployment | strict | OWASP A01:2025, CWE-306 |
 | Validate quantized model integrity | strict | AML.T0020, CWE-354 |
 
@@ -567,4 +625,5 @@ def deploy_quant():
 
 ## Version History
 
+- **v2.0.0** - Audit fixes: removed deprecated disable_log_requests param, dead CacheConfig import, and Pydantic v1 @validator; updated OWASP LLM 2025 refs; added API key auth rule
 - **v1.0.0** - Initial vLLM security rules
