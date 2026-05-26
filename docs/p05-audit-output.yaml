@@ -1637,6 +1637,143 @@ audited_rules:
         worth a clarifying comment for practitioners who may misread it.
     issues_filed: []
 
+  - path: rules/containers/_core/container-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Minimal Base Images
+      - Non-Root Container Execution
+      - Image Vulnerability Scanning
+      - Image Signing and Verification
+      - No Secrets in Container Images
+      - Read-Only Root Filesystem
+      - Drop All Capabilities
+      - Container Network Segmentation
+      - Resource Limits
+      - Container Health Checks
+      - Supply Chain Security
+      - Secure Container Registries
+      - Runtime Security Monitoring
+      - Audit Logging
+      - Image Immutability
+    notes: |
+      Audited all 15 rule sections. Five distinct blocking issues found: three
+      are code/syntax defects, one is a pervasive fabricated standards reference
+      pattern, one is a deprecated command. An additional critical self-contradiction
+      (the file violates its own supply-chain and immutability rules in Do examples)
+      is documented under non-blocking observations.
+
+      No OWASP LLM numbering issues — this file uses CIS Benchmarks, NIST 800-190,
+      CWE, and SLSA. All CWE citations are valid. The file does not use the LLM taxonomy.
+
+      ISSUE 1 — NIST 800-190 subsection numbers are entirely fabricated (STANDARDS MISMATCH / FILE-WIDE)
+        NIST SP 800-190 (Application Container Security Guide) uses single-level
+        subsections: 3.1, 3.2, 3.3, 3.4, 3.5 (image threats) and 4.1, 4.2, 4.3,
+        4.4, 4.5 (platform threats). The specification contains no deeper subdivisions.
+        Nine of the fifteen Refs lines cite invented subsections:
+          4.2.1 (lines 121, 477) — does not exist; 4.2 = Unbounded Network Access
+          4.2.2 (line 421) — does not exist
+          4.2.3 (line 342) — does not exist
+          4.2.4 (line 667) — does not exist
+          4.3.2 (line 578) — does not exist; 4.3 = Insecure Runtime Configurations
+          4.4.1 (line 745) — does not exist; 4.4 = App Vulnerabilities Within Containers
+          4.4.2 (line 1047) — does not exist
+        Additionally, two citations use the correct section number but wrong topic:
+          "Section 3.3" (line 254, Image Signing) maps to "Embedded Malware" in NIST
+          800-190; the correct section for untrusted/unverified images is 3.5
+          "Use of Untrusted Images."
+          "Section 3.4" (line 883, Secure Registries) maps to "Embedded Clear Text
+          Secrets"; the relevant section for registry trust is 3.5.
+        Fix required: replace all fabricated subsection numbers with the actual
+        top-level sections they approximate (e.g., 4.2.1 -> 4.3, 4.3.2 -> 4.3,
+        4.4.1/4.4.2 -> 4.4); update image signing and registry refs to 3.5; add
+        version qualifier "NIST SP 800-190" consistently.
+
+      ISSUE 2 — CIS Docker Benchmark 4.7 is wrong section for Image Immutability (CIS REF MISMATCH)
+        Line 1116 (Image Immutability Refs) cites "CIS Docker Benchmark 4.7."
+        In CIS Docker Benchmark v1.6.0, section 4.7 is "Do not use update instructions
+        alone in the Dockerfile" — this addresses cache staleness when apt-get update
+        appears without apt-get install on the same layer. It has no relationship to
+        mutable image tags or production deployment immutability. Practitioners who
+        look up CIS 4.7 find a completely different control.
+        Fix required: replace "CIS Docker Benchmark 4.7" with a correct reference such
+        as the NIST 800-190 Section 3.2 (Image Configuration Defects) guidance on
+        image pinning, or remove the CIS section number if no section maps cleanly.
+
+      ISSUE 3 — Falco rules reference undefined lists; glob in 'in' operator is a logic bug
+        (CODE DEFECT — Runtime Security Monitoring rule)
+        The three Falco rules in the Runtime Security Monitoring Do example (lines 896-929)
+        reference four user-defined lists: expected_processes, expected_parent_processes,
+        shell_binaries, and allowed_shell_parents. Of these, shell_binaries is a Falco
+        built-in; the other three are not. Falco refuses to load a ruleset that references
+        undefined lists, so these rules cannot be applied; the user receives a Falco
+        compilation error on load. The Do example as written is non-functional.
+        Additionally, the Sensitive File Access rule (lines 920-929) conditions on:
+          fd.name in (/etc/shadow, /etc/passwd, /etc/kubernetes/*)
+        Falco's "in" operator performs exact string matching. The pattern /etc/kubernetes/*
+        matches only the literal string "/etc/kubernetes/*" and no actual file under that
+        directory. Every kubeconfig, service account token, and PKI file under
+        /etc/kubernetes/ silently escapes the rule. The correct idiom is:
+          fd.name startswith "/etc/kubernetes/"
+        Fix required: add skeleton list definitions for expected_processes,
+        expected_parent_processes, and allowed_shell_parents before the rule blocks;
+        replace "fd.name in (/etc/kubernetes/*)" with
+        "fd.name startswith '/etc/kubernetes/'".
+
+      ISSUE 4 — github/codeql-action/upload-sarif@v2 is end-of-life (DEPRECATED TOOLING)
+        Line 156 (Image Vulnerability Scanning Do example):
+          uses: github/codeql-action/upload-sarif@v2
+        codeql-action v2 reached end-of-life in November 2023. GitHub Actions jobs
+        using v2 now fail with an error on modern runners. The Do example as written
+        is non-functional for any pipeline that follows it today. v3 is a drop-in
+        replacement with no breaking API changes for upload-sarif usage.
+        Fix required: update to "github/codeql-action/upload-sarif@v3".
+
+      ISSUE 5 — cosign sign --oidc-issuer flag removed in cosign v2.x (DEPRECATED MITIGATION)
+        Line 212 (Image Signing and Verification Do example):
+          cosign sign --oidc-issuer=https://token.actions.githubusercontent.com \
+            myregistry.io/myapp:v1.0.0
+        The --oidc-issuer flag was a cosign v1.x experimental-keyless parameter.
+        cosign v2.0 (released June 2023) promoted keyless signing to stable and removed
+        --oidc-issuer from the sign subcommand. In cosign v2.x, passing this flag
+        produces "unknown flag: --oidc-issuer", making the Do example non-functional.
+        The correct cosign v2.x keyless sign syntax in CI is simply:
+          cosign sign myregistry.io/myapp:v1.0.0
+        (OIDC token is auto-detected from the GitHub Actions environment.)
+        Note: the file's Supply Chain Security rule (lines 804-807) correctly uses
+        --certificate-oidc-issuer on cosign verify-attestation, which is valid in v2.x.
+        Only the sign-time usage is broken.
+        Fix required: remove --oidc-issuer from the sign command; add a comment that
+        OIDC is auto-detected in CI and reference the cosign v2 migration guide.
+
+      Non-blocking observations (no status change):
+      - Self-contradiction in Do examples: Runtime Security Monitoring deploys Falco
+        with image: falcosecurity/falco:latest (line 946), directly violating the
+        Image Immutability rule in the same file (lines 1104-1115) which lists :latest
+        as a VULNERABLE pattern. Additionally, the Image Vulnerability Scanning Do
+        example uses aquasecurity/trivy-action@master (line 147), an unpinned mutable
+        branch reference — which the Supply Chain Security rule in the same file exists
+        to prevent. Both should be pinned (version tag or SHA).
+      - SLSA Level 2 (line 254, Image Signing Refs): SLSA v1.0+ uses "SLSA Build L2"
+        not "SLSA Level 2." The same stale naming was corrected in cicd/_core audit.
+        Fix: update to "SLSA Build L2 (SLSA v1.1)".
+      - CIS Docker Benchmark 3.1-3.5 for Secure Container Registries (line 883): In
+        CIS Docker Benchmark v1.6.0, Section 3 covers Docker daemon configuration file
+        permissions and auditd rules — not registry access controls. The mapping is
+        incorrect; no clean single-section CIS Docker ref covers private registry auth.
+        Advisory: replace with NIST 800-190 Section 3.5 or cite CIS Benchmark Section 2.
+      - CIS Benchmark version qualifier absent from all Refs lines. CIS Docker Benchmark
+        is currently v1.7.0 (2024); CIS Kubernetes Benchmark is v1.10.0 (2024). Section
+        numbers differ between versions. Advisory: add version qualifier throughout, e.g.
+        "CIS Docker Benchmark v1.7.0 §4.1".
+      - docker login at line 858: --username $USER uses the OS user environment variable.
+        In CI, $USER may be "runner", "root", or empty. A comment noting the variable
+        should be replaced with a registry-specific credential var ($REGISTRY_USER, etc.)
+        would prevent silent auth failures. Advisory.
+    issues_filed: []
+
   - path: rules/containers/kubernetes/CLAUDE.md
     status: failed
     reviewed_by: rocklambros
