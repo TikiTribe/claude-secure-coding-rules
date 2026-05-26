@@ -20,28 +20,36 @@ Security rules for Microsoft AutoGen multi-agent development in Claude Code.
 
 **Do**:
 ```python
+from pathlib import Path
 from autogen import ConversableAgent
 from autogen.coding import DockerCommandLineCodeExecutor, LocalCommandLineCodeExecutor
 
-# Safe: Docker-based code execution
+# Preferred: Docker-based code execution with network isolation.
+# Network isolation in autogen 0.4.x is not a constructor parameter.
+# Configure a docker.DockerClient with the desired network before passing
+# it to the executor, or enforce isolation at the host level via Docker
+# Compose or a Kubernetes NetworkPolicy.
 docker_executor = DockerCommandLineCodeExecutor(
     image="python:3.11-slim",
     timeout=60,
     work_dir="/tmp/code",
-    # No network access
-    docker_network="none"
+    # bind_dir accepts a Path pointing to the host directory.
+    # The directory is mounted read-write inside the container.
+    # For read-only enforcement use a custom DockerCommandLineCodeExecutor
+    # subclass or a pre-configured docker.DockerClient.
+    bind_dir=Path("/app/sandbox"),
 )
 
-# Safe: Local executor with restrictions (if Docker not available)
+# Fallback: LocalCommandLineCodeExecutor — use only inside a dedicated VM
+# or ephemeral CI container that is fully disposable.
+# LocalCommandLineCodeExecutor has no built-in language restrictions or
+# sandbox in autogen 0.4.x. It accepts only timeout and work_dir.
+# To restrict execution languages, subclass LocalCommandLineCodeExecutor
+# and override execute_code_blocks to filter code blocks by language before
+# calling super(), or use DockerCommandLineCodeExecutor instead.
 local_executor = LocalCommandLineCodeExecutor(
     timeout=30,
     work_dir="/sandbox/code",
-    # Restricted execution
-    execution_policies={
-        "python": True,
-        "bash": False,  # Disable shell
-        "javascript": False
-    }
 )
 
 # Safe: Agent with sandboxed execution
@@ -71,11 +79,6 @@ executor = DockerCommandLineCodeExecutor(
     timeout=0  # Infinite execution time
 )
 
-# VULNERABLE: Network access in executor
-executor = DockerCommandLineCodeExecutor(
-    docker_network="bridge"  # Can access network
-)
-
 # VULNERABLE: No human oversight
 agent = ConversableAgent(
     name="coder",
@@ -84,9 +87,9 @@ agent = ConversableAgent(
 )
 ```
 
-**Why**: Unsandboxed code execution allows agents to run arbitrary code with full system access, enabling data exfiltration, system compromise, or resource abuse.
+**Why**: Unsandboxed code execution allows agents to run arbitrary code with full system access, enabling data exfiltration, system compromise, or resource abuse. `DockerCommandLineCodeExecutor` is the only isolation mechanism built into autogen 0.4.x. `LocalCommandLineCodeExecutor` provides no containment and must only run inside an already-isolated host.
 
-**Refs**: OWASP LLM06, CWE-94, MITRE ATLAS AML.T0051
+**Refs**: OWASP LLM06:2025 (Excessive Agency), CWE-94, MITRE ATLAS AML.T0051
 
 ---
 
@@ -102,9 +105,12 @@ import ast
 import re
 
 class CodeValidator:
+    # Denylists are defense-in-depth, not a primary control.
+    # Docker sandboxing (see Sandbox rule) is the primary barrier.
     DANGEROUS_IMPORTS = [
         'os', 'subprocess', 'sys', 'socket', 'requests',
-        'urllib', 'shutil', 'pickle', 'eval', 'exec'
+        'urllib', 'shutil', 'pickle', 'eval', 'exec',
+        'ctypes', 'mmap', 'importlib', 'cffi',
     ]
 
     DANGEROUS_CALLS = [
@@ -158,9 +164,9 @@ if "import os" not in code:
     exec(code)  # Can use __import__('os')
 ```
 
-**Why**: LLMs can be manipulated to generate malicious code. Validation prevents execution of dangerous operations.
+**Why**: LLMs can be manipulated to generate malicious code. AST-based validation catches explicit dangerous imports and calls. Pair with Docker sandboxing because denylists can be bypassed (e.g., dynamic attribute access, encoded strings).
 
-**Refs**: CWE-94, CWE-95, OWASP LLM06
+**Refs**: CWE-94, CWE-95, OWASP LLM06:2025
 
 ---
 
@@ -200,7 +206,7 @@ class SafeUserProxy(UserProxyAgent):
         # Check if operation is high-risk
         for pattern in self.HIGH_RISK_PATTERNS:
             if re.search(pattern, prompt, re.I):
-                print("⚠️  HIGH RISK OPERATION DETECTED")
+                print("HIGH RISK OPERATION DETECTED")
                 print("Please review carefully before approving.")
                 break
 
@@ -235,9 +241,9 @@ user_proxy = UserProxyAgent(
 )
 ```
 
-**Why**: Without human oversight, agents can execute dangerous operations, make costly API calls, or enter infinite loops.
+**Why**: Without human oversight, agents can execute dangerous operations, make costly API calls, or enter infinite loops. Human-in-the-loop controls map to Excessive Agency: agents that act without operator confirmation exceed their intended scope.
 
-**Refs**: OWASP LLM08, CWE-400
+**Refs**: OWASP LLM06:2025 (Excessive Agency), CWE-400
 
 ---
 
@@ -307,7 +313,7 @@ def chat(user_message):
 
 **Why**: Unsanitized conversations enable prompt injection, and unlimited rounds cause resource exhaustion.
 
-**Refs**: OWASP LLM01, CWE-400, CWE-200
+**Refs**: OWASP LLM01:2025, CWE-400, CWE-200
 
 ---
 
@@ -399,6 +405,7 @@ llm_config = {
 **Do**:
 ```python
 from pathlib import Path
+from autogen.coding import DockerCommandLineCodeExecutor
 
 class SecureFileHandler:
     def __init__(self, allowed_dir: str):
@@ -433,10 +440,14 @@ class SecureFileHandler:
 
         path.write_text(content)
 
-# Safe: Use secure handler in executor
+# Safe: bind_dir takes a Path pointing to the host directory.
+# autogen 0.4.x mounts that directory read-write inside the container.
+# For read-only enforcement, use a pre-configured docker.DockerClient
+# that sets the bind mount mode, or enforce access controls at the
+# application layer inside the container.
 executor = DockerCommandLineCodeExecutor(
     work_dir="/sandbox",
-    bind_dir="/app/data:/sandbox/data:ro"  # Read-only mount
+    bind_dir=Path("/app/data"),
 )
 ```
 
@@ -468,10 +479,10 @@ def save_code(filename, code):
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Sandbox code execution | strict | OWASP LLM06, CWE-94 |
+| Sandbox code execution | strict | OWASP LLM06:2025, CWE-94 |
 | Validate generated code | strict | CWE-94, CWE-95 |
-| Require human approval | strict | OWASP LLM08, CWE-400 |
-| Protect conversation context | strict | OWASP LLM01, CWE-200 |
+| Require human approval | strict | OWASP LLM06:2025 (Excessive Agency), CWE-400 |
+| Protect conversation context | strict | OWASP LLM01:2025, CWE-200 |
 | Secure LLM configuration | strict | CWE-798, CWE-400 |
 | Restrict file access | strict | CWE-22, CWE-732 |
 
@@ -479,4 +490,5 @@ def save_code(filename, code):
 
 ## Version History
 
+- **v2.0.0** - Rewritten for autogen 0.4.x APIs; fixed fabricated parameters; corrected OWASP LLM 2025 numbering
 - **v1.0.0** - Initial AutoGen security rules
