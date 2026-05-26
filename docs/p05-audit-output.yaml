@@ -4490,13 +4490,6 @@ audited_rules:
         deduplication. Non-blocking.
       - MITRE ATLAS AML.T0020 cited in three rules. ATLAS live site inaccessible;
         citations are consistent with prior audit decisions. Retained as plausible.
-
-      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
-      - ISSUE 1: human_input moved to Task level; Agent() no longer accepts human_input kwarg.
-      - ISSUE 2: Process imported in Do block (from crewai import Crew, Process, Task).
-      - ISSUE 3: Path imported; args_schema = InputSchema wired as class attribute on SecureFileReadTool.
-      - ISSUE 4: memory_config removed from Crew(); per-instance isolation documented via new Crew per session.
-      - ISSUE 5: parse_raw() replaced with model_validate_json(); pydantic.ValidationError catch added.
     issues_filed: []
 
   - path: rules/rag/chunking/CLAUDE.md
@@ -6018,4 +6011,89 @@ audited_rules:
         leakage. Advisory: replace CWE-201 with CWE-359.
       - _check_zip correctly detects '..' in ZIP entry filenames (line 1278), covering
         ZIP slip path traversal. Good; no defect.
+    issues_filed: []
+
+  - path: rules/rag/vector-selfhosted/milvus/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules (Connection Security, Collection Isolation, Partition Security,
+      GPU Resource Security, Index Configuration Security, Expression Filter Injection,
+      Bulk Insert Security, Attu Dashboard Security). pymilvus API calls
+      (connections.connect, Collection, utility, Partition) are valid for 2.4+. OWASP
+      A0X:2025 refs are correctly formatted with year suffix throughout. Expression
+      Filter Injection rule is thorough and covers the primary expr injection attack
+      vector well.
+
+      Five defects follow, all requiring fixes before the file can pass.
+
+      ISSUE 1 — RBAC disabled by default: NO RULE COVERING ENABLEMENT (CRITICAL)
+        Milvus self-hosted ships with authorization disabled
+        (common.security.authorizationEnabled defaults to false). The file never
+        instructs operators to enable RBAC before deploying. The Partition Security rule
+        delegates to a placeholder auth_service.check_permission() but shows no pymilvus
+        RBAC primitives (utility.create_role, utility.grant_privilege,
+        utility.add_user_to_role). Without explicit enablement guidance the file's
+        access-control rules are decorative: the underlying Milvus instance accepts all
+        requests regardless of user/role.
+        Fix required: add a strict-level rule covering milvus.yaml
+        common.security.authorizationEnabled: true, then pymilvus role/privilege setup
+        (create_role, grant_privilege for Collection.Search/Insert, add_user_to_role)
+        with a Do/Don't showing server config and SDK calls.
+
+      ISSUE 2 — Mutual TLS for gRPC not covered (HIGH)
+        The Connection Security rule configures one-way TLS (server_pem_path verifies
+        the server). For self-hosted Milvus the gRPC channel supports mutual TLS via
+        client_pem_path and client_key_path parameters in connections.connect(). Without
+        mTLS any client that can reach port 19530 can authenticate with a valid
+        user/password regardless of client identity. The file shows neither the pymilvus
+        client-cert parameters nor the server-side tlsMode: 2 configuration required in
+        milvus.yaml.
+        Fix required: extend Connection Security (or add a sub-rule) covering
+        tlsMode: 2 in milvus.yaml and client_pem_path/client_key_path in
+        connections.connect() for mutual TLS.
+
+      ISSUE 3 — partition_key_field pattern absent (HIGH)
+        The file covers separate-collection isolation and manual partition access control
+        but omits the partition_key_field multi-tenancy pattern introduced in Milvus
+        2.2.9. partition_key_field routes documents into internal partitions
+        automatically based on a field value; it provides weaker isolation than separate
+        collections (all tenant data coexists in one collection, separated only by
+        partition routing that can be bypassed via a crafted expr filter). Operators
+        need explicit guidance comparing the two patterns.
+        Fix required: add an advisory or warning rule comparing partition_key_field to
+        separate-collection isolation, naming the bypass risk (expr filter can access
+        all partitions) and recommending collection-per-tenant for strict isolation and
+        partition_key only when tenants are equally trusted.
+
+      ISSUE 4 — Etcd metadata store authentication not covered (CRITICAL)
+        Self-hosted Milvus uses etcd as its metadata store; etcd ships with auth
+        disabled by default. An attacker with network access to port 2379 can read all
+        collection metadata, schema definitions, segment locations, and user credentials
+        stored in etcd, enabling collection enumeration, tenant data mapping, and
+        targeted expr injection. The file has no rule on etcd authentication or
+        network-level isolation of the etcd port.
+        Fix required: add a warning-level rule covering etcd authentication enablement
+        (etcd --auth-token, etcdctl user/role/permission setup) and network isolation
+        (etcd reachable only by Milvus pods, not exposed to the application tier).
+
+      ISSUE 5 — Storage layer (MinIO/S3) access control not covered (HIGH)
+        Milvus persists vector segments and indexes to MinIO or S3 (minio.accessKeyID /
+        minio.secretAccessKey). The file has no rule on MinIO credential scoping
+        (avoid root credentials, use dedicated IAM user with least-privilege bucket
+        policy), bucket-level access control, or encryption at rest. An attacker who
+        obtains the MinIO credentials can read all vector segments directly from object
+        storage, bypassing Milvus RBAC entirely.
+        Fix required: add a warning-level rule covering MinIO/S3 credential scoping,
+        bucket policy restricted to the Milvus bucket, encryption at rest (MinIO KES or
+        S3 SSE-S3/SSE-KMS), and milvus.yaml minio.useSSL: true.
+
+      Non-blocking observations:
+      - No OWASP LLM Top 10 refs. For a vector-DB infrastructure rule file the
+        relevant attack vectors (data exfiltration, injection) are covered by
+        OWASP A01/A03:2025 which are present. Not a blocker.
+      - GPU Resource Security and Index Configuration Security rules cite only CWE-400
+        and CWE-770 with no OWASP mapping. Advisory; no OWASP Top 10 category maps
+        cleanly to resource exhaustion in this context.
     issues_filed: []
