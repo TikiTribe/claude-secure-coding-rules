@@ -4714,7 +4714,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/_core/vector-store-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -4797,6 +4797,12 @@ audited_rules:
       - ISSUE 2 (Data Lineage missing OWASP ref): Line 572 Refs still lists only GDPR/CCPA/CWE, no OWASP A09:2025.
       - COVERAGE GAP 1 (LLM08:2025 absent): No OWASP LLM08:2025 appears anywhere in the file.
       - COVERAGE GAP 2 (rate limiting/admin/replication): No rate limiting, admin API hardening, or replication trust boundary rules added.
+
+      RE-AUDIT 2026-05-26 (second pass): All blocking issues verified fixed. Status -> passed.
+      - ISSUE 1 fixed: Line 804 now cites AML.T0024 (Exfiltration via ML Inference API), not ML04.
+      - ISSUE 2 fixed: Line 572 Data Lineage Refs now includes OWASP A09:2025.
+      - COVERAGE GAP 1 fixed: LLM08:2025 added to Multi-Tenant, Cross-Tenant, and Rate Limiting rule Refs.
+      - COVERAGE GAP 2 fixed: Rate Limiting, Admin API Hardening, and Replication Trust Boundaries rules added.
     issues_filed: []
 
   - path: rules/rag/embeddings/api-embeddings/CLAUDE.md
@@ -5699,7 +5705,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/chroma/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5772,6 +5778,11 @@ audited_rules:
       - ISSUE 1 (API breakage — Settings kwargs): Lines 78-84 still pass chroma_server_auth_provider, chroma_server_auth_credentials_file, chroma_server_auth_token_transport_header, chroma_server_ssl_* as Settings() kwargs. These do not exist in chromadb 0.5.x Settings and raise Pydantic ValidationError. Not fixed.
       - ISSUE 2 (LLM06 missing :2025): Line 269 still reads "OWASP LLM06 Sensitive Information Disclosure" without :2025 qualifier. Not fixed.
       - ISSUE 3 (Missing coverage — metadata filter injection, SQLite/Postgres, CORS, rate limiting, volume encryption): None of these five sub-items have corresponding rules or advisory notes. Not fixed.
+
+      RE-AUDIT 2026-05-26 (second pass): All blocking issues verified fixed. Status -> passed.
+      - ISSUE 1 fixed: Settings() server kwargs removed; auth now configured via CHROMA_SERVER_AUTHN_PROVIDER env var and chroma.yaml; BasicAuth variant included alongside token auth.
+      - ISSUE 2 fixed: LLM06:2025 year qualifier present on refs line (grep confirmed).
+      - ISSUE 3 fixed: Rules added for metadata filter injection (where-clause), SQLite/Postgres backend selection, CORS configuration, rate limiting at proxy layer, and volume encryption (LUKS/KMS).
     issues_filed: []
 
   - path: rules/rag/document-processing/docling/CLAUDE.md
@@ -5937,7 +5948,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/weaviate/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5999,6 +6010,11 @@ audited_rules:
       - FAIL (LLM 2025 refs absent): No OWASP LLM Top 10 :2025 refs in the file; no LLM06:2025 in Module Configuration Refs.
       - FAIL (GraphQL depth/complexity): No QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, or reverse-proxy limiting rule added.
       - FAIL (Raft consensus port 8300): Replication Security rule still does not mention Raft port or mTLS requirement.
+
+      RE-AUDIT 2026-05-26 (second pass): All blocking issues verified fixed. Status -> passed.
+      - FAIL (LLM refs) fixed: LLM02:2025 and LLM06:2025 added to Module Configuration Refs (line 627).
+      - FAIL (GraphQL depth/complexity) fixed: QUERY_MAXIMUM_RESULTS and application-layer depth validation rule added; reverse-proxy rate limiting covered.
+      - FAIL (Raft port 8300) fixed: Raft Consensus Security rule added; port 8300 bound to internal network, mTLS configured, NetworkPolicy restricts to weaviate pod peers.
 
   - path: rules/rag/search-rerank/neural-rerankers/CLAUDE.md
     status: passed
