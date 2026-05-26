@@ -3178,7 +3178,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/nestjs/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3256,7 +3256,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/fastapi/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3342,7 +3342,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/django/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -3381,7 +3381,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/vllm/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -3444,7 +3444,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/autogen/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3537,7 +3537,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/triton/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3633,7 +3633,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/langchain/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3718,7 +3718,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/bentoml/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3798,7 +3798,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/mlflow/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -3858,7 +3858,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/torchserve/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -3942,7 +3942,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/flask/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -3994,7 +3994,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/modal/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -4234,7 +4234,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/backend/crewai/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
