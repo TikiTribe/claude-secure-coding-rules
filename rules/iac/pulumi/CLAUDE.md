@@ -486,7 +486,8 @@ pulumi policy enable company-org/security-policies latest
 **Do**:
 ```typescript
 // TypeScript - Secure Automation API usage
-import * as pulumi from "@pulumi/pulumi/automation";
+import * as pulumi from "@pulumi/pulumi";
+import { LocalWorkspace } from "@pulumi/pulumi/automation";
 import * as aws from "@pulumi/aws";
 
 async function deployInfrastructure() {
@@ -509,7 +510,7 @@ async function deployInfrastructure() {
     };
 
     // Create or select stack
-    const stack = await pulumi.LocalWorkspace.createOrSelectStack({
+    const stack = await LocalWorkspace.createOrSelectStack({
         stackName: "production",
         projectName: "my-infrastructure",
         program,
@@ -885,7 +886,7 @@ const bucket = new aws.s3.Bucket("my-bucket", {
 ```python
 # Python - Use environment variables and role assumption
 import pulumi
-from pulumi_aws import Provider, s3
+from pulumi_aws import Provider, ProviderAssumeRoleArgs, s3
 
 config = pulumi.Config()
 
@@ -932,6 +933,7 @@ package main
 
 import (
     "github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
+    "github.com/pulumi/pulumi-aws/sdk/v6/go/aws/s3"
     "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -1058,6 +1060,7 @@ const certificate = new aws.acm.Certificate("main-cert", {
 ```python
 # Python - Protect critical resources
 import pulumi
+import pulumi_aws as aws
 from pulumi_aws import rds, s3, kms
 
 config = pulumi.Config()
