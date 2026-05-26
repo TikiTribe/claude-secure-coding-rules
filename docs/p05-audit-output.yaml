@@ -1636,3 +1636,133 @@ audited_rules:
         is correct; the indentation pattern that produces AND vs OR is subtle and
         worth a clarifying comment for practitioners who may misread it.
     issues_filed: []
+
+  - path: rules/containers/kubernetes/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Pod Security Standards (Restricted Profile)
+      - RBAC Least Privilege
+      - Network Policies (Default Deny)
+      - SecurityContext Configuration
+      - No Host Namespace Sharing
+      - Resource Quotas and Limits
+      - Secrets Management
+      - Service Account Token Management
+      - Image Pull Policy and Security
+      - Admission Controllers and Policy Enforcement
+      - API Server Audit Logging
+      - Node Security Configuration
+      - Ingress TLS Configuration
+      - PodDisruptionBudgets
+      - Namespace Isolation
+      - Image Supply Chain Verification
+    notes: |
+      Audited all 16 rule sections. Two distinct blocking issues found. No PodSecurityPolicy
+      usage anywhere in the file — PSS namespace labels (pod-security.kubernetes.io/enforce)
+      used throughout, which is the correct replacement since K8s 1.25. RBAC Do examples
+      use scoped verbs and namespace-scoped Roles (correct). NetworkPolicy syntax is valid;
+      podSelector: {} for same-namespace isolation is correct per the K8s spec. Kyverno
+      policies use kyverno.io/v1 with the correct verifyImages/imageReferences structure for
+      Kyverno 1.8+. OPA Gatekeeper uses templates.gatekeeper.sh/v1 (GA since Gatekeeper
+      3.9, correct). PodDisruptionBudget uses policy/v1 (correct; v1beta1 removed in 1.25).
+      cert-manager Certificate uses cert-manager.io/v1 (correct). Audit Policy uses
+      audit.k8s.io/v1 (correct). kubeadm ClusterConfiguration uses kubeadm.k8s.io/v1beta3
+      (valid for K8s 1.27-1.31+). ExternalSecret uses external-secrets.io/v1beta1 — v1 GA
+      reached in ESO v0.10.0 (Q4 2024), advisory to upgrade but not blocking.
+
+      ISSUE 1 — Secrets Management Do example: aescbc provider removed in Kubernetes 1.30 (CRITICAL / DEPRECATED API)
+        Two EncryptionConfiguration Do examples in the file both use aescbc as the primary
+        encryption provider:
+          a) Secrets Management rule (source line 691)
+          b) Additional Security Configurations / Secure etcd section (source line 1518)
+        Both show:
+          providers:
+            - aescbc:
+                keys:
+                  - name: key1
+                    secret: <base64-encoded-32-byte-key>
+        aescbc (AES-CBC with PKCS#7 padding, no authentication tag) was deprecated in
+        Kubernetes 1.28 (released August 2023) and REMOVED in Kubernetes 1.30 (released
+        April 2024). An API server on Kubernetes 1.30+ that specifies aescbc in its
+        EncryptionConfiguration fails to start with:
+          "unknown encryption provider: aescbc"
+        The correct replacement is aesgcm (AES-GCM, authenticated encryption, available
+        since K8s 1.25) or the kms provider (envelope encryption via an external KMS such
+        as AWS KMS or HashiCorp Vault). Any cluster running a release from the last 13+
+        months cannot use the shown Do example.
+        Fix required: replace aescbc with aesgcm in both EncryptionConfiguration Do
+        examples. The aesgcm replacement:
+          providers:
+            - aesgcm:
+                keys:
+                  - name: key1
+                    secret: <base64-encoded-32-byte-key>
+            - identity: {}
+        For production, add a note that the kms provider (envelope encryption) is preferred
+        because it does not require distributing raw key material to each API server node.
+        Refs: Kubernetes 1.28 changelog (aescbc deprecated), Kubernetes 1.30 changelog
+        (aescbc removed), kubernetes.io/docs/tasks/administer-cluster/encrypt-data/.
+
+      ISSUE 2 — Image Pull Policy Do example: sidecar uses tag-only reference,
+        contradicting the Image Supply Chain Verification rule in the same file (INCONSISTENCY)
+        The Image Pull Policy and Security Do example (source line 893-903) shows two
+        containers. The first container (line 896) correctly uses a digest-pinned reference:
+          image: myregistry.io/myapp:v1.0.0@sha256:abc123def456...
+        The second container (sidecar, line 902) uses a tag-only reference:
+          image: myregistry.io/sidecar:v2.0.0
+          imagePullPolicy: Always
+        The accompanying comment reads "If using tag, must use Always." Five rules later,
+        the Image Supply Chain Verification rule (source line 1571) presents a strict-level
+        Kyverno ClusterPolicy named require-image-digest (source lines 1648-1668) that
+        enforces the pattern "*@sha256:*" on ALL containers including sidecars and
+        initContainers. A practitioner following the Image Pull Policy Do example would
+        deploy a sidecar that is rejected by the admission policy in the same file, with
+        no indication from the Do example that this will happen. The two Do examples
+        directly contradict each other. Additionally, imagePullPolicy: Always with a
+        mutable tag guarantees the latest image behind the tag is fetched on each pod
+        restart but provides no supply-chain verification — the tag can be silently
+        repointed to a malicious image. It is not a substitute for digest pinning.
+        Fix required: update the sidecar image reference at source line 902 to include a
+        digest:
+          image: myregistry.io/sidecar:v2.0.0@sha256:<digest>
+          imagePullPolicy: Always
+        Replace the "If using tag, must use Always" comment with a statement that all
+        production images must use digest references per the Image Supply Chain
+        Verification rule, and that imagePullPolicy: Always is an additional freshness
+        control — not a substitute for a digest.
+
+      Non-blocking observations (no status change):
+      - Do examples in rules that are not primarily about image security (RBAC,
+        SecurityContext, Network Policies, Host Namespace, Resource Quotas, Secrets,
+        Service Account Token) use image: myapp:latest as a placeholder where image
+        identity is incidental to the security topic being demonstrated. This pattern
+        appears at source lines 213, 520, 591, 715, 820, 833, and others. These are not
+        Do examples for image selection and do not introduce new contradictions beyond
+        ISSUE 2 above. Advisory: a comment in the PSS or SecurityContext rule noting
+        "replace with a digest-pinned reference per the Image Supply Chain Verification
+        rule" would reinforce the expectation without requiring structural changes.
+      - Kubelet KubeletConfiguration at source line 1228 includes makeIPTablesUtilChains:
+        true. This field was deprecated in Kubernetes 1.29 (kube-proxy now owns iptables
+        chain management). Setting it on 1.29+ has no effect and generates a deprecation
+        warning. Advisory: remove the field or add a comment noting its 1.29 deprecation.
+      - Kyverno verifyImages rules use kyverno.io/v1 with the imageReferences field,
+        which was introduced in Kyverno 1.8 (released 2022). Current Kyverno is 1.12;
+        this is not a practical concern. Advisory: a minimum-version note in the Why text
+        would help practitioners on constrained upgrade cycles.
+      - ExternalSecret at source line 743 uses external-secrets.io/v1beta1. ESO reached
+        v1 GA in v0.10.0 (Q4 2024); v1beta1 remains supported. Advisory to migrate to
+        v1 in a future pass.
+      - CIS Kubernetes Benchmark references are cited throughout without a version
+        qualifier (e.g., "CIS Kubernetes Benchmark 5.2"). The Benchmark is currently at
+        v1.10.0 (December 2024); section numbers shift between versions. Advisory: add a
+        version qualifier such as "CIS Kubernetes Benchmark v1.10.0" to anchor citations.
+      - The supply chain rule verifyImages Kyverno policy matches both tag patterns
+        ("myregistry.io/myapp:*") and digest patterns ("myregistry.io/myapp@sha256:*")
+        with mutateDigest: true. Tag-to-digest mutation requires the Kyverno controller
+        to have registry pull access. Advisory: add a note explaining this registry-access
+        requirement (credentials via imagePullSecrets, IRSA, or Workload Identity) to
+        assist practitioners in air-gapped or private-registry environments.
+    issues_filed: []
