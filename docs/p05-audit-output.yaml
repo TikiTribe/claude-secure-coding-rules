@@ -5918,3 +5918,104 @@ audited_rules:
       ISSUE 3 — Collection/partition access control relies entirely on naming-convention prefix checks; no pymilvus RBAC API calls (create_role, grant_privilege, grant_role) demonstrating cluster-enforced role grants.
 
       Passed: MilvusClient uri+token API correct for pymilvus 2.x / Zilliz Cloud; cluster auth via API key with TLS; partition key multi-tenancy isolation; expr filter injection prevention.
+
+  - path: rules/rag/_core/document-processing-security.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Document Upload Validation
+      - Parser Resource Limits
+      - PII Detection and Redaction
+      - Chunk Integrity and Provenance
+      - Cross-Chunk Injection Detection
+      - Image and OCR Security
+      - Metadata Sanitization
+      - Malformed Document Protection
+    notes: |
+      Audited all 8 rule sections. Five distinct issues found; three are blocking.
+      No OWASP LLM 2023->2025 numbering errors (only one LLM ref present, lacks
+      year qualifier). CWE IDs all valid: CWE-22, CWE-434, CWE-400, CWE-770,
+      CWE-359, CWE-345, CWE-611, CWE-776, CWE-74, CWE-200, CWE-201. CVE-2013-0156
+      cited for Malformed Document Protection is a real CVE (Rails YAML/XML
+      deserialization RCE). No fabricated ATLAS IDs; none cited in this file.
+
+      ISSUE 1 - Document Upload Validation Do example: startsWith path traversal bypass
+        (CODE BUG / CRITICAL)
+        Line 129: _get_secure_path() checks:
+          if not str(upload_path).startswith(str(base_dir)):
+        This is a classic prefix-check bypass. If base_dir resolves to
+        '/var/uploads/documents', a path resolving to '/var/uploads/documents_evil/x'
+        passes the check because that string starts with '/var/uploads/documents'.
+        Fix required: append os.sep before comparing:
+          if not str(upload_path).startswith(str(base_dir) + os.sep):
+        or use upload_path.is_relative_to(base_dir) for Python 3.9+.
+
+      ISSUE 2 - Malformed Document Protection Do example: PDF JavaScript detection is
+        a non-functional stub in a strict-level rule (CODE BUG / BLOCKING)
+        Lines 1229-1233 of _check_pdf():
+          has_js = False
+          for page in doc:
+              if page.get_text("dict").get("annots"):
+                  # Simplified check - real implementation would be more thorough
+                  pass
+        has_js is set to False and never changed; the loop body is a no-op (pass).
+        JavaScript in PDF via /AA, /OpenAction, or /JS is a primary RCE vector
+        (CWE-78). The strict-level Do example advertises JavaScript detection but
+        implements none. has_js is never read after assignment.
+        Fix required: implement actual detection (e.g., scan for '/JavaScript' in
+        doc.get_pdf_str()) or remove the stub and document that JavaScript stripping
+        requires a dedicated PDF sanitization library such as pikepdf.
+
+      ISSUE 3 - CWE-611 (XXE) cited in Refs but no Do code demonstrates disabling XML
+        entity resolution (COVERAGE GAP / BLOCKING)
+        Line 1376 cites CWE-611 in Malformed Document Protection Refs. The audit
+        checklist requires coverage of XXE in XML/SVG/DOCX. _check_office_xml() reads
+        .rels content with zf.read(name).decode() - raw string decode, no XML parse,
+        no entity expansion risk there - but no rule demonstrates disabling XML entity
+        expansion when parsing XML with a Python parser. SVG and DOCX body.xml
+        extraction paths are absent. Citing CWE-611 without a Do example showing the
+        mitigation implies coverage that is not demonstrated.
+        Fix required: add a Do example to Malformed Document Protection showing
+        defusedxml.parse() or lxml with resolve_entities=False for XML parsing paths;
+        extend to SVG if SVG is in allowed_mimes; tie to the CWE-611 ref in Why.
+
+      ISSUE 4 - OWASP refs use 2021 qualifiers; LLM ref missing year qualifier
+        (STANDARDS VERSION)
+        All five inline OWASP Top 10 citations use :2021 qualifiers (A01:2021,
+        A03:2021, A05:2021 at lines 155, 305, 489, 1018, 1154). The project targets
+        OWASP Top 10 2025 throughout. Line 863 cites "OWASP LLM Top 10 - Prompt
+        Injection" with no year qualifier; the correct form is
+        "OWASP LLM01:2025 (Prompt Injection)".
+        Fix required: update A01:2021->A01:2025, A03:2021->A03:2025,
+        A05:2021->A05:2025; update the LLM ref to OWASP LLM01:2025.
+
+      ISSUE 5 - Polyglot file detection absent (COVERAGE GAP / BLOCKING)
+        The audit checklist identifies polyglot files as a required topic. Files can
+        be crafted valid in multiple formats simultaneously (e.g., a JPEG/ZIP polyglot
+        passes python-magic MIME detection as 'image/jpeg' but is also a valid ZIP
+        archive a downstream handler can extract). python-magic reads primary magic
+        bytes only and does not detect polyglots. No rule, note, or advisory covers
+        this attack class.
+        Fix required: add an advisory-level note to Document Upload Validation
+        explaining the polyglot threat; recommend a secondary format consistency check
+        (e.g., confirm a file detected as 'image/jpeg' also fails zipfile.is_zipfile())
+        and reject documents that validate as more than one recognized binary format.
+
+      Non-blocking observations (no status change):
+      - OCR injection denylist (lines 986-993) removes script/PHP tags from OCR output.
+        Per the pattern established in prior audits, regex denylists are deprecated as
+        primary injection controls (OWASP LLM01:2025). In the OCR context the risk is
+        lower; denylist is acceptable as defense-in-depth if labeled as such. Advisory:
+        add a comment noting structural isolation at inference time is the primary
+        injection defense.
+      - Version History (line 1483): version 1.0 dated 2024-01-15 confirms the file
+        predates the OWASP 2025 taxonomy, consistent with ISSUE 4.
+      - CWE-201 in Image and OCR Security Refs (line 1018): CWE-201 (Insertion of
+        Sensitive Information Into Sent Data) applies to network data, not file
+        metadata. CWE-359 (Privacy Violation) is more precise for EXIF GPS/device-info
+        leakage. Advisory: replace CWE-201 with CWE-359.
+      - _check_zip correctly detects '..' in ZIP entry filenames (line 1278), covering
+        ZIP slip path traversal. Good; no defect.
+    issues_filed: []
