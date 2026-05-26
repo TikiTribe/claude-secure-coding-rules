@@ -170,18 +170,18 @@ User.objects.extra(where=[f"email = '{email}'"])
 <!-- Django auto-escapes by default -->
 <p>{{ user_input }}</p>
 
-<!-- For trusted HTML, use |safe only after sanitization -->
-{% load bleach_tags %}
-<div>{{ user_html|bleach }}</div>
+<!-- For trusted HTML, sanitize before marking safe; do NOT use bleach (archived 2023-01-23) -->
+<div>{{ content }}</div>
 ```
 
 ```python
 # views.py
-import bleach
+# nh3 is the successor to bleach: Rust-backed Ammonia binding, actively maintained
+import nh3
 
 def render_content(request):
-    allowed_tags = ['p', 'b', 'i', 'a']
-    clean_html = bleach.clean(user_html, tags=allowed_tags)
+    allowed_tags = {'p', 'b', 'i', 'a'}
+    clean_html = nh3.clean(user_html, tags=allowed_tags)
     return render(request, 'content.html', {'content': clean_html})
 ```
 
@@ -214,7 +214,6 @@ def render_content(request):
 ```python
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.hashers import make_password
 
 def login_view(request):
     if request.method == 'POST':
@@ -365,12 +364,11 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 # Use database or cache backend
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
-# Rotate session on login
+# login() calls cycle_key() internally since Django 1.4; no explicit call needed
 from django.contrib.auth import login
 def login_view(request):
     # ... authenticate
-    login(request, user)
-    request.session.cycle_key()  # Prevent session fixation
+    login(request, user)  # Session fixation prevention is built in
 ```
 
 **Don't**:

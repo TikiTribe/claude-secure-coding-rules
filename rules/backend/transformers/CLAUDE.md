@@ -32,11 +32,12 @@ tokenizer = AutoTokenizer.from_pretrained(
     trust_remote_code=False
 )
 
-# Safe: Use safetensors format (no pickle)
+# Safe: Use safetensors format (no pickle); pin to a verified SHA
 model = AutoModel.from_pretrained(
     "model-name",
+    revision="a265f773",   # Pin to a known-good commit SHA
     trust_remote_code=False,
-    use_safetensors=True  # Safe serialization format
+    use_safetensors=True   # Avoids pickle deserialization
 )
 
 # Safe: Load from verified organization
@@ -63,16 +64,18 @@ model = AutoModel.from_pretrained(
 )
 
 # VULNERABLE: Loading pickle files (RCE risk)
+# In PyTorch 2.0+ use weights_only=True as a partial mitigation,
+# but prefer safetensors-format models instead of torch.load() entirely.
 import torch
 model = torch.load("model.pt")  # Can execute code
 
-# VULNERABLE: Unverified model source
+# VULNERABLE: Unverified model source, no revision pin
 model = AutoModel.from_pretrained(random_github_model)
 ```
 
-**Why**: `trust_remote_code=True` allows model creators to execute arbitrary Python code on your system. Pickle files can also contain malicious code.
+**Why**: `trust_remote_code=True` allows model creators to execute arbitrary Python code on your system. Pickle files can also contain malicious code. Unpinned revision= allows a supply-chain attacker to swap the model after you reviewed it.
 
-**Refs**: OWASP LLM05, MITRE ATLAS AML.T0010, CWE-502
+**Refs**: OWASP LLM03:2025 (Supply Chain Vulnerabilities), MITRE ATLAS AML.T0011, CWE-502
 
 ---
 
@@ -87,28 +90,40 @@ model = AutoModel.from_pretrained(random_github_model)
 from huggingface_hub import hf_hub_download, model_info
 import hashlib
 
-# Safe: Verify model metadata
-def verify_model(model_id: str, revision: str = "main"):
-    info = model_info(model_id, revision=revision)
+TRUSTED_AUTHORS = {"google", "facebook", "microsoft", "openai", "meta-llama"}
 
-    # Check for security advisories
-    if hasattr(info, 'security_status'):
-        if info.security_status == "unsafe":
-            raise ValueError(f"Model {model_id} has security issues")
+# Safe: Verify model metadata using actual ModelInfo fields.
+# HF Hub does not expose a single security_status signal; use tags,
+# gated/private status, and revision SHA pinning as the composite check.
+def verify_model(model_id: str, expected_sha: str):
+    info = model_info(model_id, revision=expected_sha)
 
-    # Verify organization
+    # Reject disabled repositories
+    if getattr(info, "disabled", False):
+        raise ValueError(f"Model {model_id} is disabled on Hub")
+
+    # Warn on unverified authors
     if info.author not in TRUSTED_AUTHORS:
-        print(f"Warning: Unverified author {info.author}")
+        # Gated models require Hub approval; still prefer allowlist + tag review
+        if not getattr(info, "gated", False):
+            raise ValueError(f"Untrusted and ungated author: {info.author}")
+
+    # Inspect community-applied tags for known safety flags
+    bad_tags = {"malicious", "unsafe", "flagged"}
+    if info.tags and bad_tags.intersection(set(info.tags)):
+        raise ValueError(f"Model {model_id} carries a safety-concern tag")
 
     return info
 
-# Safe: Pin to specific revision
+# Safe: Pin to a verified SHA so the artifact cannot be swapped after review
 model = AutoModel.from_pretrained(
     "bert-base-uncased",
-    revision="a265f773"  # Specific commit hash
+    revision="a265f773",        # Specific commit SHA
+    trust_remote_code=False,
+    use_safetensors=True
 )
 
-# Safe: Verify file checksum
+# Safe: Verify file checksum for downloaded artifacts
 def download_verified(model_id: str, filename: str, expected_hash: str):
     path = hf_hub_download(model_id, filename)
 
@@ -123,20 +138,27 @@ def download_verified(model_id: str, filename: str, expected_hash: str):
 
 **Don't**:
 ```python
-# VULNERABLE: Always use latest (could be compromised)
+# VULNERABLE: Always use latest (could be compromised after you reviewed it)
 model = AutoModel.from_pretrained("model-name")  # No revision pinned
+
+# VULNERABLE: Dead guard -- ModelInfo has no security_status attribute;
+# hasattr() always returns False and the check never executes
+info = model_info(model_id)
+if hasattr(info, "security_status"):          # Never True
+    if info.security_status == "unsafe":      # Dead code
+        raise ValueError("unsafe")
 
 # VULNERABLE: No integrity verification
 model_path = hf_hub_download(model_id, "model.bin")
 model = torch.load(model_path)  # Could be tampered
 
-# VULNERABLE: User-provided model ID
+# VULNERABLE: User-provided model ID without allowlist
 model = AutoModel.from_pretrained(user_input)  # Supply chain attack
 ```
 
-**Why**: Without verification, attackers can replace models with poisoned versions that produce malicious outputs or leak data.
+**Why**: Without SHA pinning, attackers can replace a model with a poisoned version after your initial review. `info.security_status` does not exist in any released version of `huggingface_hub`; relying on it creates a false sense of protection. Use `info.disabled`, `info.gated`, and `info.tags` as the available safety signals.
 
-**Refs**: OWASP LLM05, MITRE ATLAS AML.T0020, CWE-494
+**Refs**: OWASP LLM03:2025 (Supply Chain Vulnerabilities), MITRE ATLAS AML.T0020, CWE-494
 
 ---
 
@@ -152,7 +174,13 @@ model = AutoModel.from_pretrained(user_input)  # Supply chain attack
 ```python
 from transformers import AutoTokenizer
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+# Pin revision to verified SHA; tokenizer.json from untrusted sources
+# can alter vocabulary and special-token handling in non-obvious ways.
+tokenizer = AutoTokenizer.from_pretrained(
+    "bert-base-uncased",
+    revision="a265f773",
+    trust_remote_code=False
+)
 
 # Safe: Limit input length
 def safe_tokenize(text: str, max_length: int = 512):
@@ -160,8 +188,9 @@ def safe_tokenize(text: str, max_length: int = 512):
     if not isinstance(text, str):
         raise ValueError("Input must be string")
 
-    # Limit input size before tokenization
-    text = text[:max_length * 4]  # Rough char limit
+    # Limit input size before tokenization (rough char limit prevents
+    # adversarial tokenization that produces far more tokens than chars)
+    text = text[:max_length * 4]
 
     tokens = tokenizer(
         text,
@@ -200,9 +229,9 @@ tokens = tokenizer(text, add_special_tokens=False)
 tokens = tokenizer(text, truncation=False)  # Memory exhaustion
 ```
 
-**Why**: Malicious inputs can exploit tokenizer behavior for DoS attacks or inject special tokens to manipulate model behavior.
+**Why**: Malicious inputs can exploit tokenizer behavior for DoS attacks (unbounded consumption) or inject special tokens to manipulate model behavior. An untrusted `tokenizer.json` can redefine the vocabulary and attack surface independently of `trust_remote_code`.
 
-**Refs**: OWASP LLM04, CWE-400, CWE-20
+**Refs**: OWASP LLM10:2025 (Unbounded Consumption), CWE-400, CWE-20
 
 ---
 
@@ -217,7 +246,15 @@ tokens = tokenizer(text, truncation=False)  # Memory exhaustion
 **Do**:
 ```python
 import torch
-from transformers import pipeline
+from transformers import pipeline, AutoModel, AutoTokenizer
+
+# Safe: pipeline() also requires trust_remote_code=False and a pinned revision
+safe_pipe = pipeline(
+    "text-generation",
+    model="gpt2",
+    revision="e7da7f2",
+    trust_remote_code=False
+)
 
 # Safe: Validate generation outputs
 def safe_generate(model, tokenizer, prompt: str, max_tokens: int = 100):
@@ -238,7 +275,7 @@ def safe_generate(model, tokenizer, prompt: str, max_tokens: int = 100):
 
     text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    # Validate output
+    # Validate output length
     if len(text) > max_tokens * 10:
         text = text[:max_tokens * 10]
 
@@ -270,11 +307,14 @@ exec(tokenizer.decode(result[0]))  # Never execute output
 # VULNERABLE: Exposing raw logits
 logits = model(**inputs).logits
 return {"logits": logits.tolist()}  # Information leakage
+
+# VULNERABLE: pipeline() with trust_remote_code enabled
+pipe = pipeline("text-generation", model=user_model, trust_remote_code=True)
 ```
 
-**Why**: Uncontrolled generation can exhaust resources, and raw model outputs may leak training data or enable adversarial attacks.
+**Why**: Uncontrolled generation exhausts resources. Raw logits can leak training data distribution. Executing model output is remote code execution. `pipeline()` accepts the same `trust_remote_code` parameter as `from_pretrained` and must be restricted.
 
-**Refs**: OWASP LLM04, MITRE ATLAS AML.T0024, CWE-200
+**Refs**: OWASP LLM05:2025 (Improper Output Handling), OWASP LLM10:2025 (Unbounded Consumption), MITRE ATLAS AML.T0024, CWE-200
 
 ---
 
@@ -290,6 +330,7 @@ return {"logits": logits.tolist()}  # Information leakage
 ```python
 from transformers import Trainer, TrainingArguments
 from datasets import load_dataset
+from pathlib import Path
 
 # Safe: Validate training data
 def validate_training_data(dataset):
@@ -319,12 +360,14 @@ training_args = TrainingArguments(
     eval_steps=500
 )
 
-# Safe: Checkpoint verification
+# Safe: Checkpoint with guaranteed safetensors format.
+# safe_serialization=True is explicit and version-independent;
+# in transformers >= 4.37 the default already prefers safetensors
+# when the safetensors package is installed, but explicit is better.
 def save_secure_checkpoint(model, path: str):
-    # Use safetensors format
     model.save_pretrained(
         path,
-        safe_serialization=True  # Saves as safetensors
+        safe_serialization=True  # Guarantees safetensors regardless of environment
     )
 
     # Generate checksum
@@ -346,14 +389,13 @@ training_args = TrainingArguments(
     hub_token="hf_1234567890abcdef"  # Exposed token
 )
 
-# VULNERABLE: Pickle serialization
-model.save_pretrained(path)  # Default may use pickle
+# VULNERABLE: Omitting safe_serialization; pickle .pt files are RCE vectors
 torch.save(model.state_dict(), "model.pt")  # Pickle format
 ```
 
-**Why**: Poisoned training data can create backdoors in models. Insecure serialization enables supply chain attacks.
+**Why**: Poisoned training data creates backdoors. Insecure serialization enables supply-chain attacks. `torch.load()` without `weights_only=True` (PyTorch 2.0+) executes arbitrary code; prefer safetensors-format checkpoints via `safe_serialization=True`.
 
-**Refs**: MITRE ATLAS AML.T0020, OWASP LLM05, CWE-502
+**Refs**: MITRE ATLAS AML.T0020, OWASP LLM03:2025 (Supply Chain Vulnerabilities), CWE-502
 
 ---
 
@@ -420,15 +462,25 @@ model.push_to_hub(repo_id, private=False)  # Publicly accessible
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Disable remote code execution | strict | OWASP LLM05, CWE-502 |
-| Verify model integrity | strict | OWASP LLM05, CWE-494 |
-| Validate tokenizer inputs | strict | OWASP LLM04, CWE-400 |
-| Validate model outputs | strict | OWASP LLM04, CWE-200 |
+| Disable remote code execution | strict | OWASP LLM03:2025, CWE-502 |
+| Verify model integrity | strict | OWASP LLM03:2025, CWE-494 |
+| Validate tokenizer inputs | strict | OWASP LLM10:2025, CWE-400 |
+| Validate model outputs | strict | OWASP LLM05:2025, CWE-200 |
 | Secure training process | strict | AML.T0020, CWE-502 |
 | Secure Hub authentication | strict | CWE-798, CWE-532 |
 
 ---
 
+## Coverage Notes
+
+- `weights_only=True` (`torch.load`, PyTorch 2.0+): partial mitigation noted in Don't examples; safetensors is the recommended path.
+- `pipeline()`: covered in Inference Security rule; requires `trust_remote_code=False` and a pinned `revision=`.
+- `tokenizer.json` attack surface: addressed in Tokenizer Security rule; an untrusted tokenizer file is a distinct risk from `trust_remote_code`.
+- PEFT/LoRA adapter security (adapter weight leakage, injection poisoning): not covered in v2.0; deferred to v2.1.
+
+---
+
 ## Version History
 
+- **v2.0.0** - Remapped OWASP LLM refs to 2025 taxonomy; replaced dead `info.security_status` guard with real ModelInfo fields; added `revision=` SHA pinning throughout; corrected AML.T0010 to AML.T0011; updated `save_pretrained` comment for transformers >= 4.37; added `pipeline()` and `tokenizer.json` coverage notes
 - **v1.0.0** - Initial Hugging Face Transformers security rules
