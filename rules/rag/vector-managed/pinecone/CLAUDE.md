@@ -10,9 +10,11 @@ Security rules for Pinecone vector database implementations. These rules extend 
 | Namespace Isolation for Multi-Tenancy | `strict` | Cross-tenant data leakage |
 | Metadata Filter Injection Prevention | `strict` | Filter bypass, data exfiltration |
 | Serverless Configuration Security | `strict` | Cost overruns, data residency violations |
+| PII Scan Before Metadata Upsert | `strict` | PII persistence, GDPR violation |
 | Hybrid Search Security | `warning` | Score manipulation, result poisoning |
 | Index Operations Security | `warning` | Data loss, unauthorized modifications |
 | Query Result Validation | `warning` | Data leakage, integrity violations |
+| Top-K Cap to Prevent Serverless Read-Unit DoS | `warning` | Cost-based denial of service |
 
 ---
 
@@ -312,7 +314,7 @@ def upsert_vectors(index, vectors):
 
 **Why**: Without namespace isolation, metadata filters can be bypassed or misconfigured, allowing cross-tenant data access. Namespaces provide server-enforced isolation that cannot be circumvented by query manipulation. Defense in depth with result validation catches misconfigurations.
 
-**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284, CWE-863
+**Refs**: OWASP A01:2025 (Broken Access Control), OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-284, CWE-863
 
 ---
 
@@ -501,7 +503,7 @@ def build_filter(user_filters):
 
 **Why**: Unvalidated filters allow attackers to query fields they shouldn't access (e.g., `tenant_id`, `internal_score`), use operators that bypass restrictions, or cause denial of service through expensive filter operations. Field allowlisting and operator validation prevent these attacks.
 
-**Refs**: OWASP A03:2025 (Injection), CWE-943, CWE-20
+**Refs**: OWASP A03:2025 (Injection), OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-943, CWE-20
 
 ---
 
@@ -803,7 +805,7 @@ sparse = SparseValues(
 
 **Why**: Manipulated sparse vectors can artificially boost or suppress results, enabling data exfiltration or poisoning search quality. Score anomalies may indicate attacks or data corruption. Bounded validation prevents manipulation while maintaining functionality.
 
-**Refs**: MITRE ATLAS ML03 (Data Poisoning), CWE-20, CWE-129
+**Refs**: MITRE ATLAS AML.T0020 (Craft Adversarial Data), CWE-20, CWE-129
 
 ---
 
@@ -1153,7 +1155,7 @@ class SecureResultProcessor:
 
         return True
 
-# Usage with provenance metadata
+# Usage with provenance metadata and PII scan
 def upsert_with_provenance(
     index,
     tenant_id: str,
@@ -1161,30 +1163,54 @@ def upsert_with_provenance(
     owner_id: str,
     source_system: str
 ):
-    """Upsert vectors with complete provenance tracking."""
+    """Upsert vectors with complete provenance tracking and PII gating."""
 
     from datetime import datetime
     from uuid import uuid4
     import hashlib
+    from presidio_analyzer import AnalyzerEngine
+
+    _pii_analyzer = AnalyzerEngine()
+
+    def _scan_metadata_for_pii(metadata: dict) -> list[str]:
+        """Return a list of PII entity types found across all string metadata values."""
+        findings = []
+        for key, val in metadata.items():
+            if not isinstance(val, str) or not val:
+                continue
+            results = _pii_analyzer.analyze(text=val, language="en")
+            for r in results:
+                findings.append(f"{key}:{r.entity_type}(score={r.score:.2f})")
+        return findings
 
     prepared_vectors = []
 
     for vec in vectors:
-        content = vec.get("metadata", {}).get("content", "")
+        user_metadata = vec.get("metadata", {})
+        content = user_metadata.get("content", "")
+
+        # PII gate: reject vectors whose metadata contains raw PII values.
+        # Hash or redact before calling this function; never store raw PII.
+        pii_hits = _scan_metadata_for_pii(user_metadata)
+        if pii_hits:
+            raise ValueError(
+                f"PII detected in metadata for vector '{vec.get('id', '?')}': "
+                f"{pii_hits}. Hash or redact before upsert."
+            )
 
         prepared_vectors.append({
             "id": vec.get("id", str(uuid4())),
             "values": vec["values"],
             "metadata": {
-                # Provenance fields
+                # Provenance fields written first so user metadata cannot override them
                 "tenant_id": tenant_id,
                 "owner_id": owner_id,
                 "source_system": source_system,
                 "upload_timestamp": datetime.utcnow().isoformat(),
                 "content_hash": hashlib.sha256(content.encode()).hexdigest(),
 
-                # User metadata
-                **vec.get("metadata", {})
+                # User metadata — spread after provenance fields, PII-scanned above
+                **user_metadata
             }
         })
 
@@ -1273,7 +1299,181 @@ def filter_results(results):
 
 **Why**: Raw results may contain sensitive metadata (tenant IDs, internal scores). Anomalous scores indicate potential attacks or data corruption. Result validation provides defense in depth against data leakage and ensures only relevant, authorized data reaches users.
 
-**Refs**: OWASP A01:2025 (Broken Access Control), CWE-200, CWE-209
+**Refs**: OWASP A01:2025 (Broken Access Control), OWASP LLM02:2025 (Sensitive Information Disclosure), OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-200, CWE-209
+
+---
+
+## Rule: PII Scan Before Metadata Upsert
+
+**Level**: `strict`
+
+**When**: Writing vector metadata to Pinecone, including any caller-supplied fields
+
+**Do**: Run a PII detector (e.g., presidio) over all string metadata values before the upsert call; hash or redact detected entities instead of storing raw values
+
+```python
+import hashlib
+from presidio_analyzer import AnalyzerEngine
+from presidio_anonymizer import AnonymizerEngine
+from presidio_anonymizer.entities import OperatorConfig
+
+_analyzer = AnalyzerEngine()
+_anonymizer = AnonymizerEngine()
+
+# PII fields that should be hashed rather than redacted, to allow
+# exact-match lookups without storing raw values.
+HASH_FIELDS = {"email", "phone", "ssn", "national_id"}
+
+def redact_pii_from_metadata(metadata: dict) -> dict:
+    """Return a copy of metadata with PII hashed or redacted.
+
+    Raises ValueError if presidio is unavailable — fail closed rather than
+    storing unscanned data.
+    """
+    clean = {}
+    for key, val in metadata.items():
+        if not isinstance(val, str) or not val:
+            clean[key] = val
+            continue
+
+        results = _analyzer.analyze(text=val, language="en")
+        if not results:
+            clean[key] = val
+            continue
+
+        if key in HASH_FIELDS:
+            # Hash preserves lookup capability without exposing raw PII
+            clean[key] = hashlib.sha256(val.encode()).hexdigest()
+            clean[f"_{key}_pii_hashed"] = True
+        else:
+            # Anonymize in place — replace with <ENTITY_TYPE> placeholders
+            anonymized = _anonymizer.anonymize(
+                text=val,
+                analyzer_results=results,
+                operators={"DEFAULT": OperatorConfig("replace")}
+            )
+            clean[key] = anonymized.text
+
+        audit_log.info(
+            "pii_redacted_from_metadata",
+            field=key,
+            entity_types=[r.entity_type for r in results]
+        )
+
+    return clean
+
+
+def safe_upsert(index, vectors: list, namespace: str) -> None:
+    """Upsert with mandatory PII scan on all metadata fields."""
+    prepared = []
+    for vec in vectors:
+        raw_meta = vec.get("metadata", {})
+        clean_meta = redact_pii_from_metadata(raw_meta)
+        prepared.append({**vec, "metadata": clean_meta})
+
+    index.upsert(vectors=prepared, namespace=namespace)
+```
+
+**Don't**: Spread caller-supplied metadata into Pinecone without scanning, or assume upstream callers have already sanitized inputs
+
+```python
+# VULNERABLE: caller-controlled metadata stored without PII scan
+def upsert_with_provenance(index, vectors, tenant_id, owner_id):
+    for vec in vectors:
+        vec["metadata"] = {
+            "tenant_id": tenant_id,
+            "owner_id": owner_id,
+            **vec.get("metadata", {})  # Raw PII (email, SSN, name) passes through
+        }
+    index.upsert(vectors=vectors, namespace=tenant_id)
+
+# VULNERABLE: trusting the application layer to pre-sanitize
+def bulk_upsert(index, docs):
+    # "Callers are responsible for removing PII" is not a control
+    index.upsert(vectors=docs)
+```
+
+**Why**: Once PII is written to a vector store it persists until explicitly deleted and is returned by default (`include_metadata=True`) on every matching query. Redacting at the write boundary is cheaper and more reliable than attempting retroactive cleanup. GDPR Article 5(1)(c) (data minimisation) requires that personal data not be stored beyond what is necessary; raw PII in embedding metadata routinely violates this principle.
+
+**Refs**: OWASP LLM02:2025 (Sensitive Information Disclosure), OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-312, CWE-359, GDPR Article 5(1)(c)
+
+---
+
+## Rule: Top-K Cap to Prevent Serverless Read-Unit DoS
+
+**Level**: `warning`
+
+**When**: Executing queries against a serverless Pinecone index from any code path
+
+**Do**: Enforce a server-side maximum on `top_k` before passing the value to the Pinecone API; never trust a caller-supplied value without bounds checking
+
+```python
+# Default cap. Serverless read units scale linearly with vectors scanned,
+# which is roughly proportional to top_k. A cap of 50 limits a single query
+# to ~5x the cost of a typical top_k=10 query.
+TOP_K_MAX = 50
+TOP_K_MIN = 1
+
+def clamp_top_k(requested: int, maximum: int = TOP_K_MAX) -> int:
+    """Return a top_k value clamped to [TOP_K_MIN, maximum].
+
+    Log a warning when the caller requested more than the cap so that
+    legitimate high-k use cases surface in metrics before the cap is raised.
+    """
+    if not isinstance(requested, int) or requested < TOP_K_MIN:
+        raise ValueError(f"top_k must be a positive integer, got: {requested!r}")
+
+    if requested > maximum:
+        audit_log.warning(
+            "top_k_clamped",
+            requested=requested,
+            capped_at=maximum
+        )
+        return maximum
+
+    return requested
+
+
+def secure_query(
+    index,
+    query_vector: list,
+    namespace: str,
+    top_k: int = 10,
+    filter: dict = None,
+    include_metadata: bool = True
+):
+    """Execute a query with top_k capped to prevent read-unit DoS."""
+    safe_top_k = clamp_top_k(top_k)
+
+    return index.query(
+        vector=query_vector,
+        top_k=safe_top_k,
+        namespace=namespace,
+        filter=filter,
+        include_metadata=include_metadata
+    )
+```
+
+**Don't**: Pass caller-supplied `top_k` directly to the API, or rely on a default value without enforcing an upper bound
+
+```python
+# VULNERABLE: caller controls read-unit consumption
+def query(index, vector, top_k, namespace):
+    return index.query(
+        vector=vector,
+        top_k=top_k,   # top_k=10000 burns ~1000x read units vs top_k=10
+        namespace=namespace
+    )
+
+# VULNERABLE: default hides the missing cap
+def query(index, vector, namespace, top_k=10):
+    # A caller passing top_k=10000 bypasses the intent of the default
+    return index.query(vector=vector, top_k=top_k, namespace=namespace)
+```
+
+**Why**: Pinecone serverless charges read units per vector scanned during a query. The API accepts `top_k` up to 10,000. A caller (or an attacker who can influence query parameters) setting `top_k=10000` consumes roughly 1,000x the read units of `top_k=10`, leading to cost-based denial of service. Enforcing the cap at the query wrapper — not just as a default — closes this vector regardless of how the parameter reaches the function.
+
+**Refs**: OWASP A05:2025 (Security Misconfiguration), OWASP LLM08:2025 (Vector and Embedding Weaknesses), CWE-770 (Allocation of Resources Without Limits or Throttling)
 
 ---
 
@@ -1282,6 +1482,7 @@ def filter_results(results):
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-01-20 | Initial release with 7 Pinecone-specific security rules |
+| 1.1 | 2026-05-26 | Fix fake MITRE ATLAS ID (ML03 -> AML.T0020); add LLM08:2025 and LLM02:2025 refs; add PII scan before upsert rule; add top_k cap rule |
 
 ---
 
