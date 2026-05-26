@@ -4418,6 +4418,14 @@ audited_rules:
         secondary per-session isolation pattern; the primary disable-memory guidance is
         unaffected and correct.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: human_input moved to Task level; Agent() no longer accepts human_input kwarg.
+      - ISSUE 2: Process imported in Do block (from crewai import Crew, Process, Task).
+      - ISSUE 3: Path imported; args_schema = InputSchema wired as class attribute on SecureFileReadTool.
+      - ISSUE 4: memory_config removed from Crew(); per-instance isolation documented via new Crew per session.
+      - ISSUE 5: parse_raw() replaced with model_validate_json(); pydantic.ValidationError catch added.
+    issues_filed: []
+
   - path: rules/rag/_core/embedding-security.md
     status: failed
     reviewed_by: rocklambros
