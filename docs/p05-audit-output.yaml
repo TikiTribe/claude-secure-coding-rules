@@ -2575,3 +2575,51 @@ audited_rules:
         A08, A10). All CWE IDs valid and correctly mapped. No fabricated identifiers.
         yaml.safe_load vs yaml.load(Loader=yaml.Loader) distinction is correct.
     issues_filed: []
+
+  - path: rules/languages/csharp/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Parameterized Queries
+      - Prevent Command Injection
+      - Avoid Unsafe Deserialization
+      - Use Strong Cryptographic Algorithms
+      - Validate File Paths
+      - Prevent XXE Attacks
+      - Validate All External Input
+      - Don't Expose Stack Traces
+    notes: |
+      Audited all 8 rule sections. One blocking defect found.
+
+      ISSUE 1 — Cryptography Do example: CipherMode.GCM does not exist (CODE BUG / CRITICAL)
+        Lines 158-159 of the "Use Strong Cryptographic Algorithms" Do example:
+          using var aes = Aes.Create();
+          aes.KeySize = 256;
+          aes.Mode = CipherMode.GCM;
+        CipherMode is System.Security.Cryptography.CipherMode, an enum whose members are
+        CBC, ECB, OFB, CFB, and CTS. GCM is not a member of this enum. This code will
+        not compile; the compiler emits CS0117 ("CipherMode does not contain a definition
+        for 'GCM'"). AES-GCM in .NET requires the separate System.Security.Cryptography.AesGcm
+        class (available since .NET Core 3.0 / .NET 5+), which handles nonce, ciphertext,
+        and tag as distinct byte arrays and does not use CipherMode at all. The example
+        teaches a pattern that is broken at compile time and architecturally incorrect.
+        Fix required: replace the Aes.Create()/CipherMode.GCM block with an AesGcm example:
+          var key = new byte[32];
+          RandomNumberGenerator.Fill(key);
+          var nonce = new byte[AesGcm.NonceByteSizes.MaxSize]; // 12 bytes
+          RandomNumberGenerator.Fill(nonce);
+          using var aesGcm = new AesGcm(key, AesGcm.TagByteSizes.MaxSize);
+          var tag = new byte[AesGcm.TagByteSizes.MaxSize]; // 16 bytes
+          aesGcm.Encrypt(nonce, plaintext, ciphertext, tag);
+
+      Non-blocking observations (no status change):
+      - Dynamic LINQ injection and Assembly.Load on untrusted paths not covered (gaps,
+        no conflict with existing rules).
+      - BinaryFormatter in Don't example is correct: disabled by default in .NET 8+.
+      - TypeNameHandling.All in Don't example is correct and actively dangerous.
+      - EF Core LINQ and Dapper @params in Do examples are syntactically correct.
+      - IExceptionHandler in error handling Do example is correct for ASP.NET Core 8+.
+      - All CWE IDs and OWASP 2025 category citations are valid.
+    issues_filed: []
