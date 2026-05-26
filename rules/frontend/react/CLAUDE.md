@@ -72,7 +72,7 @@ function SafeLink({ url, children }) {
   return <a href={url}>{children}</a>;
 }
 
-// For images
+// For images - HTTPS-only; HTTP and relative URLs fall back to placeholder
 function SafeImage({ src, alt }) {
   const safeSrc = src.startsWith('https://') ? src : '/fallback.png';
   return <img src={safeSrc} alt={alt} />;
@@ -160,7 +160,7 @@ UserProfile.propTypes = {
   email: PropTypes.string.isRequired,
 };
 
-// TypeScript provides compile-time validation
+// TypeScript alternative for .tsx files (replaces PropTypes, not additive)
 interface UserProfileProps {
   userId: number;
   email: string;
@@ -284,8 +284,12 @@ async function fetchUser(id) {
 **Do**:
 ```jsx
 // Server handles authorization
+// Requires @tanstack/react-query v4 or later
 function AdminPanel() {
-  const { data, isLoading } = useQuery('adminData', fetchAdminData);
+  const { data, isLoading } = useQuery({
+    queryKey: ['adminData'],
+    queryFn: fetchAdminData,
+  });
 
   // API returns 403 if not authorized
   if (isLoading) return <Loading />;
@@ -398,16 +402,16 @@ npm audit fix
 # Check for updates
 npm outdated
 
-# Use exact versions for critical packages
-npm install react@18.2.0
+# Use exact versions for critical packages (use the current stable patch)
+npm install react@18.3.1
 ```
 
 ```jsonc
 // package.json - Consider using exact versions
 {
   "dependencies": {
-    "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }
 ```
