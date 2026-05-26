@@ -130,7 +130,7 @@ class NoValidation:
 
 **Why**: Unrestricted deployments enable resource exhaustion, denial of service, or code execution through unsafe deserialization.
 
-**Refs**: CWE-400, CWE-502, OWASP LLM04
+**Refs**: CWE-400, CWE-502, OWASP LLM10:2025 (Unbounded Consumption)
 
 ---
 
@@ -371,7 +371,7 @@ class NoValidation:
 
 **Why**: Unsafe serialization like pickle allows arbitrary code execution when deserializing malicious payloads.
 
-**Refs**: CWE-502, CWE-94, OWASP LLM05
+**Refs**: CWE-502, CWE-94, OWASP LLM04:2025 (Data and Model Poisoning)
 
 ---
 
@@ -406,8 +406,7 @@ serve.start(
     ray_actor_options={
         "num_cpus": 2,
         "memory": 4 * 1024**3,
-        # Namespace for resource tracking
-        "namespace": "app_a"
+        # namespace is a top-level ray.init()/serve.start() arg, not per-actor
     }
 )
 class AppAModel:
@@ -418,7 +417,6 @@ class AppAModel:
     ray_actor_options={
         "num_cpus": 2,
         "memory": 4 * 1024**3,
-        "namespace": "app_b"
     }
 )
 class AppBModel:
@@ -602,9 +600,198 @@ step_a = StepA.bind(step_b)
 step_b = StepB.bind(step_a)  # Circular
 ```
 
-**Why**: Unvalidated data flow between pipeline stages can propagate malicious inputs or enable information leakage through error messages.
+**Why**: Unvalidated data flow between pipeline stages can propagate malicious inputs or enable information leakage through error messages. Handle references passed between deployments via `.remote()` are trust boundaries: a compromised replica can call any handle it holds without further authentication, so callee deployments must validate the shape and bounds of data from every caller regardless of its origin.
 
-**Refs**: CWE-20, CWE-209, OWASP LLM04
+**Refs**: CWE-20, CWE-209, CWE-284, OWASP LLM10:2025 (Unbounded Consumption)
+
+---
+
+## Dashboard Security
+
+### Rule: Authenticate the Ray Dashboard
+
+**Level**: `strict`
+
+**When**: Starting Ray or Ray Serve in any environment with network access beyond localhost.
+
+**Do**:
+```python
+import os
+import subprocess
+
+# Safe: Start Ray with dashboard token so the dashboard on port 8265
+# requires authentication before exposing actor metadata, job logs,
+# and task information.
+#
+# Option A — CLI flag (preferred for scripted cluster startup):
+#   ray start --head --dashboard-token=$RAY_DASHBOARD_TOKEN \
+#             --dashboard-host=127.0.0.1
+#
+# Option B — environment variable picked up by ray.init():
+#   export RAY_DASHBOARD_TOKEN=<strong-random-secret>
+#   ray.init()
+#
+# Option C — reverse proxy (use when you need external access):
+#   Place nginx/traefik in front of 127.0.0.1:8265 and enforce
+#   mTLS or a token header at the proxy layer. Never expose 8265
+#   directly on a public interface.
+
+# Validate the token is set before starting a cluster-aware process.
+dashboard_token = os.environ.get("RAY_DASHBOARD_TOKEN")
+if not dashboard_token or len(dashboard_token) < 32:
+    raise RuntimeError(
+        "RAY_DASHBOARD_TOKEN must be set to a secret of at least "
+        "32 characters before starting Ray in a networked environment."
+    )
+
+import ray
+ray.init()
+
+# Safe serve.start: bind the HTTP server to loopback; dashboard
+# access is handled by the token-gated path above.
+from ray import serve
+from ray.serve.config import HTTPOptions
+
+serve.start(
+    http_options=HTTPOptions(
+        host="127.0.0.1",
+        port=8000,
+    )
+)
+```
+
+**Don't**:
+```python
+import ray
+import os
+
+# VULNERABLE: Ray starts with dashboard on 0.0.0.0:8265 by default.
+# Any host that can reach this port can inspect actors, cancel jobs,
+# download logs, and exfiltrate task metadata with no credentials.
+ray.init()  # --dashboard-host defaults to 0.0.0.0 in many versions
+
+# VULNERABLE: Explicitly binding the dashboard to a public interface
+# without a token.
+# ray start --head --dashboard-host=0.0.0.0
+# Anyone on the network owns your cluster.
+
+from ray import serve
+from ray.serve.config import HTTPOptions
+
+# VULNERABLE: HTTP server on all interfaces with no upstream auth gate.
+serve.start(
+    http_options=HTTPOptions(
+        host="0.0.0.0",
+        port=8000,
+    )
+)
+```
+
+**Why**: The Ray dashboard on port 8265 is unauthenticated by default. An attacker with network access can enumerate actors, kill jobs, read environment variables from task metadata, and exfiltrate model outputs without any credentials. In Kubernetes, this is reachable from any pod in the cluster unless a NetworkPolicy blocks it.
+
+**Refs**: CWE-306 (Missing Authentication), CWE-200 (Information Exposure), OWASP A07:2025
+
+---
+
+## Runtime Environment Security
+
+### Rule: Pin Packages in runtime_env to Prevent Supply-Chain RCE
+
+**Level**: `strict`
+
+**When**: Using `runtime_env` with a `pip` section to install packages at deployment time.
+
+**Do**:
+```python
+from ray import serve
+
+# Safe: Pin every package to an exact version with a hash.
+# Ray installs these at replica startup; an unpinned package from
+# PyPI is an untrusted code execution point for every worker.
+PINNED_RUNTIME_ENV = {
+    "pip": [
+        # Use pip hash-checking mode: version + --hash.
+        # Generate with: pip download <pkg>==<ver> && pip hash <file>
+        "numpy==1.26.4 --hash=sha256:2a02aba9ed12e4ac4eb3ea9421c420301a0c6460d9830d74a9df87efa4912010",
+        "scikit-learn==1.4.2 --hash=sha256:3b2c1b3f7e29319bc46e3efa9d8b4c37ce8b6bd726de4f87a68069d87d44fc40",
+    ],
+    # Restrict the index to an internal registry you control.
+    # Prohibit git+https:// or VCS refs without a pinned commit SHA.
+    "pip_check": False,       # handled by hash verification above
+    "env_vars": {
+        "PIP_NO_INDEX": "1",  # force use of --extra-index-url only
+        "PIP_EXTRA_INDEX_URL": "https://pypi.internal.example.com/simple/",
+    },
+}
+
+@serve.deployment(
+    runtime_env=PINNED_RUNTIME_ENV,
+    ray_actor_options={"num_cpus": 1, "memory": 2 * 1024**3},
+)
+class SecureReplica:
+    def __init__(self):
+        import numpy as np          # version-verified at install time
+        import sklearn              # same
+        self.ready = True
+
+    async def __call__(self, request):
+        data = await request.json()
+        return {"ok": True}
+
+# Better alternative: pre-bake dependencies into the container image
+# and set no pip installs in runtime_env at all.
+# runtime_env = {"working_dir": "/app"}   # no pip key → no runtime install
+
+# Note on cloudpickle: Ray uses cloudpickle internally to serialize
+# tasks and actor state across the cluster. Untrusted task code
+# submitted to a shared Ray cluster is equivalent to arbitrary code
+# execution on every worker that deserializes it. Run shared clusters
+# with strict job submission controls; do not expose ray.init() or
+# the Ray client port (10001) to untrusted callers.
+```
+
+**Don't**:
+```python
+from ray import serve
+
+# VULNERABLE: Unpinned package — PyPI serves whatever the latest
+# version is at deploy time. A compromised release or a dependency
+# confusion attack gives an attacker RCE in every replica at startup.
+@serve.deployment(
+    runtime_env={
+        "pip": ["numpy", "scikit-learn"],  # no version, no hash
+    }
+)
+class UnsafeReplica:
+    pass
+
+# VULNERABLE: VCS reference without a pinned commit SHA.
+# The branch tip changes; an attacker who pushes to that branch
+# owns every worker on the next cold start.
+@serve.deployment(
+    runtime_env={
+        "pip": ["git+https://github.com/example/ml-lib.git@main"],
+    }
+)
+class VCSReplica:
+    pass
+
+# VULNERABLE: Public PyPI index with no hash verification.
+# Dependency confusion: an internal package name served from PyPI
+# with a higher version number wins and executes at install time.
+@serve.deployment(
+    runtime_env={
+        "pip": ["internal-feature-lib==1.0.0"],
+        # No index restriction — public PyPI is tried first.
+    }
+)
+class ConfusionVulnerable:
+    pass
+```
+
+**Why**: Ray installs `runtime_env` pip packages inside each replica's virtual environment at startup. An unpinned or VCS-sourced package gives a supply-chain attacker code execution across all replicas simultaneously, equivalent to cluster-wide RCE. Dependency confusion attacks exploit the same vector when an internal package name is also published on public PyPI at a higher version. Pre-baking dependencies into the container image eliminates the runtime install surface entirely.
+
+**Refs**: CWE-494 (Download Without Integrity Check), CWE-829 (Inclusion of Functionality from Untrusted Control Sphere), OWASP LLM03:2025 (Supply Chain Vulnerabilities), OWASP A06:2025
 
 ---
 
@@ -612,14 +799,17 @@ step_b = StepB.bind(step_a)  # Circular
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Secure deployment configuration | strict | CWE-400, CWE-502 |
+| Secure deployment configuration | strict | CWE-400, CWE-502, OWASP LLM10:2025 |
 | Implement secure autoscaling policies | strict | CWE-400, CWE-770 |
-| Use safe serialization for Ray objects | strict | CWE-502, CWE-94 |
+| Use safe serialization for Ray objects | strict | CWE-502, CWE-94, OWASP LLM04:2025 |
 | Isolate Ray Serve applications | strict | CWE-269, CWE-200 |
-| Secure model composition pipelines | strict | CWE-20, CWE-209 |
+| Secure model composition pipelines | strict | CWE-20, CWE-209, OWASP LLM10:2025 |
+| Authenticate the Ray dashboard | strict | CWE-306, CWE-200, OWASP A07:2025 |
+| Pin packages in runtime_env | strict | CWE-494, CWE-829, OWASP LLM03:2025 |
 
 ---
 
 ## Version History
 
+- **v2.0.0** - Fix OWASP LLM taxonomy to 2025 edition; add dashboard auth and runtime_env supply-chain rules; remove invalid namespace key from ray_actor_options
 - **v1.0.0** - Initial Ray Serve security rules

@@ -1,5 +1,21 @@
 # TorchServe Security Rules
 
+> **ARCHIVED / END OF LIFE — DO NOT USE FOR NEW DEPLOYMENTS**
+>
+> TorchServe was archived by AWS and the PyTorch project in 2024. The repository
+> is no longer maintained, security patches are not being issued, and a CVE backlog
+> remains unresolved. See the archival announcement at
+> https://github.com/pytorch/serve/discussions/3168.
+>
+> **For new projects, use a maintained alternative:**
+> - [Triton Inference Server](https://github.com/triton-inference-server/server) (NVIDIA, actively maintained)
+> - [vLLM](https://github.com/vllm-project/vllm) (LLM-focused, high-throughput)
+> - [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) (general-purpose, production-grade)
+> - [BentoML](https://github.com/bentoml/BentoML) (framework-agnostic, cloud-native)
+>
+> The rules below are retained as **legacy support guidance only** for teams that
+> cannot migrate existing TorchServe deployments immediately.
+
 Security rules for PyTorch TorchServe model serving in Claude Code.
 
 ## Prerequisites
@@ -43,20 +59,13 @@ def create_secure_mar(
         raise ValueError(f"Unknown handler: {handler}")
 
     if handler.endswith(".py"):
-        # Validate custom handler
+        # Verify the handler file exists before packaging.
+        # Do NOT use substring denylist checks as a security control — they are
+        # trivially bypassed via string concatenation, importlib, or getattr().
+        # Real protection comes from MAR signing (below) and OS sandboxing.
         handler_path = Path(handler)
         if not handler_path.exists():
             raise ValueError("Handler file not found")
-
-        # Check for dangerous patterns
-        content = handler_path.read_text()
-        DANGEROUS_PATTERNS = [
-            "subprocess", "os.system", "eval(", "exec(",
-            "__import__", "pickle.loads"
-        ]
-        for pattern in DANGEROUS_PATTERNS:
-            if pattern in content:
-                raise ValueError(f"Dangerous pattern in handler: {pattern}")
 
     # Create MAR
     import subprocess
@@ -69,21 +78,34 @@ def create_secure_mar(
         "--export-path", output_path
     ], capture_output=True, check=True)
 
-    # Generate checksum
+    # Generate checksum AND sign the archive with cosign or GPG.
+    # Signature verification at load time proves the archive was reviewed and
+    # packaged by a trusted party — substring denylist checks do not.
     mar_path = Path(output_path) / f"{model_name}.mar"
     checksum = hashlib.sha256(mar_path.read_bytes()).hexdigest()
 
-    # Save checksum for verification
+    # Save checksum for transport integrity
     checksum_file = mar_path.with_suffix(".sha256")
     checksum_file.write_text(checksum)
 
+    # Sign with cosign (keyless OIDC) or GPG — choose one and enforce at load time:
+    #   cosign sign-blob --yes --bundle model.mar.bundle model.mar
+    #   gpg --detach-sign --armor model.mar
+
     return str(mar_path)
 
-# Safe: Verify MAR before loading
+# Safe: Verify MAR signature and checksum before loading.
+# Cryptographic verification is the primary control; checksum covers transport
+# integrity only and does not replace signing.
 def verify_mar(mar_path: str, expected_hash: str) -> bool:
     path = Path(mar_path)
     actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    return actual_hash == expected_hash
+    if actual_hash != expected_hash:
+        return False
+    # Also verify cosign bundle or GPG signature before returning True:
+    #   cosign verify-blob --bundle model.mar.bundle model.mar
+    #   gpg --verify model.mar.asc model.mar
+    return True
 
 # Safe: Model store configuration
 """
@@ -121,9 +143,9 @@ class Handler:
 """
 ```
 
-**Why**: MAR files can contain malicious code in handlers or poisoned models. Verification prevents supply chain attacks.
+**Why**: MAR files can contain malicious code in custom handlers or poisoned model weights. Cryptographic signing of the archive proves it was reviewed by a trusted party before loading. Static substring checks on handler source are trivially bypassed (string concatenation, importlib, getattr) and must not be used as a primary control. Handler code executes with full server process privileges; OS-level sandboxing (gVisor, Docker with `--security-opt=no-new-privileges`, seccomp profile) is required to contain a compromised handler. Static analysis of handler source is defense-in-depth only.
 
-**Refs**: OWASP LLM05, CWE-502, MITRE ATLAS AML.T0010
+**Refs**: OWASP LLM03:2025 (Supply Chain Vulnerabilities), CWE-502, MITRE ATLAS AML.T0010
 
 ---
 
@@ -517,9 +539,9 @@ async def predict(model: str, data: bytes):
 client = httpx.Client()  # Default timeout might be too long
 ```
 
-**Why**: Unvalidated inference requests enable DoS through large payloads, model enumeration, or resource exhaustion.
+**Why**: Unvalidated inference requests enable denial of service through oversized payloads, unbounded batch sizes, or resource exhaustion on GPU/CPU workers.
 
-**Refs**: OWASP LLM04, CWE-400, CWE-770
+**Refs**: OWASP LLM10:2025 (Unbounded Consumption), CWE-400, CWE-770
 
 ---
 
@@ -527,10 +549,10 @@ client = httpx.Client()  # Default timeout might be too long
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Validate MAR file integrity | strict | OWASP LLM05, CWE-502 |
+| Validate MAR file integrity | strict | OWASP LLM03:2025 (Supply Chain), CWE-502 |
 | Implement secure custom handlers | strict | CWE-94, CWE-78 |
 | Secure management API access | strict | OWASP A01:2025, CWE-306 |
-| Validate inference requests | strict | OWASP LLM04, CWE-400 |
+| Validate inference requests | strict | OWASP LLM10:2025 (Unbounded Consumption), CWE-400 |
 
 ---
 
