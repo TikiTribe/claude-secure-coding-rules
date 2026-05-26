@@ -2058,3 +2058,84 @@ audited_rules:
         context. Advisory: pin to a specific version (e.g., @v1.1.3) consistent with
         the file's own dependency pinning advice.
     issues_filed: []
+
+  - path: rules/frontend/react/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Never Use dangerouslySetInnerHTML with User Input
+      - Sanitize URLs in href and src
+      - Don't Store Sensitive Data in Client State
+      - Validate Props and State
+      - Include CSRF Tokens in State-Changing Requests
+      - Validate API Responses
+      - Avoid Exposing Sensitive Logic in Components
+      - Sanitize Form Inputs
+      - Keep Dependencies Updated
+    notes: |
+      Audited all 9 rule sections. One blocking issue found.
+
+      CWE refs verified: CWE-79 (XSS), CWE-601 (Open Redirect), CWE-922 (Insecure Storage),
+      CWE-20 (Improper Input Validation), CWE-352 (CSRF), CWE-602 (Client-Side Security
+      Enforcement), CWE-1104 (Unmaintained Third-Party Components) -- all valid and correctly
+      applied to their respective rules.
+
+      OWASP Top 10 2025 refs verified: A01:2025 (Broken Access Control -- used for CSRF and
+      client-side auth bypass), A02:2025 (Cryptographic Failures -- used for sensitive client
+      state), A03:2025 (Injection -- used for XSS and form validation), A06:2025 (Vulnerable
+      and Outdated Components -- used for dependency rule). All year qualifiers are present and
+      correct. No LLM Top 10 refs in this file; not applicable.
+
+      No fabricated MITRE ATLAS technique IDs in this file; none are cited.
+
+      XSS guidance is concrete: dangerouslySetInnerHTML with DOMPurify.sanitize is the named
+      Do pattern; javascript: and data: URL injection is clearly demonstrated in the Don't.
+      CSRF token pattern using the meta-tag convention with credentials: 'include' is correct.
+      DOMPurify.sanitize() matches the current dompurify package API. Zod schema usage in
+      the form validation Do example is syntactically correct (z.object, z.string, .parse
+      match Zod v3). React 18.2.0 is referenced in the dependency rule; React 18 is still
+      in active support. PropTypes import from 'prop-types' is correct (the package was
+      separated from React core in v15.5; the import shown is for the standalone package).
+
+      Don't examples reflect real, exploitable vulnerabilities throughout. No deprecated
+      mitigations (no prompt-injection denylists, no substring-filter XSS guards).
+
+      No self-contradictions between rules.
+
+      ISSUE 1 -- Avoid Exposing Sensitive Logic: useQuery positional API is React Query v3
+        (EOL since 2022) (DEPRECATED API IN DO EXAMPLE)
+        Line 288: useQuery('adminData', fetchAdminData) uses the React Query v3 positional
+        argument form (queryKey as string, queryFn as second arg). React Query v4 (June 2022)
+        and v5 (October 2023) breaking-changed this to the object form:
+          useQuery({ queryKey: ['adminData'], queryFn: fetchAdminData })
+        React Query v3 is end-of-life. A developer copying this Do example into a project
+        using @tanstack/react-query v4 or v5 (the current published versions) will get a
+        runtime error or silent misconfiguration because the positional API is not supported
+        in those versions. A Do example in a security rules file that fails to run on the
+        current library version is a blocking defect: it undermines trust and may cause
+        developers to write incorrect code while believing they are following the secure
+        pattern.
+        Fix required: update line 288 to the object-argument form:
+          const { data, isLoading } = useQuery({
+            queryKey: ['adminData'],
+            queryFn: fetchAdminData,
+          });
+        Add a comment noting this requires React Query v4 or later (@tanstack/react-query).
+
+      Non-blocking observations (no status change):
+      - SafeImage URL validation (line 77) checks only src.startsWith('https://'), blocking
+        HTTP and all other schemes. This is intentionally strict for a security example, but
+        a comment noting that HTTP is intentionally excluded and that relative URLs also fail
+        this check would help practitioners understand when to adjust the scheme validation.
+        Advisory only.
+      - Validate Props Do example (lines 163-167) embeds a TypeScript interface inline
+        alongside JSX with PropTypes, with no comment separating them as alternatives.
+        A developer in a JavaScript project could be confused by the interface declaration
+        appearing in a .jsx file context. Advisory: add a brief note that the TypeScript block
+        is for .tsx files and is an alternative to PropTypes, not an addition.
+      - npm install react@18.2.0 (line 403) pins to React 18.2.0. As of 2026, the current
+        React 18 patch is higher (18.3.x). The version shown is stale. Advisory: update the
+        pinned version to the current stable patch or note it is illustrative.
+    issues_filed: []
