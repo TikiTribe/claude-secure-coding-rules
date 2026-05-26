@@ -130,7 +130,7 @@ def build_pipeline_unsafe(config: dict) -> Pipeline:
 **Refs**:
 - CWE-94 (Improper Control of Generation of Code)
 - CWE-470 (Use of Externally-Controlled Input to Select Classes)
-- OWASP LLM01 (Prompt Injection)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
 
 ---
 
@@ -144,6 +144,7 @@ def build_pipeline_unsafe(config: dict) -> Pipeline:
 
 ```python
 import os
+from haystack.utils import Secret
 from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 from haystack_integrations.document_stores.pinecone import PineconeDocumentStore
 from typing import Optional
@@ -159,12 +160,7 @@ class SecureDocumentStoreFactory:
     ) -> ElasticsearchDocumentStore:
         """Create Elasticsearch store with security settings."""
 
-        # Load credentials from secure source
-        api_key = os.environ.get("ELASTICSEARCH_API_KEY")
-        if not api_key:
-            raise ConfigurationError("ELASTICSEARCH_API_KEY not configured")
-
-        # Validate hosts use HTTPS
+        # Validate hosts use HTTPS before resolving secrets
         for host in hosts:
             if not host.startswith("https://"):
                 raise SecurityError(f"Elasticsearch host must use HTTPS: {host}")
@@ -173,11 +169,13 @@ class SecureDocumentStoreFactory:
         if not SecureDocumentStoreFactory._is_valid_index_name(index):
             raise SecurityError(f"Invalid index name: {index}")
 
+        # Secret.from_env_var raises at construction time if the variable is absent —
+        # no silent None, no plain-text credential in application code.
         return ElasticsearchDocumentStore(
             hosts=hosts,
             index=index,
             embedding_dim=embedding_dim,
-            api_key=api_key,
+            api_key=Secret.from_env_var("ELASTICSEARCH_API_KEY"),
             verify_certs=True,  # Always verify TLS certificates
             ca_certs=os.environ.get("ES_CA_CERT_PATH"),  # Custom CA if needed
         )
@@ -190,21 +188,13 @@ class SecureDocumentStoreFactory:
     ) -> PineconeDocumentStore:
         """Create Pinecone store with security settings."""
 
-        # Load API key from environment
-        api_key = os.environ.get("PINECONE_API_KEY")
-        if not api_key:
-            raise ConfigurationError("PINECONE_API_KEY not configured")
-
-        # Validate API key format
-        if len(api_key) < 20:
-            raise SecurityError("Invalid Pinecone API key format")
-
-        # Validate index name
+        # Validate index name before resolving the secret
         if not SecureDocumentStoreFactory._is_valid_index_name(index_name):
             raise SecurityError(f"Invalid index name: {index_name}")
 
+        # Secret.from_env_var raises if PINECONE_API_KEY is absent
         return PineconeDocumentStore(
-            api_key=api_key,
+            api_key=Secret.from_env_var("PINECONE_API_KEY"),
             index=index_name,
             namespace=namespace,
             dimension=dimension,
@@ -291,7 +281,7 @@ store = ElasticsearchDocumentStore(
 - CWE-798 (Use of Hard-coded Credentials)
 - CWE-295 (Improper Certificate Validation)
 - CWE-89 (SQL Injection) - applies to query injection
-- OWASP LLM06 (Sensitive Information Disclosure)
+- OWASP LLM Top 10:2025 LLM06 (Sensitive Information Disclosure)
 
 ---
 
@@ -450,7 +440,7 @@ def retrieve_unsafe(query: str, top_k: int = 100) -> list:
 **Why**: Malicious queries can cause resource exhaustion. Retrieved documents may contain prompt injection payloads that hijack LLM behavior when included in context.
 
 **Refs**:
-- OWASP LLM01 (Prompt Injection)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
 - CWE-400 (Uncontrolled Resource Consumption)
 - CWE-20 (Improper Input Validation)
 
@@ -633,8 +623,8 @@ def generate_unsafe(query: str, documents: list) -> str:
 **Why**: Retrieved documents may contain prompt injection attacks that hijack the generator. Without context isolation, attackers can instruct the LLM to ignore its system prompt, leak sensitive data, or produce harmful outputs.
 
 **Refs**:
-- OWASP LLM01 (Prompt Injection)
-- OWASP LLM02 (Insecure Output Handling)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
+- OWASP LLM Top 10:2025 LLM02 (Insecure Output Handling)
 - CWE-94 (Code Injection)
 - MITRE ATLAS AML.T0051 (LLM Prompt Injection)
 
@@ -1024,7 +1014,7 @@ def process_image_unsafe(image_path: str, metadata: dict) -> Document:
 
 **Refs**:
 - CWE-434 (Unrestricted Upload of File with Dangerous Type)
-- OWASP LLM01 (Prompt Injection)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
 - CWE-400 (Uncontrolled Resource Consumption)
 
 ---
@@ -1236,7 +1226,7 @@ async def query_unsafe(query: str, top_k: int = 100):
 **Why**: Unprotected API endpoints allow unauthorized access, denial of service through unbounded queries, and information leakage through verbose errors. Multi-tenant systems require strict isolation to prevent data access across tenants.
 
 **Refs**:
-- OWASP API Security Top 10
+- OWASP API Security Top 10:2023
 - CWE-306 (Missing Authentication)
 - CWE-307 (Improper Restriction of Excessive Authentication Attempts)
 - CWE-209 (Information Exposure Through Error Message)
@@ -1467,7 +1457,178 @@ class InsecureRetriever:
 - CWE-20 (Improper Input Validation)
 - CWE-754 (Improper Check for Unusual Conditions)
 - CWE-200 (Exposure of Sensitive Information)
-- OWASP LLM01 (Prompt Injection)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
+
+---
+
+## Rule: Agent Tool Trust Boundary
+
+**Level**: `strict`
+
+**When**: Using Haystack 2.x `Agent` with `ComponentTool` or any registered tool
+
+**Do**: Treat every tool as executing with the agent's full privileges. Allowlist tool classes, restrict tool inputs, and sandbox file-system or network operations.
+
+```python
+from haystack.components.agents import Agent
+from haystack.components.tools import ComponentTool
+from haystack.components.generators import OpenAIGenerator
+from haystack import component
+from haystack.utils import Secret
+import re
+
+# Define a narrow-scope tool — only reads from a controlled document store.
+# Never give the agent a tool that writes to arbitrary paths or calls arbitrary URLs.
+@component
+class DocumentLookupTool:
+    """Agent tool scoped to read-only document retrieval."""
+
+    ALLOWED_COLLECTION_PATTERN = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
+    MAX_QUERY_LENGTH = 500
+
+    def __init__(self, document_store, allowed_collections: list[str]):
+        self.document_store = document_store
+        # Explicit allowlist of collections the agent may query
+        self.allowed_collections = set(allowed_collections)
+
+    @component.output_types(answer=str)
+    def run(self, query: str, collection: str = "default") -> dict:
+        """Look up documents — read-only, allowlisted collection."""
+        # Enforce query length before any processing
+        if len(query) > self.MAX_QUERY_LENGTH:
+            raise ValueError(f"Query exceeds {self.MAX_QUERY_LENGTH} character limit")
+
+        # Validate collection against explicit allowlist, not just regex
+        if collection not in self.allowed_collections:
+            raise PermissionError(
+                f"Collection '{collection}' is not in the tool allowlist"
+            )
+
+        docs = self.document_store.filter_documents(
+            filters={"meta.collection": collection}
+        )
+        relevant = [d for d in docs if query.lower() in (d.content or "").lower()]
+        return {"answer": "
+".join(d.content for d in relevant[:3])}
+
+
+# Wrap with ComponentTool — name and description are shown to the LLM.
+# Keep descriptions factual; adversarial descriptions can override agent intent.
+lookup_tool = ComponentTool(
+    component=DocumentLookupTool(
+        document_store=document_store,
+        allowed_collections=["product_docs", "support_kb"],
+    ),
+    name="document_lookup",
+    description="Look up product or support documents by keyword. "
+                "Only 'product_docs' and 'support_kb' collections are available.",
+)
+
+# Build the agent with only the tools it needs (least privilege).
+agent = Agent(
+    component=OpenAIGenerator(
+        model="gpt-4o",
+        api_key=Secret.from_env_var("OPENAI_API_KEY"),
+    ),
+    tools=[lookup_tool],  # Explicit list — never pass user-supplied tool lists
+    max_agent_steps=10,   # Cap iterations to prevent runaway loops
+)
+```
+
+**Don't**: Register tools with broad permissions, accept tool lists from user input, or pass raw user data directly to tool parameters without validation.
+
+```python
+# VULNERABLE: Agent with overpowered tools and no input guard
+import subprocess
+
+@component
+class ShellTool:
+    @component.output_types(output=str)
+    def run(self, command: str) -> dict:
+        # DANGEROUS: agent executes arbitrary shell commands
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        return {"output": result.stdout}
+
+agent = Agent(
+    component=OpenAIGenerator(model="gpt-4o"),
+    tools=[ComponentTool(component=ShellTool(), name="shell", description="Run commands")],
+    # No step cap — agent can loop indefinitely
+)
+
+# ALSO WRONG: letting the caller inject tool lists
+def build_agent(user_tools: list):
+    return Agent(component=generator, tools=user_tools)  # No allowlist validation
+```
+
+**Why**: In Haystack 2.x, `ComponentTool` executes with the agent's process privileges. A tool that runs shell commands, writes files, or makes unconstrained HTTP requests becomes a remote-code-execution surface when the agent is manipulated via prompt injection. Least-privilege tool design is the primary control; step caps prevent resource exhaustion from runaway agent loops.
+
+**Refs**:
+- OWASP LLM Top 10:2025 LLM06 (Excessive Agency)
+- CWE-250 (Execution with Unnecessary Privileges)
+- CWE-77 (Command Injection)
+- MITRE ATLAS AML.T0051 (LLM Prompt Injection)
+
+---
+
+## Rule: PromptBuilder Jinja2 Template Injection
+
+**Level**: `strict`
+
+**When**: Using `PromptBuilder` in any Haystack 2.x pipeline
+
+**Do**: Keep templates as static, server-side strings. Pass only user-controlled *values* into Jinja2 variables, never user-controlled template strings.
+
+```python
+from haystack.components.builders import PromptBuilder
+
+# SAFE: template is a static server-side string defined at deploy time.
+# User input flows only into the {{ query }} and {{ documents }} variables,
+# which Jinja2 treats as data, not as template directives.
+STATIC_TEMPLATE = """
+You are a helpful assistant. Answer based only on the provided documents.
+
+Documents:
+{% for doc in documents %}
+[{{ loop.index }}] {{ doc.content }}
+{% endfor %}
+
+Question: {{ query }}
+
+Provide a concise answer grounded in the documents above.
+"""
+
+prompt_builder = PromptBuilder(template=STATIC_TEMPLATE)
+
+# At runtime, only values reach the template — the structure is frozen.
+result = prompt_builder.run(
+    query=user_query,       # Value only — Jinja2 auto-escapes in string context
+    documents=retrieved_docs,
+)
+```
+
+**Don't**: Render user-supplied strings as the template itself, or string-format user input into a template before handing it to `PromptBuilder`.
+
+```python
+# VULNERABLE: user controls the template structure
+def build_prompt(user_template: str, query: str, docs: list) -> str:
+    # DANGEROUS: user can inject {% for %}, {% if %}, or {{ config }} blocks
+    builder = PromptBuilder(template=user_template)
+    result = builder.run(query=query, documents=docs)
+    return result["prompt"]
+
+# ALSO VULNERABLE: pre-formatting places user input outside a variable slot
+raw_template = f"Answer this: {user_query}
+
+Docs: {{{{ documents }}}}"
+builder = PromptBuilder(template=raw_template)  # user_query is now in the template layer
+```
+
+**Why**: `PromptBuilder` uses Jinja2 for rendering. If a user-controlled string becomes the *template* (rather than a *variable value*), an attacker can inject Jinja2 directives — `{{ config }}`, `{% for %}` loops over internal state, or sandbox-escape gadgets — to exfiltrate environment variables, internal pipeline state, or arbitrary objects accessible in the Jinja2 context. Keeping templates static and server-side eliminates the injection surface entirely.
+
+**Refs**:
+- CWE-94 (Improper Control of Generation of Code)
+- OWASP LLM Top 10:2025 LLM01 (Prompt Injection)
+- CWE-1336 (Improper Neutralization of Special Elements in Template Engine)
 
 ---
 
@@ -1483,6 +1644,8 @@ class InsecureRetriever:
 | Multi-Modal Retrieval | `warning` | Content validation, cross-modal checks | Malicious uploads |
 | REST API | `strict` | Auth, rate limiting, input validation | Unauthorized access |
 | Custom Component | `strict` | Input/output validation patterns | Bypass attacks |
+| Agent Tool Trust | `strict` | Tool allowlist, step cap, least privilege | Privilege escalation |
+| PromptBuilder Injection | `strict` | Static templates, values-only variables | Template injection |
 
 ---
 
@@ -1523,6 +1686,17 @@ class InsecureRetriever:
 - [ ] Error handling without leakage
 - [ ] Logging without sensitive data
 
+### Agent Tools
+- [ ] Tool list is a static server-side allowlist
+- [ ] Each tool scoped to minimum required permissions
+- [ ] Agent step count capped
+- [ ] File-system and network tools sandboxed or absent
+
+### PromptBuilder
+- [ ] Templates are static strings defined at deploy time
+- [ ] User input reaches templates only via variable slots
+- [ ] No string-formatting of user input into template strings
+
 ---
 
 ## Version History
@@ -1530,6 +1704,7 @@ class InsecureRetriever:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2025-01 | Initial Haystack 2.0 security rules |
+| 1.1.0 | 2026-05 | Add agent tool trust boundary and PromptBuilder injection rules; fix OWASP refs to :2025; adopt Secret.from_env_var pattern |
 
 ---
 
@@ -1538,7 +1713,7 @@ class InsecureRetriever:
 - [Haystack 2.0 Documentation](https://docs.haystack.deepset.ai/)
 - [OWASP LLM Top 10](https://owasp.org/www-project-machine-learning-security-top-10/)
 - [MITRE ATLAS](https://atlas.mitre.org/)
-- OWASP API Security Top 10
+- OWASP API Security Top 10:2023
 - CWE-94, CWE-20, CWE-798, CWE-400
 
 ---
