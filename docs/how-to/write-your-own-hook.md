@@ -802,3 +802,999 @@ def test_allows_uvx_git_with_ref():
 **Layer-1 complement:**
 
 The Layer 1 template in `settings-template.json` does not pattern-match unpinned installs (the deny rule format is too narrow to express "unpinned" without false positives on pinned forms). This hook fills that gap entirely. The two layers do not overlap on this surface; they're complementary in coverage, not in defense-in-depth.
+
+---
+
+## Pattern: `block-hardcoded-secrets-regex`
+
+**Purpose:** Deny `Write` and `Edit` operations that introduce content matching common secret formats (AWS keys, GitHub tokens, JWT-shaped strings, generic high-entropy bearer tokens). Regex-only; high false-positive rate by design — bias toward "fail loud", let the user override consciously.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-hardcoded-secrets-regex.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-hardcoded-secrets-regex
+Event: PreToolUse
+Purpose: Deny Write/Edit operations that introduce content matching common
+         secret formats. Regex-only — does NOT replace a dedicated secret
+         scanner (gitleaks, trufflehog) and does NOT examine prior file
+         content. Catches the new content as it would land on disk.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import json
+import re
+import sys
+
+# Format-anchored patterns. Each entry: (label, compiled-regex).
+SECRET_PATTERNS = [
+    # AWS access key IDs (AKIA + 16 base32) and the AWS-published vendor
+    # prefixes that share the same anchor.
+    ("AWS access key ID",
+     re.compile(r"\b(AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b")),
+    # AWS secret access key shape: 40-char base64-with-+-and-/. Anchored against
+    # an "aws_secret"-ish key on the same line to reduce false positives on
+    # random 40-char strings.
+    ("AWS secret access key (with aws_secret context)",
+     re.compile(
+         r"(?i)aws[_-]?secret[_-]?access[_-]?key[\"\']?\s*[:=]\s*[\"\']?"
+         r"([A-Za-z0-9/+]{40})[\"\']?"
+     )),
+    # GitHub personal access tokens, fine-grained PATs, OAuth tokens, app
+    # installation tokens — all share the ghX_ family prefix.
+    ("GitHub token",
+     re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b")),
+    # GitHub fine-grained PATs are longer and start with github_pat_.
+    ("GitHub fine-grained PAT",
+     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{82,}\b")),
+    # Slack bot/user tokens.
+    ("Slack token",
+     re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,}\b")),
+    # Stripe live secret keys (sk_live_) — restricted keys (rk_live_) similar.
+    ("Stripe live secret key",
+     re.compile(r"\b(sk|rk)_live_[A-Za-z0-9]{24,}\b")),
+    # OpenAI API keys.
+    ("OpenAI API key",
+     re.compile(r"\bsk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}\b")),
+    # Anthropic API keys.
+    ("Anthropic API key",
+     re.compile(r"\bsk-ant-(api|admin)\d{2}-[A-Za-z0-9_-]{80,}\b")),
+    # PEM-armored private keys — match the header line; do not match the body
+    # to keep this regex cheap.
+    ("PEM private key block",
+     re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----")),
+    # JWTs — three base64url segments separated by dots. Length-bounded to
+    # reduce false positives on short tokens.
+    ("JWT-shaped token (3 segments)",
+     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    # Generic high-entropy "password" / "secret" assignments. Last-resort.
+    ("hardcoded password assignment",
+     re.compile(
+         r"(?i)(password|passwd|secret|api[_-]?key|token|auth)[\"\']?\s*[:=]\s*"
+         r"[\"\'][^\"\'\s]{12,}[\"\']"
+     )),
+]
+
+
+def extract_candidate_text(payload: dict) -> str:
+    """Return the text that will land on disk after this Write/Edit."""
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        # Inspect the new_string only — old_string is the pre-existing content,
+        # which by definition the user already accepted at some prior point.
+        return inp.get("new_string", "")
+    return ""
+
+
+def deny(reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text:
+        return 0
+
+    hits = []
+    for label, pattern in SECRET_PATTERNS:
+        if pattern.search(text):
+            hits.append(label)
+            # Stop after a few hits to keep the message readable. The remaining
+            # patterns are still checked on subsequent invocations.
+            if len(hits) >= 3:
+                break
+
+    if hits:
+        deny(
+            "block-hardcoded-secrets-regex matched: "
+            + ", ".join(hits)
+            + ". Move the secret to an environment variable, a vault, or a "
+            + "Claude Code permission allowlist; never commit it inline."
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-hardcoded-secrets-regex.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- Secrets that don't match a format-anchored pattern (a generic 32-char random API key with no recognisable prefix).
+- Secrets split across lines: `password = "" + "abc" + "def" + ...`.
+- Secrets in encoded form: `base64.b64decode("c2VjcmV0...")`.
+- Secrets in non-text files (binary blobs, encrypted archives). The hook only inspects the text payload Write/Edit passes.
+- Secrets already present in the file before this Edit (the hook looks at `new_string`, not the resulting file state). Use `gitleaks` / `trufflehog` for the at-rest case.
+- Multi-step constructions: write the key as plaintext, then a subsequent Edit replaces it with an env-var reference — both Writes pass independently, but the intermediate state landed on disk.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-hardcoded-secrets-regex.py"
+
+
+def run_write(content: str) -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": "/tmp/x.py", "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def run_edit(new_string: str) -> dict:
+    payload = json.dumps({
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/tmp/x.py",
+            "old_string": "FOO = 1",
+            "new_string": new_string,
+        },
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_aws_access_key():
+    assert decision(run_write('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"')) == "deny"
+
+
+def test_blocks_github_pat():
+    assert decision(run_write('TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"')) == "deny"
+
+
+def test_blocks_pem_private_key():
+    assert decision(run_write("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAA...")) == "deny"
+
+
+def test_blocks_hardcoded_password_assignment():
+    assert decision(run_write('password = "hunter2sosecure"')) == "deny"
+
+
+def test_blocks_on_edit_too():
+    assert decision(run_edit('TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"')) == "deny"
+
+
+def test_allows_env_var_lookup():
+    assert decision(run_write('TOKEN = os.environ["GITHUB_TOKEN"]')) is None
+
+
+def test_allows_short_string():
+    assert decision(run_write('greeting = "hello"')) is None
+
+
+def test_allows_non_secret_path():
+    assert decision(run_write("def square(x):\n    return x * x\n")) is None
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` denies `Write(./.env)` and `Edit(./.env)`, which keeps secrets out of one well-known file. This hook adds: secret detection in *any* file the user is about to Write/Edit, regardless of path. The two layers cover orthogonal concerns — the rule covers the canonical secret-file destination; the hook covers secret content leaking into source files.
+
+---
+
+## Pattern: `block-eval-on-user-input`
+
+**Purpose:** Deny `Write`/`Edit` operations that introduce Python source where `eval`, `exec`, or `compile` receive an argument that is plausibly user-controlled. Uses Python's AST module (no regex shortcuts) so it survives most string-level evasion. Fails secure when the AST cannot parse: returns `ask`, not silent allow.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-eval-on-user-input.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-eval-on-user-input
+Event: PreToolUse
+Purpose: Deny new Python source that calls eval/exec/compile with an argument
+         that is plausibly user-controlled. AST-based; falls back to 'ask'
+         (not silent allow) when the parse fails.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import ast
+import json
+import sys
+
+DANGEROUS_CALLS = {"eval", "exec", "compile"}
+
+# A heuristic set of identifiers that suggest user-controllable input. The list
+# is intentionally conservative — false positives are preferable to a missed
+# RCE primitive.
+USER_INPUT_HINTS = {
+    "input", "raw_input",
+    "request", "req", "params", "body", "json", "form", "args",
+    "user_input", "user_data", "user_message",
+    "argv", "stdin", "sys",
+    "payload", "message", "msg", "data",
+    "query", "command", "cmd",
+    "environ", "getenv",
+}
+
+
+class EvalFinder(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.findings: list[tuple[str, str, int]] = []
+
+    def _arg_is_user_controlled(self, node: ast.AST) -> tuple[bool, str]:
+        """Return (is-user-controlled, identifier-or-shape) for the call arg."""
+        # Bare name: eval(x)
+        if isinstance(node, ast.Name):
+            return (node.id.lower() in USER_INPUT_HINTS, node.id)
+        # Attribute access: eval(request.body), eval(sys.argv[0])
+        if isinstance(node, ast.Attribute):
+            chain: list[str] = []
+            cur: ast.AST = node
+            while isinstance(cur, ast.Attribute):
+                chain.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                chain.append(cur.id)
+            joined = ".".join(reversed(chain))
+            root = chain[-1] if chain else ""
+            return (root.lower() in USER_INPUT_HINTS, joined)
+        # Subscript: eval(request["body"]), eval(argv[1])
+        if isinstance(node, ast.Subscript):
+            return self._arg_is_user_controlled(node.value)
+        # Call: eval(input()), eval(json.loads(req.body))
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = ""
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif isinstance(func, ast.Attribute):
+                name = func.attr
+            if name.lower() in USER_INPUT_HINTS:
+                return (True, f"{name}(...)")
+            # Recurse into the first arg — eval(json.loads(x)) is dangerous if x is.
+            if node.args:
+                return self._arg_is_user_controlled(node.args[0])
+            return (False, name)
+        # BinOp / JoinedStr / Constant — strings or computed values. Treat
+        # JoinedStr (f-string) as suspicious if any embedded expression is.
+        if isinstance(node, ast.JoinedStr):
+            for value in node.values:
+                if isinstance(value, ast.FormattedValue):
+                    ok, label = self._arg_is_user_controlled(value.value)
+                    if ok:
+                        return (True, f"f-string({label})")
+            return (False, "f-string-literal")
+        if isinstance(node, ast.Constant):
+            return (False, "string-literal")
+        # Anything else (BinOp, BoolOp, etc.) — be conservative; treat as
+        # user-controlled. This raises false positives but keeps the hook loud.
+        return (True, type(node).__name__)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        name = ""
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        if name in DANGEROUS_CALLS and node.args:
+            is_user, label = self._arg_is_user_controlled(node.args[0])
+            if is_user:
+                self.findings.append((name, label, node.lineno))
+        self.generic_visit(node)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def is_python_path(path: str) -> bool:
+    return path.endswith((".py", ".pyi"))
+
+
+def write_decision(decision: str, reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    file_path = payload.get("tool_input", {}).get("file_path", "")
+    if not is_python_path(file_path):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text:
+        return 0
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # FAIL SECURE: cannot parse, cannot reason about safety. Ask the user.
+        write_decision(
+            "ask",
+            "block-eval-on-user-input could not AST-parse the Write/Edit "
+            "content; falling back to 'ask' so the user can confirm there is "
+            "no eval/exec/compile on user input.",
+        )
+        return 0
+
+    finder = EvalFinder()
+    finder.visit(tree)
+    if finder.findings:
+        first = finder.findings[0]
+        write_decision(
+            "deny",
+            f"block-eval-on-user-input found {first[0]}({first[1]}) at line "
+            f"{first[2]}; refusing. Use ast.literal_eval for trusted literal "
+            "data, or a sandboxed evaluator for untrusted expressions.",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-eval-on-user-input.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- **One-hop variable indirection**: `x = input(); eval(x)` — the finder sees `eval(Name("x"))` and `x` is not in `USER_INPUT_HINTS`. The hook does not perform data-flow analysis. **This is the largest blind spot.** For these cases use a static analyzer (semgrep, bandit, ruff S307) which tracks bindings across a function.
+- `__import__("os").system(...)` — different call, different shape. Add a sibling hook if you care.
+- Indirect dispatch: `getattr(__builtins__, "eval")(x)` — the AST node is a `getattr` call, not an `eval` call. The finder does not chase this.
+- Constructed names: `e = eval; e(x)` — the call is to a `Name("e")`, not a `Name("eval")`.
+- Code that lands in a non-`.py` file but is later loaded as Python (e.g., written to `.txt` then `exec(open(...).read())`).
+- Evaluators imported from non-stdlib (`asteval`, `simpleeval`) — the hook only inspects builtin `eval`/`exec`/`compile`.
+- User-controlled-ness is heuristic. A variable named `payload` that the surrounding code clearly bound to a hash of a trusted literal will still trip the hook.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-eval-on-user-input.py"
+
+
+def run_write(content: str, path: str = "/tmp/x.py") -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_eval_on_direct_input_call():
+    # Direct call form: eval(input()) is detected.
+    # Variable indirection — `x = input(); eval(x)` — is NOT detected; see the
+    # "One-hop variable indirection" bypass-class note above.
+    assert decision(run_write("print(eval(input()))\n")) == "deny"
+
+
+def test_blocks_eval_on_request_body():
+    assert decision(run_write(
+        "def f(request):\n    return eval(request.body)\n"
+    )) == "deny"
+
+
+def test_blocks_exec_on_sys_argv():
+    assert decision(run_write("import sys\nexec(sys.argv[1])\n")) == "deny"
+
+
+def test_blocks_eval_on_fstring_with_user_var():
+    assert decision(run_write("user_data = '1'\neval(f'{user_data} + 2')\n")) == "deny"
+
+
+def test_allows_eval_on_string_literal():
+    assert decision(run_write('print(eval("1 + 2"))\n')) is None
+
+
+def test_allows_eval_on_known_safe_pattern():
+    # Pure literal eval — fine.
+    assert decision(run_write('result = eval("1 + 2")\n')) is None
+
+
+def test_allows_non_python_file():
+    assert decision(run_write("eval(user_input)\n", path="/tmp/x.md")) is None
+
+
+def test_fails_secure_on_syntax_error():
+    # Unparsable Python -> ask, not silent allow.
+    assert decision(run_write("def f(:\n    pass\n")) == "ask"
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no `eval`-related rule. This hook is purely additive. Pair with semgrep / bandit rules in CI for the at-rest case (this hook only catches new writes through Claude Code).
+
+---
+
+## Pattern: `block-pickle-loads`
+
+**Purpose:** Deny `Write`/`Edit` operations that introduce `pickle.load`, `pickle.loads`, `cPickle.*`, or `pandas.read_pickle` calls. Pickle deserialization on untrusted input is unconditional RCE; the safe alternatives (JSON, msgpack, protobuf, parquet) cover almost every legitimate use case.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-pickle-loads.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-pickle-loads
+Event: PreToolUse
+Purpose: Deny new Python source that deserializes pickle data. Pickle
+         deserialization is unconditional code execution; safe formats
+         (JSON, msgpack, protobuf, parquet) cover almost every legitimate
+         use case.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import ast
+import json
+import sys
+
+# (qualified.call.path, label) — match the dotted attribute chain or the
+# bare name in `from X import Y` then `Y(...)`.
+DANGEROUS_CALLS = {
+    "pickle.load": "pickle.load",
+    "pickle.loads": "pickle.loads",
+    "pickle.Unpickler": "pickle.Unpickler",
+    "cPickle.load": "cPickle.load",
+    "cPickle.loads": "cPickle.loads",
+    "pandas.read_pickle": "pandas.read_pickle",
+    "pd.read_pickle": "pd.read_pickle",
+    "joblib.load": "joblib.load",
+    "torch.load": "torch.load (uses pickle by default; require weights_only=True)",
+    "numpy.load": "numpy.load (allow_pickle=True is RCE; require allow_pickle=False)",
+    "np.load": "np.load (allow_pickle=True is RCE; require allow_pickle=False)",
+}
+
+# Bare-name imports we should still detect: `from pickle import loads`.
+BARE_NAME_IMPORTS_FROM_PICKLE = {
+    "load", "loads", "Unpickler",
+}
+
+
+def call_chain(node: ast.AST) -> str:
+    """Return the dotted attribute chain or bare Name for a call's func node."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parts: list[str] = []
+        cur: ast.AST = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def torch_load_is_safe(node: ast.Call) -> bool:
+    """Return True if torch.load is called with weights_only=True."""
+    for kw in node.keywords:
+        if kw.arg == "weights_only" and isinstance(kw.value, ast.Constant):
+            if kw.value.value is True:
+                return True
+    return False
+
+
+def np_load_is_safe(node: ast.Call) -> bool:
+    """Return True if np.load is called with allow_pickle=False (or omitted)."""
+    for kw in node.keywords:
+        if kw.arg == "allow_pickle" and isinstance(kw.value, ast.Constant):
+            return kw.value.value is False
+    return True  # default is False
+
+
+class PickleFinder(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.bare_pickle_imports: set[str] = set()
+        self.findings: list[tuple[str, int]] = []
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "pickle":
+            for alias in node.names:
+                if alias.name in BARE_NAME_IMPORTS_FROM_PICKLE:
+                    self.bare_pickle_imports.add(alias.asname or alias.name)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        chain = call_chain(node.func)
+        # Bare name re-export from pickle: `from pickle import loads; loads(b)`.
+        if chain in self.bare_pickle_imports:
+            self.findings.append((f"pickle.{chain} (via from-import)", node.lineno))
+        elif chain in DANGEROUS_CALLS:
+            label = DANGEROUS_CALLS[chain]
+            # Allow safe forms.
+            if chain in ("torch.load",) and torch_load_is_safe(node):
+                pass
+            elif chain in ("numpy.load", "np.load") and np_load_is_safe(node):
+                pass
+            else:
+                self.findings.append((label, node.lineno))
+        self.generic_visit(node)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def write_decision(decision: str, reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    file_path = payload.get("tool_input", {}).get("file_path", "")
+    if not file_path.endswith((".py", ".pyi")):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text:
+        return 0
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        write_decision(
+            "ask",
+            "block-pickle-loads could not AST-parse the content; falling back "
+            "to 'ask' so the user can confirm no pickle deserialization slipped in.",
+        )
+        return 0
+
+    finder = PickleFinder()
+    finder.visit(tree)
+    if finder.findings:
+        first = finder.findings[0]
+        write_decision(
+            "deny",
+            f"block-pickle-loads found {first[0]} at line {first[1]}. Pickle "
+            "deserialization is RCE on untrusted data. Use JSON, msgpack, "
+            "protobuf, or parquet. For torch checkpoints, pass weights_only=True. "
+            "For numpy archives, leave allow_pickle=False.",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-pickle-loads.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- Hand-rolled unpickling via `pickle._Unpickler` instantiation through `getattr`.
+- Pickle data deserialized by a library this hook doesn't enumerate (`dill`, `cloudpickle`, `pickle5`, `shelve`, `dbm`).
+- Pickle loaded indirectly through `multiprocessing` IPC, `concurrent.futures.ProcessPoolExecutor` return values, or any framework using pickle as a wire format.
+- Files written without `.py`/`.pyi` extension. The hook short-circuits on path extension.
+- Pickle data deserialized in code already on disk (the hook only checks new Writes/Edits).
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-pickle-loads.py"
+
+
+def run_write(content: str, path: str = "/tmp/x.py") -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_pickle_loads_call():
+    assert decision(run_write("import pickle\npickle.loads(blob)\n")) == "deny"
+
+
+def test_blocks_pickle_load_call():
+    assert decision(run_write("import pickle\nwith open('x','rb') as f:\n    pickle.load(f)\n")) == "deny"
+
+
+def test_blocks_from_pickle_import_loads():
+    assert decision(run_write("from pickle import loads\nloads(blob)\n")) == "deny"
+
+
+def test_blocks_torch_load_default():
+    assert decision(run_write("import torch\nm = torch.load('/tmp/m.pt')\n")) == "deny"
+
+
+def test_allows_torch_load_weights_only():
+    assert decision(run_write(
+        "import torch\nm = torch.load('/tmp/m.pt', weights_only=True)\n"
+    )) is None
+
+
+def test_blocks_np_load_allow_pickle_true():
+    assert decision(run_write(
+        "import numpy as np\narr = np.load('a.npz', allow_pickle=True)\n"
+    )) == "deny"
+
+
+def test_allows_np_load_default():
+    assert decision(run_write(
+        "import numpy as np\narr = np.load('a.npz')\n"
+    )) is None
+
+
+def test_allows_json_loads():
+    assert decision(run_write("import json\nd = json.loads(blob)\n")) is None
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no pickle-related rule. This hook is purely additive. The catalog skills (`python-security`, `applying-ai-ml-security`, `transformers-security`) also teach the same prohibition at advisory level; this hook is the enforcement counterpart.
+
+---
+
+## Pattern: `block-trust-remote-code`
+
+**Purpose:** Deny `Write`/`Edit` operations that set `trust_remote_code=True` in calls to `transformers` / `sentence-transformers` / `huggingface_hub` APIs. The flag downloads and executes arbitrary Python from the Hub repo, with full process privileges, on every model load.
+
+**Hook event:** PreToolUse
+
+**Tools matched:** Write, Edit
+
+**Python source (copy to `~/.claude/hooks/cscr/block-trust-remote-code.py`):**
+
+```python
+#!/usr/bin/env python3
+"""
+Hook: block-trust-remote-code
+Event: PreToolUse
+Purpose: Deny new Python source that passes trust_remote_code=True to any
+         transformers/HF API. The flag is unconditional RCE on every load.
+
+Reads stdin JSON, writes permissionDecision to stdout, exits 0.
+"""
+import ast
+import json
+import sys
+
+
+def call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def has_trust_remote_code_true(node: ast.Call) -> bool:
+    for kw in node.keywords:
+        if kw.arg == "trust_remote_code" and isinstance(kw.value, ast.Constant):
+            if kw.value.value is True:
+                return True
+    return False
+
+
+class TrustRemoteCodeFinder(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.findings: list[tuple[str, int]] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = call_name(node.func)
+        # We don't enumerate every API that accepts trust_remote_code; the
+        # presence of the keyword set to True is itself the signal.
+        if has_trust_remote_code_true(node):
+            self.findings.append((name or "<call>", node.lineno))
+        self.generic_visit(node)
+
+
+def extract_candidate_text(payload: dict) -> str:
+    tool = payload.get("tool_name")
+    inp = payload.get("tool_input", {})
+    if tool == "Write":
+        return inp.get("content", "")
+    if tool == "Edit":
+        return inp.get("new_string", "")
+    return ""
+
+
+def write_decision(decision: str, reason: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    }))
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return 0
+
+    if payload.get("tool_name") not in ("Write", "Edit"):
+        return 0
+    file_path = payload.get("tool_input", {}).get("file_path", "")
+    if not file_path.endswith((".py", ".pyi")):
+        return 0
+    text = extract_candidate_text(payload)
+    if not text or "trust_remote_code" not in text:
+        return 0
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        write_decision(
+            "ask",
+            "block-trust-remote-code could not AST-parse the content but the "
+            "literal 'trust_remote_code' appears; falling back to 'ask' so "
+            "the user can confirm.",
+        )
+        return 0
+
+    finder = TrustRemoteCodeFinder()
+    finder.visit(tree)
+    if finder.findings:
+        first = finder.findings[0]
+        write_decision(
+            "deny",
+            f"block-trust-remote-code found {first[0]}(..., trust_remote_code=True) "
+            f"at line {first[1]}. The flag runs arbitrary Python from the Hub "
+            "repo on every load. If the model genuinely requires it, pin the "
+            "revision SHA AND review the remote code AND set the flag in a "
+            "separate ops-controlled file outside the hook's view.",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Settings.json entry (add to `~/.claude/settings.json`):**
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/cscr/block-trust-remote-code.py" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Bypass classes this pattern does NOT catch:**
+
+- `trust_remote_code` set via environment variable (`TRANSFORMERS_TRUST_REMOTE_CODE=1`) or a config file read by the library at load time.
+- `trust_remote_code` set programmatically through `setattr(config, "trust_remote_code", True)`.
+- A pickled config that contains `trust_remote_code=True` and is then `from_pretrained`'d.
+- Indirect call via `**kwargs` where the kwargs dict was constructed elsewhere.
+- Non-`.py` files (Jupyter notebook source loaded as JSON, etc.).
+- Models loaded by a library version that ignores the flag and runs remote code anyway. The hook can't detect library-side defaults.
+
+**Suggested unit tests:**
+
+```python
+import json
+import subprocess
+from pathlib import Path
+
+HOOK = Path.home() / ".claude/hooks/cscr/block-trust-remote-code.py"
+
+
+def run_write(content: str, path: str = "/tmp/x.py") -> dict:
+    payload = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": path, "content": content},
+    })
+    r = subprocess.run(
+        [str(HOOK)], input=payload, capture_output=True, text=True, timeout=5
+    )
+    return json.loads(r.stdout) if r.stdout.strip() else {}
+
+
+def decision(out: dict) -> str | None:
+    return out.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_blocks_from_pretrained_with_flag():
+    assert decision(run_write(
+        "from transformers import AutoModel\n"
+        "m = AutoModel.from_pretrained('x/y', trust_remote_code=True)\n"
+    )) == "deny"
+
+
+def test_blocks_pipeline_with_flag():
+    assert decision(run_write(
+        "from transformers import pipeline\n"
+        "p = pipeline('text-generation', model='x/y', trust_remote_code=True)\n"
+    )) == "deny"
+
+
+def test_blocks_sentence_transformers_with_flag():
+    assert decision(run_write(
+        "from sentence_transformers import SentenceTransformer\n"
+        "m = SentenceTransformer('x/y', trust_remote_code=True)\n"
+    )) == "deny"
+
+
+def test_allows_explicit_false():
+    assert decision(run_write(
+        "from transformers import AutoModel\n"
+        "m = AutoModel.from_pretrained('x/y', trust_remote_code=False)\n"
+    )) is None
+
+
+def test_allows_default_omitted():
+    assert decision(run_write(
+        "from transformers import AutoModel\n"
+        "m = AutoModel.from_pretrained('x/y')\n"
+    )) is None
+
+
+def test_allows_non_python_file():
+    assert decision(run_write(
+        "model.from_pretrained('x', trust_remote_code=True)\n",
+        path="/tmp/x.md",
+    )) is None
+```
+
+**Layer-1 complement:**
+
+`settings-template.json` has no `trust_remote_code`-related rule (permission rules can't pattern-match Python keyword arguments). This hook is purely additive. The `transformers-security` and `applying-ai-ml-security` skills also teach the prohibition; this hook is the enforcement counterpart.
