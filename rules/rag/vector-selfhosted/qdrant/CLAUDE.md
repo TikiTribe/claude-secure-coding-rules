@@ -11,6 +11,7 @@ Apply rules from `rules/rag/_core/vector-store-security.md` first. This file cov
 | Rule | Level | Primary Risk |
 |------|-------|--------------|
 | API Key Authentication | `strict` | Unauthorized access, credential exposure |
+| Server-Side Auth Enforcement | `strict` | Silent auth bypass on self-hosted instances |
 | Payload Filtering Security | `strict` | Filter injection, data exfiltration |
 | Collection Configuration | `warning` | Data loss, unauthorized shard access |
 | Quantization Security | `advisory` | Data precision attacks |
@@ -109,6 +110,80 @@ client = QdrantClient(url="http://localhost:6333")  # No API key
 
 ---
 
+## Rule: Server-Side Auth Enforcement
+
+**Level**: `strict`
+
+**When**: Deploying self-hosted Qdrant instances with API key authentication
+
+**Do**: Configure `service.api_key` in the server's `config.yaml`. Without this setting the server accepts all requests regardless of the `api_key` the client sends — the key is silently ignored.
+
+```yaml
+# config.yaml on the Qdrant server
+# Required for api_key= in QdrantClient to have any effect.
+service:
+  api_key: "${QDRANT_API_KEY}"   # set via environment variable at server start
+  # Optional: enable JWT RBAC for per-key read/write separation
+  # jwt_rbac: true
+```
+
+```python
+# Python client: api_key= is ONLY enforced when the server has service.api_key set.
+# Verify the server enforces auth before trusting the client-side key.
+import os
+from qdrant_client import QdrantClient
+import httpx
+
+def verify_server_auth(url: str, api_key: str) -> None:
+    """Confirm the server rejects unauthenticated requests.
+
+    Raises RuntimeError if the server responds without a key,
+    which indicates service.api_key is not configured.
+    """
+    # Try reaching a collections endpoint with no key
+    resp = httpx.get(f"{url}/collections", timeout=10)
+    if resp.status_code == 200:
+        raise RuntimeError(
+            f"Qdrant at {url} is accepting unauthenticated requests. "
+            "Set service.api_key in config.yaml and restart."
+        )
+    # 401 or 403 means server-side enforcement is active
+    if resp.status_code not in (401, 403):
+        raise RuntimeError(f"Unexpected status {resp.status_code} during auth probe")
+
+# Call during deployment health check, not at query time
+verify_server_auth(os.environ["QDRANT_URL"], os.environ["QDRANT_API_KEY"])
+
+client = QdrantClient(
+    url=os.environ["QDRANT_URL"],
+    api_key=os.environ["QDRANT_API_KEY"],
+    https=True,
+)
+```
+
+**Don't**: Assume `api_key=` in the client is sufficient without server-side config
+
+```python
+# VULNERABLE: Client sends key, but server has no service.api_key configured.
+# The key is accepted by qdrant-client and sent in the header, then silently
+# ignored by the server. The instance is fully open.
+client = QdrantClient(
+    url="http://qdrant.internal:6333",
+    api_key=os.environ["QDRANT_KEY"],  # Key sent but NOT enforced by server
+)
+
+# VULNERABLE: Deploying the default Qdrant Docker image without config.yaml.
+# The default image ships with no authentication. Any caller on the network
+# can read, write, and delete collections.
+# docker run -p 6333:6333 qdrant/qdrant   <-- open by default
+```
+
+**Why**: Self-hosted Qdrant ships with authentication disabled. The `api_key=` parameter in `QdrantClient` adds an `api-key` HTTP header to every request, but the server only validates that header when `service.api_key` is present in `config.yaml`. Without the server-side key the header is ignored, leaving the instance fully open. Every self-hosted deployment must set `service.api_key` (or `service.jwt_rbac`) in config.yaml and verify enforcement at startup.
+
+**Refs**: Qdrant Security Documentation (qdrant.tech/documentation/guides/security/), OWASP A01:2025 (Broken Access Control), CWE-284, CWE-306
+
+---
+
 ## Rule: Payload Filtering Security
 
 **Level**: `strict`
@@ -202,7 +277,8 @@ def build_safe_filter(tenant_id: str, user_filters: dict) -> Filter:
 
     return Filter(must=conditions)
 
-# Safe query execution with validated filters
+# Safe query execution with validated filters.
+# Uses query_points() — the current API since qdrant-client 1.7.
 def secure_query(
     client: QdrantClient,
     collection_name: str,
@@ -214,13 +290,14 @@ def secure_query(
     """Execute query with validated filters and tenant isolation."""
     safe_filter = build_safe_filter(tenant_id, user_filters or {})
 
-    results = client.search(
+    response = client.query_points(
         collection_name=collection_name,
-        query_vector=query_vector,
+        query=query_vector,
         query_filter=safe_filter,
         limit=min(top_k, 100),  # Cap maximum results
         with_payload=True
     )
+    results = response.points
 
     # Validate results belong to tenant
     for result in results:
@@ -235,9 +312,9 @@ def secure_query(
 ```python
 # VULNERABLE: Direct user input to filter
 def query_vectors(client, user_filter: dict):
-    return client.search(
+    return client.query_points(
         collection_name="vectors",
-        query_vector=embedding,
+        query=embedding,
         query_filter=Filter(**user_filter)  # Attacker controls entire filter
     )
 
@@ -277,6 +354,7 @@ from qdrant_client.models import (
     VectorParams, Distance, OptimizersConfigDiff,
     HnswConfigDiff, WalConfigDiff
 )
+import re
 
 def create_secure_collection(
     client: QdrantClient,
@@ -383,7 +461,8 @@ client.create_collection(
 from qdrant_client.models import (
     ScalarQuantization, ScalarQuantizationConfig, ScalarType,
     BinaryQuantization, BinaryQuantizationConfig,
-    ProductQuantization, ProductQuantizationConfig
+    ProductQuantization, ProductQuantizationConfig,
+    VectorParams, Distance
 )
 
 def create_quantized_collection(
@@ -468,7 +547,7 @@ client.create_collection(
 
 **Why**: Quantization reduces embedding precision which can impact search quality. Binary quantization provides maximum compression but lowest precision. Choose quantization based on data sensitivity and accuracy requirements.
 
-**Refs**: MITRE ATLAS ML04 (Model Inversion), accuracy vs compression tradeoffs
+**Refs**: MITRE ATLAS AML.T0040 (Model Inversion Attack), accuracy vs compression tradeoffs
 
 ---
 
@@ -478,36 +557,41 @@ client.create_collection(
 
 **When**: Creating, storing, or restoring Qdrant snapshots
 
-**Do**: Encrypt snapshots at rest, verify integrity before restore, secure storage locations
+**Do**: Encrypt snapshots at rest, verify integrity before restore, secure storage locations. Download snapshots via authenticated HTTP GET against the REST API — `QdrantClient` provides no `download_snapshot()` method.
 
 ```python
 from qdrant_client import QdrantClient
 from cryptography.fernet import Fernet
 import hashlib
+import httpx
 import os
 from datetime import datetime
 
 def create_encrypted_snapshot(
     client: QdrantClient,
     collection_name: str,
-    backup_dir: str
+    backup_dir: str,
+    qdrant_url: str,
+    api_key: str
 ) -> dict:
     """Create encrypted snapshot with integrity verification."""
-    # Create snapshot
+    # Trigger snapshot creation via the client
     snapshot_info = client.create_snapshot(collection_name=collection_name)
     snapshot_name = snapshot_info.name
 
-    # Download snapshot
-    temp_path = f"/tmp/{snapshot_name}"
-    snapshot_data = client.download_snapshot(
-        collection_name=collection_name,
-        snapshot_name=snapshot_name,
-        path=temp_path
+    # Download via authenticated HTTP GET — QdrantClient has no download_snapshot().
+    # The REST endpoint streams the snapshot tarball as binary.
+    download_url = f"{qdrant_url}/collections/{collection_name}/snapshots/{snapshot_name}"
+    response = httpx.get(
+        download_url,
+        headers={"api-key": api_key},
+        timeout=300,   # large snapshots can be slow
+        follow_redirects=True
     )
+    response.raise_for_status()
+    original_data = response.content
 
     # Calculate original checksum
-    with open(temp_path, "rb") as f:
-        original_data = f.read()
     original_checksum = hashlib.sha256(original_data).hexdigest()
 
     # Encrypt snapshot
@@ -515,7 +599,7 @@ def create_encrypted_snapshot(
     fernet = Fernet(encryption_key)
     encrypted_data = fernet.encrypt(original_data)
 
-    # Save encrypted snapshot
+    # Save encrypted snapshot — never write the plaintext to disk
     encrypted_path = os.path.join(
         backup_dir,
         f"{collection_name}_{snapshot_name}.enc"
@@ -525,9 +609,6 @@ def create_encrypted_snapshot(
 
     # Calculate encrypted checksum
     encrypted_checksum = hashlib.sha256(encrypted_data).hexdigest()
-
-    # Clean up unencrypted temp file
-    os.remove(temp_path)
 
     # Store metadata
     metadata = {
@@ -575,13 +656,13 @@ def restore_encrypted_snapshot(
     with open(temp_path, "wb") as f:
         f.write(decrypted_data)
 
-    # Restore snapshot
+    # recover_snapshot() accepts a local file path
     client.recover_snapshot(
         collection_name=collection_name,
         location=temp_path
     )
 
-    # Clean up
+    # Clean up plaintext temp file immediately
     os.remove(temp_path)
 
     audit_log.info(
@@ -611,9 +692,9 @@ def list_snapshots_secure(
 **Don't**: Store unencrypted snapshots, skip integrity verification
 
 ```python
-# VULNERABLE: Unencrypted snapshot
+# VULNERABLE: Unencrypted snapshot left on disk
 client.create_snapshot(collection_name="sensitive_data")
-# Snapshot stored in plaintext on disk
+# Snapshot stored in plaintext under Qdrant's storage path
 
 # VULNERABLE: No integrity check on restore
 def restore_snapshot(client, snapshot_path):
@@ -625,9 +706,16 @@ def restore_snapshot(client, snapshot_path):
 
 # VULNERABLE: Snapshots in public storage
 snapshot_path = "s3://public-bucket/qdrant-backups/"  # Accessible to anyone
+
+# VULNERABLE: Calling a method that does not exist
+snapshot_data = client.download_snapshot(  # AttributeError — method never existed
+    collection_name=collection_name,
+    snapshot_name=snapshot_name,
+    path="/tmp/snap"
+)
 ```
 
-**Why**: Snapshots contain complete vector data including sensitive embeddings. Unencrypted snapshots can be exfiltrated. Without integrity verification, attackers can inject malicious data through tampered snapshots.
+**Why**: Snapshots contain complete vector data including sensitive embeddings. Unencrypted snapshots can be exfiltrated. Without integrity verification, attackers can inject malicious data through tampered snapshots. `QdrantClient` has no `download_snapshot()` method in any released version; download must go through the REST API with an authenticated `api-key` header.
 
 **Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-311, CWE-354
 
@@ -741,13 +829,14 @@ context.verify_mode = ssl.CERT_NONE  # No certificate validation
 
 **When**: Using named vectors with multiple embedding types per point
 
-**Do**: Control access to specific named vectors, validate vector names
+**Do**: Control access to specific named vectors, validate vector names. Use `query_points()` with the `using=` parameter for named-vector queries (qdrant-client 1.7+).
 
 ```python
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    VectorParams, Distance, NamedVector
+    VectorParams, Distance, PointStruct
 )
+import re
 
 # Allowed vector names by role
 VECTOR_ACCESS_CONTROL = {
@@ -814,17 +903,17 @@ def secure_multi_vector_query(
         ]
     )
 
-    # Query specific named vector
-    results = client.search(
+    # Query named vector using query_points() (qdrant-client >= 1.7).
+    # The using= parameter selects the named vector; no NamedVector wrapper needed.
+    response = client.query_points(
         collection_name=collection_name,
-        query_vector=NamedVector(
-            name=vector_name,
-            vector=query_vector
-        ),
+        query=query_vector,
+        using=vector_name,
         query_filter=query_filter,
         limit=min(top_k, 100),
         with_payload=True
     )
+    results = response.points
 
     audit_log.info(
         "multi_vector_query",
@@ -867,13 +956,16 @@ def secure_multi_vector_upsert(
     # Add tenant_id to payload
     payload["tenant_id"] = tenant_id
 
+    # Use PointStruct to avoid deprecation warnings from raw-dict upserts
     client.upsert(
         collection_name=collection_name,
-        points=[{
-            "id": point_id,
-            "vector": safe_vectors,
-            "payload": payload
-        }]
+        points=[
+            PointStruct(
+                id=point_id,
+                vector=safe_vectors,
+                payload=payload
+            )
+        ]
     )
 ```
 
@@ -883,12 +975,10 @@ def secure_multi_vector_upsert(
 # VULNERABLE: No access control for named vectors
 def query_any_vector(client, vector_name, query_vector):
     # User can query any vector including internal ones
-    return client.search(
+    return client.query_points(
         collection_name="documents",
-        query_vector=NamedVector(
-            name=vector_name,  # Could be "internal_embedding"
-            vector=query_vector
-        )
+        query=query_vector,
+        using=vector_name  # Could be "internal_embedding"
     )
 
 # VULNERABLE: No validation of vector names
@@ -908,11 +998,18 @@ def upsert_vectors(client, point_id, user_vectors):
 
 ---
 
+## Deployment Note: Process Isolation for High-Trust Tenants
+
+The payload-filter multi-tenancy pattern (tenant_id field in `build_safe_filter`) is appropriate for standard deployments. For regulated data or tenants with strong isolation requirements, run separate Qdrant processes (or separate Qdrant clusters) per tenant. Payload-filter isolation is enforced at the application layer; a misconfigured filter or application bug can leak cross-tenant data. Process isolation eliminates that risk by keeping tenant data in separate memory and storage spaces.
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-01-15 | Initial release with 7 Qdrant-specific rules |
+| 1.1 | 2026-05-26 | Fix client.search() → query_points() (removed in 1.7+); replace non-existent download_snapshot() with authenticated HTTP GET; add Server-Side Auth Enforcement rule; fix ATLAS ID; add PointStruct upsert; add process-isolation note |
 
 ---
 

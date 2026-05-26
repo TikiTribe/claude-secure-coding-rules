@@ -5594,7 +5594,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/chroma/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -6108,12 +6108,13 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/qdrant/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
     rules_audited:
       - API Key Authentication
+      - Server-Side Auth Enforcement
       - Payload Filtering Security
       - Collection Configuration
       - Quantization Security
@@ -6121,59 +6122,24 @@ audited_rules:
       - gRPC Security
       - Multi-Vector Security
     notes: |
-      Audited all 7 rules. OWASP refs use :2025 qualifiers throughout; CWE IDs are valid.
-      Three blocking defects found.
+      Re-audited after defect fix (v1.1). All 3 blocking issues resolved.
 
-      ISSUE 1 - client.search() removed in qdrant-client >= 1.7 (BROKEN API / CRITICAL)
-        The Payload Filtering Security rule (secure_query, line 217) and the Multi-Vector
-        Security rule (secure_multi_vector_query, line 818) both call client.search().
-        In qdrant-client >= 1.7.0 the search() method was replaced by query_points().
-        client.search() no longer exists in 1.7.x through the current 1.18.0 release;
-        calling it raises AttributeError at runtime, making both Do examples fail on
-        any current qdrant-client install.
-        Fix required: replace client.search(..., query_vector=..., ...) with
-        client.query_points(..., query=..., using=..., ...) throughout. The query_filter
-        and limit parameters are compatible; named vector access moves to the using=
-        string parameter rather than a NamedVector() wrapper.
+      ISSUE 1 FIXED: client.search() replaced with client.query_points(query=..., using=..., ...)
+        in secure_query() and secure_multi_vector_query(). NamedVector wrapper removed;
+        using= string parameter used for named-vector selection.
 
-      ISSUE 2 - client.download_snapshot() does not exist (BROKEN API / CRITICAL)
-        The Snapshot Security rule Do block (create_encrypted_snapshot, line 501) calls
-        client.download_snapshot(collection_name=..., snapshot_name=..., path=...).
-        This method has never existed in the public qdrant-client interface. The correct
-        approach for self-hosted Qdrant is to download the snapshot via an authenticated
-        HTTP GET to /collections/{collection}/snapshots/{snapshot_name} and write the
-        response body to disk. This makes the Do example non-functional on any
-        qdrant-client version.
-        Fix required: replace the download_snapshot() call with an authenticated requests
-        or httpx GET against the Qdrant REST snapshot endpoint, writing the binary
-        response to the temp path. The encrypt/checksum flow that follows is correct.
+      ISSUE 2 FIXED: client.download_snapshot() replaced with authenticated httpx.get()
+        against /collections/{collection}/snapshots/{name}. Binary response written
+        directly to encrypted buffer without intermediate plaintext file on disk.
 
-      ISSUE 3 - Self-hosted default no-auth state not disclosed (QDRANT-SPECIFIC / BLOCKING)
-        The API Key Authentication rule presents api_key= in QdrantClient as the secure
-        Do pattern but never states that Qdrant self-hosted ships with authentication
-        disabled by default. A user deploying on-premise following only this rule file
-        could believe that passing api_key= is sufficient without realizing the server
-        must also have enforcement enabled in config.yaml (service.api_key or
-        service.jwt_rbac). Without the server-side config entry the api_key= parameter
-        is sent by the client but silently ignored; the instance accepts unauthenticated
-        requests from any caller.
-        Fix required: add a Why note and server-side config snippet showing
-        service.api_key in config.yaml, with an explicit warning that the default
-        self-hosted image has no authentication enabled.
+      ISSUE 3 FIXED: New strict rule "Server-Side Auth Enforcement" added. Includes
+        config.yaml service.api_key snippet, startup verification probe, and explicit
+        Don't showing that passing api_key= on the client with no server-side config
+        leaves the instance open.
 
-      Non-blocking observations (no status change):
-      - client.upsert(points=[{...}]) passes raw dicts in Multi-Vector Security rule
-        (line 871). Current qdrant-client accepts dicts but emits a deprecation warning
-        recommending models.PointStruct. Non-blocking; does not prevent execution.
-      - recover_snapshot(location=...) is valid in qdrant-client 1.18.0 and accepts
-        local file paths. No defect; restore flow is structurally correct once the
-        download defect is addressed.
-      - Collection isolation via separate Qdrant processes for high-trust tenants not
-        covered. Advisory gap; payload-filter multi-tenancy pattern is present but
-        the stronger process-isolation option for regulated data is absent.
-      - MITRE ATLAS ML04 in Quantization Security Refs (line 471) is an invalid ATLAS
-        technique ID (ATLAS uses AML.T-prefixed IDs). Advisory only; appears in a
-        single advisory-level rule.
+      Non-blocking items also addressed: raw-dict upsert replaced with PointStruct;
+      ATLAS ML04 corrected to AML.T0040; process-isolation note added for high-trust
+      tenants.
     issues_filed: []
 
   - path: rules/rag/observability/arize-phoenix/CLAUDE.md

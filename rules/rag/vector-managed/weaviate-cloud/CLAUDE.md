@@ -1329,6 +1329,7 @@ def insert_object(collection, content):
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-01-20 | Initial release with 7 security rules |
+| 1.1 | 2026-05-26 | Fix OWASP LLM refs to :2025 edition; wire MAX_QUERY_DEPTH into validate_query_parameters with GRAPHQL_MAX_DEPTH env-var guidance; add native RBAC via configure_weaviate_native_rbac and Weaviate Cloud API key tier documentation |
 
 ---
 
