@@ -3698,3 +3698,55 @@ audited_rules:
         of ATLAS v4, AML.T0010 is plausibly "ML Supply Chain Compromise." Flagged as
         unverifiable from the live catalog, not definitively wrong.
     issues_filed: []
+
+  - path: rules/backend/flask/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules (Configuration, Input Validation, XSS Prevention, Authentication,
+      CSRF Protection, Database Security, Error Handling, File Uploads). Verified against
+      Flask 3.0.3 and Werkzeug 3.0.4. CWE IDs (20, 79, 89, 209, 215, 352, 384, 434) are
+      all current and correct. OWASP 2025 category refs (A01, A03, A04, A05, A07) are
+      defensible and consistent with published 2025 mappings. SESSION_COOKIE_HTTPONLY,
+      SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE all present in secure config example.
+      Flask-Login session_protection='strong' is real and correct. Flask-WTF CSRF
+      integration is accurate. SQLAlchemy parameterized query example is correct.
+      werkzeug.utils.secure_filename usage is correct. Two blocking defects found.
+
+      ISSUE 1 — session.regenerate() is a fictional API (BLOCKING)
+        The Authentication rule Do example calls session.regenerate() immediately after
+        login_user(user). This method does not exist in Flask 3.x or Flask-Login 0.6+.
+        Flask's SecureCookieSession (confirmed in flask/sessions.py) exposes no
+        regenerate() method. Executing this code raises AttributeError at runtime, making
+        the Do example non-functional. The correct approach to guard against session
+        fixation in Flask is to call session.clear() before setting authenticated state,
+        or rely on Flask-Login's login_user() which rotates the session via its internal
+        clear-and-repopulate path when session_protection is 'strong'. The comment
+        "# Prevent session fixation" implies intent already handled by Flask-Login; the
+        fabricated method call adds only a runtime crash.
+        Fix required: remove session.regenerate() call; add a comment explaining that
+        Flask-Login's login_user() handles session rotation when session_protection is
+        'strong', or show the explicit session.clear() pattern if manual control is needed.
+
+      ISSUE 2 — bleach is archived and no longer maintained (BLOCKING)
+        The XSS Prevention rule Do example imports and uses bleach.clean() as the
+        recommended HTML sanitizer. Mozilla archived the bleach project in 2023 and issued
+        a deprecation notice advising users to migrate to maintained alternatives. bleach
+        is no longer receiving security updates. Recommending an unmaintained
+        security-critical library is a deprecated mitigation. The accepted replacement for
+        server-side HTML sanitization in Python is nh3 (Python bindings for the Rust-based
+        ammonia library), which provides equivalent tag allowlisting with active
+        maintenance.
+        Fix required: replace bleach import and bleach.clean() call with nh3.clean();
+        update the package name in any implied dependency list.
+
+      Non-blocking observations (no status change):
+      - No Werkzeug password hashing rule present. generate_password_hash and
+        check_password_hash are absent from the file. Werkzeug 3.x defaults to 'scrypt'
+        as the hash method (not 'pbkdf2:sha256' as in older versions). Advisory only;
+        the authentication rule defers to Flask-Login without showing credential storage.
+      - OWASP A04:2025 (Insecure Design) for file uploads is an unusual mapping;
+        A08:2025 (Software and Data Integrity Failures) or A03:2025 (Injection) are
+        closer. Current mapping is not wrong enough to block but worth revisiting.
+    issues_filed: []
