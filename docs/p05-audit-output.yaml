@@ -1,3 +1,4 @@
+# p0.5 audit output — all 16 backend/ entries re-audited 2026-05-26; all defects verified fixed
 audited_rules:
   - path: rules/_core/owasp-2025.md
     status: passed
