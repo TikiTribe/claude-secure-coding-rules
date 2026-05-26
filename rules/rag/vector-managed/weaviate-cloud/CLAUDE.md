@@ -150,14 +150,80 @@ def provision_tenant(client, collection_name: str, tenant_id: str):
     # Audit log
     audit_log.info("tenant_provisioned", tenant_id=tenant_id, collection=collection_name)
 
+def configure_weaviate_native_rbac(admin_client):
+    """
+    Configure Weaviate native RBAC roles for collection-level access control.
+
+    Weaviate's RBAC API lets you define named roles with explicit collection
+    and data permissions. Assign roles to the API key or OIDC principal your
+    application uses. On Weaviate Cloud, use API key tiers instead:
+      - Admin key  → full access; never embed in application code
+      - App key    → restricted to specific collections, read + write data
+      - Query key  → read-only, restricted collections
+
+    Create and scope keys in the Weaviate Cloud Console under "API Keys".
+    Store each key in a distinct environment variable and load it into the
+    service that needs it — never share the admin key with application code.
+    """
+    from weaviate.classes.rbac import Permissions
+
+    # Read-only role for the query service.
+    admin_client.roles.create(
+        role_name="tenant_reader",
+        permissions=[
+            Permissions.collections(
+                collection="*",
+                read_config=True,
+                create_collection=False,
+                delete_collection=False,
+            ),
+            Permissions.data(
+                collection="*",
+                read=True,
+                create=False,
+                update=False,
+                delete=False,
+            ),
+        ],
+    )
+
+    # Write role for the ingestion service.
+    admin_client.roles.create(
+        role_name="tenant_writer",
+        permissions=[
+            Permissions.data(
+                collection="*",
+                read=True,
+                create=True,
+                update=True,
+                delete=False,  # Soft-delete only via tenant deactivation
+            ),
+        ],
+    )
+
+    audit_log.info(
+        "weaviate_rbac_roles_configured",
+        roles=["tenant_reader", "tenant_writer"],
+    )
+
 def get_tenant_collection(client, collection_name: str, tenant_id: str, user_id: str):
-    """Get tenant-specific collection with authorization check."""
-    # Verify user has access to tenant
+    """
+    Get tenant-specific collection with two-layer authorization.
+
+    Layer 1 — Weaviate native RBAC: the API key or OIDC token used when the
+    client was created determines which collections and actions are permitted.
+    A key assigned only the "tenant_reader" role receives a 403 from Weaviate
+    for any write or schema operation without any application-side check.
+
+    Layer 2 — Application-layer check: auth_service confirms the authenticated
+    user is a member of the requested tenant (defense in depth against token
+    reuse across tenants).
+    """
     if not auth_service.user_has_tenant_access(user_id, tenant_id):
         audit_log.warning(
             "unauthorized_tenant_access",
             user_id=user_id,
-            attempted_tenant=tenant_id
+            attempted_tenant=tenant_id,
         )
         raise PermissionError("User not authorized for tenant")
 
@@ -271,18 +337,37 @@ client.collections.create(
 
 **When**: Executing GraphQL queries through Weaviate's GraphQL API
 
-**Do**: Implement query depth limits, input validation, and injection prevention
+**Do**: Implement query depth limits, input validation, and injection prevention. Set `GRAPHQL_MAX_DEPTH` on self-hosted Weaviate; enforce the same constant application-side on Weaviate Cloud.
 
 ```python
 from weaviate.classes.query import Filter
 import re
 
-# Query depth and complexity limits
+# Query depth and complexity limits.
+# MAX_QUERY_DEPTH is the application-enforced ceiling. On self-hosted Weaviate,
+# mirror this value with GRAPHQL_MAX_DEPTH in the server environment so the
+# server independently rejects over-deep queries (defense in depth):
+#
+#   GRAPHQL_MAX_DEPTH=5  # set in docker-compose.yml / k8s env / weaviate.conf
 MAX_QUERY_DEPTH = 5
 MAX_RESULTS_PER_QUERY = 100
 ALLOWED_PROPERTIES = {"content", "source", "created_at", "owner_id"}
 
-def validate_query_parameters(query: str, limit: int, properties: list):
+
+def _count_graphql_depth(query_str: str) -> int:
+    """Return the maximum brace-nesting depth of a raw GraphQL string."""
+    max_depth = current = 0
+    for ch in query_str:
+        if ch == '{':
+            current += 1
+            max_depth = max(max_depth, current)
+        elif ch == '}':
+            current -= 1
+    return max_depth
+
+
+def validate_query_parameters(query: str, limit: int, properties: list,
+                               raw_graphql: str = None):
     """Validate query parameters before execution."""
     # Validate limit
     if limit < 1 or limit > MAX_RESULTS_PER_QUERY:
@@ -292,12 +377,22 @@ def validate_query_parameters(query: str, limit: int, properties: list):
     if len(query) > 1000:
         raise ValueError("Query too long")
 
+    # Enforce depth limit on any raw GraphQL string passed through.
+    # This is the enforcement point for MAX_QUERY_DEPTH on Weaviate Cloud
+    # where GRAPHQL_MAX_DEPTH is not available as a server-side env var.
+    if raw_graphql is not None:
+        depth = _count_graphql_depth(raw_graphql)
+        if depth > MAX_QUERY_DEPTH:
+            raise ValueError(
+                f"GraphQL query depth {depth} exceeds MAX_QUERY_DEPTH={MAX_QUERY_DEPTH}"
+            )
+
     # Check for injection patterns
     injection_patterns = [
-        r'\{.*\{.*\{.*\{.*\{',  # Deep nesting
-        r'__schema',  # Schema introspection
-        r'__type',  # Type introspection
-        r'fragment.*on',  # Fragment injection
+        r'\{.*\{.*\{.*\{.*\{',  # Deep nesting (>= 5 levels)
+        r'__schema',             # Schema introspection
+        r'__type',               # Type introspection
+        r'fragment.*on',         # Fragment injection
     ]
     for pattern in injection_patterns:
         if re.search(pattern, query, re.IGNORECASE):
@@ -311,10 +406,12 @@ def validate_query_parameters(query: str, limit: int, properties: list):
 
     return True
 
+
 def safe_near_text_query(client, collection_name: str, tenant_id: str,
                          query: str, limit: int = 10, properties: list = None):
     """Execute near_text query with security validation."""
-    # Validate inputs
+    # raw_graphql omitted — near_text uses the structured Python client,
+    # not a raw GraphQL string, so depth is controlled by the client library.
     validate_query_parameters(query, limit, properties)
 
     collection = client.collections.get(collection_name).with_tenant(tenant_id)
@@ -455,9 +552,15 @@ def filter_query(user_filters):
     filter_obj = Filter.by_property(user_filters["field"]).equal(user_filters["value"])
     return collection.query.fetch_objects(filters=filter_obj)
 
-# VULNERABLE: Raw GraphQL execution
+# VULNERABLE: Raw GraphQL execution with no depth check
 def raw_graphql(graphql_query):
-    # User controls entire query structure
+    # User controls entire query structure; depth never validated
+    return client.graphql_raw_query(graphql_query)
+
+# VULNERABLE: MAX_QUERY_DEPTH declared but ignored
+def raw_graphql_unchecked(graphql_query):
+    # MAX_QUERY_DEPTH = 5 exists in scope but is never passed to
+    # validate_query_parameters(raw_graphql=...), so the limit is inert
     return client.graphql_raw_query(graphql_query)
 ```
 
@@ -651,7 +754,7 @@ def generate_silent(query, prompt):
 
 **Why**: Generative search combines vector retrieval with LLM generation, creating multiple attack vectors. Prompt injection can manipulate LLM behavior. Unfiltered outputs may leak PII from context. Large context windows increase costs and latency.
 
-**Refs**: OWASP LLM01 (Prompt Injection), OWASP LLM02 (Insecure Output Handling), CWE-74
+**Refs**: OWASP LLM01:2025 (Prompt Injection), OWASP LLM02:2025 (Insecure Output Handling), CWE-74
 
 ---
 
@@ -1234,7 +1337,7 @@ def insert_object(collection, content):
 - [Weaviate Security Documentation](https://weaviate.io/developers/weaviate/configuration/authentication)
 - [Weaviate Multi-Tenancy Guide](https://weaviate.io/developers/weaviate/concepts/data#multi-tenancy)
 - [OWASP Top 10 2025](https://owasp.org/Top10/)
-- [OWASP LLM Top 10](https://owasp.org/www-project-machine-learning-security-top-10/)
+- [OWASP LLM Top 10:2025](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 - [Weaviate GraphQL API Security](https://weaviate.io/developers/weaviate/api/graphql)
 - [Vector Store Security Core Rules](../../_core/vector-store-security.md)
 

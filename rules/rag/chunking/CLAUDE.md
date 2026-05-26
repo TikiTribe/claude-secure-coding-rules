@@ -6,7 +6,7 @@ Security rules for text chunking in RAG pipelines: RecursiveCharacterTextSplitte
 
 **Scope**: Text chunking and splitting for RAG systems
 **Tools**: LangChain splitters, tiktoken, spaCy, NLTK, SemanticChunker
-**Risks**: Resource exhaustion, boundary injection, token overflow, entity leakage
+**Risks**: Resource exhaustion, boundary injection, token overflow, entity leakage, cross-domain chunk leakage, PII exposure before embedding
 
 ---
 
@@ -62,6 +62,273 @@ def create_splitter(chunk_size, chunk_overlap):
 
 ---
 
+## Rule: Cross-Security-Domain Chunk Boundaries
+
+**Level**: `strict`
+
+**When**: Chunking a corpus that contains documents with different access-control classifications (e.g., public, internal, confidential). Applies to all splitter types.
+
+**Do**:
+```python
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import List
+from langchain.schema import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import logging
+
+class AccessTier(IntEnum):
+    PUBLIC = 0
+    INTERNAL = 1
+    CONFIDENTIAL = 2
+    RESTRICTED = 3
+
+@dataclass
+class ClassifiedDocument:
+    doc: Document
+    tier: AccessTier
+
+def chunk_classified_corpus(
+    classified_docs: List[ClassifiedDocument],
+    splitter: RecursiveCharacterTextSplitter,
+) -> List[Document]:
+    """
+    Chunk each document independently so a fixed-size split never merges
+    content from different access tiers into a single chunk.
+    """
+    all_chunks: List[Document] = []
+
+    for classified in classified_docs:
+        # Split each document in isolation — never concatenate before splitting
+        doc_chunks = splitter.split_documents([classified.doc])
+
+        for chunk in doc_chunks:
+            # Stamp every chunk with the source document's access tier
+            chunk.metadata["access_tier"] = classified.tier.name
+            chunk.metadata["access_tier_value"] = int(classified.tier)
+        all_chunks.extend(doc_chunks)
+
+    return all_chunks
+
+def assert_no_cross_domain_chunks(chunks: List[Document]) -> None:
+    """
+    Guard: verify that every chunk carries exactly one access tier
+    and that no chunk metadata is missing a tier tag.
+    Call this after chunking, before embedding.
+    """
+    for i, chunk in enumerate(chunks):
+        tier = chunk.metadata.get("access_tier")
+        if tier is None:
+            raise ValueError(
+                f"Chunk {i} is missing access_tier metadata — "
+                "reject the batch until provenance is established."
+            )
+    logging.info(
+        "Cross-domain boundary check passed: all %d chunks carry access_tier.",
+        len(chunks),
+    )
+```
+
+**Don't**:
+```python
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# VULNERABLE: concatenating documents from different tiers before splitting
+# causes a fixed-size window to straddle the classification boundary,
+# copying confidential text into the public chunk's overlap region.
+def chunk_corpus(docs):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    combined_text = "\n\n".join(d.page_content for d in docs)  # tiers mixed
+    return splitter.split_text(combined_text)  # no tier tag, no boundary guard
+```
+
+**Why**: When documents with different access classifications are concatenated before splitting, a fixed-size chunk window can span the boundary and include confidential text in a chunk later retrieved by a lower-privileged query. Splitting each document independently and tagging every chunk with its source tier prevents cross-domain leakage and enables retrieval-time access filtering.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-200 (Exposure of Sensitive Information), OWASP LLM01:2025 (Prompt Injection / Data Leakage)
+
+---
+
+## Rule: Overlap-Domain Isolation
+
+**Level**: `strict`
+
+**When**: Configuring chunk overlap on any splitter used against a multi-tier corpus.
+
+**Do**:
+```python
+from typing import List
+from langchain.schema import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import logging
+
+def create_tier_aware_splitter(
+    chunk_size: int,
+    chunk_overlap: int,
+) -> RecursiveCharacterTextSplitter:
+    """
+    Return a splitter configured for single-document isolation.
+    Overlap is safe only when the splitter never sees content from
+    two different access tiers in the same split() call.
+    """
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be in [0, chunk_size).")
+    return RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        is_separator_regex=False,
+    )
+
+def validate_overlap_boundaries(chunks: List[Document]) -> None:
+    """
+    Detect overlap leakage: if two consecutive chunks carry different
+    access_tier values, their shared overlap window crossed a classification
+    boundary. This should never happen when documents are split in isolation,
+    but serves as a defence-in-depth check.
+    """
+    for i in range(1, len(chunks)):
+        prev_tier = chunks[i - 1].metadata.get("access_tier_value")
+        curr_tier = chunks[i].metadata.get("access_tier_value")
+        if prev_tier is not None and curr_tier is not None and prev_tier != curr_tier:
+            raise ValueError(
+                f"Overlap boundary violation between chunk {i - 1} "
+                f"(tier={prev_tier}) and chunk {i} (tier={curr_tier}). "
+                "Consecutive chunks with different tiers indicate the splitter "
+                "was called on a mixed-tier input."
+            )
+    logging.info("Overlap boundary validation passed for %d chunks.", len(chunks))
+```
+
+**Don't**:
+```python
+# VULNERABLE: overlap is validated only for size, not for content classification.
+# A 200-char overlap at a confidential/public boundary copies confidential
+# text into the adjacent public chunk.
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+chunks = splitter.split_documents(mixed_tier_docs)  # no boundary check
+```
+
+**Why**: Overlap is designed to preserve context across chunk boundaries. When the corpus mixes sensitivity tiers, overlap mechanically copies content from one tier into an adjacent chunk of a different tier. That content is then embedded and indexed under the lower-privileged tier, making it retrievable without the required access level. Splitting per document and validating consecutive chunk tiers closes this vector.
+
+**Refs**: CWE-284 (Improper Access Control), CWE-200 (Exposure of Sensitive Information), NIST AI RMF (Govern 1.7 — data access controls)
+
+---
+
+## Rule: Pre-Embedding PII Scan
+
+**Level**: `strict`
+
+**When**: Any chunking pipeline — RecursiveCharacterTextSplitter, SemanticChunker, NER-based, or custom — before chunks are passed to an embedding model. This rule applies regardless of whether NER chunking is used.
+
+**Do**:
+```python
+import re
+import logging
+from typing import List
+from langchain.schema import Document
+
+# Install: pip install presidio-analyzer presidio-anonymizer
+# Presidio is the recommended scanner; regex fallback is provided for environments
+# where the spaCy model download is restricted.
+try:
+    from presidio_analyzer import AnalyzerEngine
+    from presidio_anonymizer import AnonymizerEngine
+    _PRESIDIO_AVAILABLE = True
+except ImportError:
+    _PRESIDIO_AVAILABLE = False
+
+# Regex fallback patterns for common PII types
+_PII_PATTERNS = [
+    (re.compile(r'\b\d{3}-\d{2}-\d{4}\b'), "SSN"),
+    (re.compile(r'\b(?:\d[ -]?){13,16}\b'), "CREDIT_CARD"),
+    (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), "EMAIL"),
+    (re.compile(r'\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'), "PHONE"),
+]
+
+class PIIDetectedError(Exception):
+    pass
+
+def scan_chunk_for_pii(
+    chunk: Document,
+    redact: bool = True,
+    raise_on_detection: bool = False,
+    language: str = "en",
+) -> Document:
+    """
+    Scan a single chunk for PII before it reaches the embedding model.
+    Works with RecursiveCharacter, SemanticChunker, and NER-based splits.
+
+    Args:
+        chunk: The Document chunk to scan.
+        redact: Replace detected PII with type placeholders when True.
+        raise_on_detection: Raise PIIDetectedError instead of redacting.
+        language: Language hint for Presidio.
+    Returns:
+        A Document with PII redacted (or the original if none found).
+    """
+    text = chunk.page_content
+    detections: List[str] = []
+
+    if _PRESIDIO_AVAILABLE:
+        analyzer = AnalyzerEngine()
+        anonymizer = AnonymizerEngine()
+        results = analyzer.analyze(text=text, language=language)
+        if results:
+            detections = [r.entity_type for r in results]
+            if raise_on_detection:
+                raise PIIDetectedError(f"PII detected before embedding: {detections}")
+            if redact:
+                anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+                text = anonymized.text
+    else:
+        # Regex fallback — lower recall; use only when Presidio is unavailable
+        for pattern, label in _PII_PATTERNS:
+            if pattern.search(text):
+                detections.append(label)
+                if raise_on_detection:
+                    raise PIIDetectedError(f"PII detected before embedding: {detections}")
+                if redact:
+                    text = pattern.sub(f"[{label}]", text)
+
+    if detections:
+        logging.warning(
+            "PII types detected in chunk (source=%s): %s",
+            chunk.metadata.get("source", "unknown"),
+            detections,
+        )
+        chunk.metadata["pii_detected"] = detections
+
+    return Document(page_content=text, metadata=chunk.metadata)
+
+def scan_chunks_for_pii(
+    chunks: List[Document],
+    redact: bool = True,
+    raise_on_detection: bool = False,
+) -> List[Document]:
+    """Apply PII scan to every chunk regardless of the splitter used."""
+    return [
+        scan_chunk_for_pii(c, redact=redact, raise_on_detection=raise_on_detection)
+        for c in chunks
+    ]
+```
+
+**Don't**:
+```python
+# VULNERABLE: PII scan only runs inside the NER chunking path.
+# RecursiveCharacterTextSplitter and SemanticChunker outputs go directly
+# to the embedding model, embedding raw SSNs, emails, and card numbers
+# into the vector store.
+def embed_chunks(chunks):
+    from langchain_openai import OpenAIEmbeddings
+    embeddings = OpenAIEmbeddings()
+    return embeddings.embed_documents([c.page_content for c in chunks])
+```
+
+**Why**: NER-based redaction inside the NER chunking rule covers only one code path. Documents processed by RecursiveCharacterTextSplitter or SemanticChunker bypass that control entirely. PII embedded into a vector store is difficult to remove (requires re-indexing), may violate GDPR/CCPA retention limits, and can surface in responses to unrelated queries. A universal pre-embedding scan closes the gap across all splitter paths.
+
+**Refs**: CWE-359 (Exposure of Private Personal Information), OWASP LLM01:2025 (Prompt Injection / Data Leakage), NIST SP 800-188 (De-identifying Government Datasets), GDPR Article 25 (Data Protection by Design)
+
+---
+
 ## Rule: Boundary Injection Detection
 
 **Level**: `warning`
@@ -114,7 +381,7 @@ def chunk_document(text):
 
 **Why**: Attackers can manipulate chunk boundaries to place prompt injection payloads at the start of chunks (where they're most effective), split security-relevant content across chunks to evade detection, or cause specific content to be isolated or combined.
 
-**Refs**: CWE-20 (Improper Input Validation), OWASP LLM01 (Prompt Injection)
+**Refs**: CWE-20 (Improper Input Validation), OWASP LLM01:2025 (Prompt Injection)
 
 ---
 
@@ -194,7 +461,7 @@ def count_tokens(text, model_name):
 **Do**:
 ```python
 import spacy
-from typing import List, Set
+from typing import List
 
 # Resource limits
 MAX_DOC_LENGTH = 100_000  # Characters
@@ -261,9 +528,9 @@ def chunk_with_ner(text, model_name):
     return chunks
 ```
 
-**Why**: NLP models are computationally expensive; unbounded input causes DoS. Entity extraction can leak PII (names, locations, organizations) into vector stores where it's harder to delete. Arbitrary model loading can execute malicious pickled code.
+**Why**: NLP models are computationally expensive; unbounded input causes DoS. Entity extraction can leak PII (names, locations, organizations) into vector stores where it's harder to delete. Arbitrary model loading can execute malicious pickled code. This rule covers only the NER path; apply the Pre-Embedding PII Scan rule to all other splitter paths as well.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-502 (Deserialization of Untrusted Data)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-502 (Deserialization of Untrusted Data), CWE-359 (Exposure of Private Personal Information)
 
 ---
 
@@ -275,6 +542,9 @@ def chunk_with_ner(text, model_name):
 
 **Do**:
 ```python
+# langchain-experimental is deprecated in LangChain v0.3+ (2024).
+# Pin langchain-experimental to a known-good version and monitor the
+# langchain-text-splitters package for a stable promoted replacement.
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_openai import OpenAIEmbeddings
 
@@ -346,7 +616,7 @@ def semantic_chunk(text, model_name, threshold):
     return chunker.split_text(text)
 ```
 
-**Why**: Semantic chunking uses embeddings which have cost implications. Manipulated thresholds can create extremely large or small chunks. Arbitrary embedding models may have different dimension sizes causing downstream errors or unexpected behavior.
+**Why**: Semantic chunking uses embeddings which have cost implications. Manipulated thresholds can create extremely large or small chunks. Arbitrary embedding models may have different dimension sizes causing downstream errors or unexpected behavior. Outputs from this path must pass through the Pre-Embedding PII Scan rule before embedding.
 
 **Refs**: CWE-20 (Improper Input Validation), CWE-400 (Uncontrolled Resource Consumption)
 
@@ -514,15 +784,24 @@ Before deploying a chunking pipeline:
 - [ ] Chunk count limits prevent resource exhaustion
 - [ ] Provenance metadata is preserved through chunking
 - [ ] Boundary injection patterns are detected
-- [ ] Sensitive entities are redacted or flagged
+- [ ] Sensitive entities are redacted or flagged (NER path)
 - [ ] Chunk integrity can be verified
+- [ ] Every chunk carries an access_tier tag before entering the vector store
+- [ ] Overlap windows are never allowed to cross access-control tier boundaries
+- [ ] Pre-embedding PII scan runs on all chunks regardless of splitter type
+- [ ] Markdown code-block boundaries are respected as hard split points to prevent code leakage across chunks
 
 ## References
 
 - CWE-20: Improper Input Validation
+- CWE-200: Exposure of Sensitive Information
+- CWE-284: Improper Access Control
+- CWE-359: Exposure of Private Personal Information
 - CWE-400: Uncontrolled Resource Consumption
 - CWE-502: Deserialization of Untrusted Data
 - CWE-770: Allocation of Resources Without Limits
 - CWE-778: Insufficient Logging
-- OWASP LLM01: Prompt Injection
+- OWASP LLM01:2025: Prompt Injection / Data Leakage
 - NIST AI RMF: AI Risk Management Framework
+- NIST SP 800-188: De-identifying Government Datasets
+- GDPR Article 25: Data Protection by Design

