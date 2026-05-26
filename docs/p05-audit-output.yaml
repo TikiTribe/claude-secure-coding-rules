@@ -2060,7 +2060,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/frontend/react/CLAUDE.md
-    status: failed
+    status: passed   # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2138,10 +2138,15 @@ audited_rules:
       - npm install react@18.2.0 (line 403) pins to React 18.2.0. As of 2026, the current
         React 18 patch is higher (18.3.x). The version shown is stale. Advisory: update the
         pinned version to the current stable patch or note it is illustrative.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (React Query deprecated API): useQuery({ queryKey: ['adminData'], queryFn: fetchAdminData })
+        object-argument form used at line 289; comment "Requires @tanstack/react-query v4 or later" added.
+        Bonus: react@18.3.1 now cited in the dependency rule (replaces stale 18.2.0 pin).
     issues_filed: []
 
   - path: rules/frontend/nextjs/CLAUDE.md
-    status: failed
+    status: passed   # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2218,13 +2223,23 @@ audited_rules:
         paths rather than silently redirecting, so the vulnerability is accurate only
         for absolute external URLs supplied by an attacker. The example illustrates
         the correct vuln class but is slightly imprecise about runtime behavior.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (OWASP categories): line 140 now cites A05:2025; line 347 now cites A02:2025;
+        line 396/428 now cites A02:2025 with note that SSRF is not a standalone 2025 category.
+      - ISSUE 2 (getServerSession/authOptions): replaced with `import { auth } from '@/auth'`
+        and `const session = await auth()` throughout; comment explains Auth.js v5 import path;
+        getToken from next-auth/jwt removed from middleware example.
+      - ISSUE 3 (middleware.ts deprecated): middleware.ts block retains Next.js <=15 note; a
+        second proxy.ts block added showing Next.js 16+ `export function proxy()` pattern with
+        codemod reference.
     issues_filed:
       - ISSUE 1: OWASP 2025 category mapping errors on lines 140, 347, 396
       - ISSUE 2: getServerSession/authOptions removed in next-auth v5
       - ISSUE 3: middleware.ts file convention deprecated in Next.js 16
 
   - path: rules/frontend/angular/CLAUDE.md
-    status: failed
+    status: passed   # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2317,10 +2332,24 @@ audited_rules:
         Management rules. CWE-312 (Cleartext Storage of Sensitive Information) is more precise
         for the localStorage-token pattern. CWE-922 is accurate; CWE-312 is the NVD preferred
         child CWE. Advisory only.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (trustedHtml undefined / bypassSecurityTrustHtml in Do): trustedHtml declared as
+        class property; Do example uses sanitizer.sanitize(SecurityContext.HTML, ...) not bypass;
+        SecurityContext imported from @angular/core; Why text clarifies [innerHTML] sanitizes by
+        default and bypassSecurityTrust* disables it.
+      - ISSUE 2 (csrfService/HTTP_INTERCEPTORS not imported): replaced with functional interceptor
+        HttpInterceptorFn; CsrfService injected via inject(); registered via
+        provideHttpClient(withInterceptors([authInterceptor])) in app.config.ts; legacy class-based
+        form noted as deprecated.
+      - ISSUE 3 (CanActivate deprecated): replaced with CanActivateFn functional guard using
+        inject(); class-based form noted as legacy-compatible with deprecation notice.
+      - ISSUE 4 (*ngIf superseded): both *ngIf occurrences replaced with @if{} built-in control
+        flow blocks; note added that *ngIf remains valid for NgModule projects.
     issues_filed: []
 
   - path: rules/frontend/svelte/CLAUDE.md
-    status: failed
+    status: passed   # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2481,4 +2510,18 @@ audited_rules:
         in the template. In <script setup>, only top-level imported components are
         automatically available to the template via their identifier. This is a second
         independent reason the Do example fails at runtime.
+    issues_filed: []
+  - path: rules/languages/sql/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      8 rules audited. SQL syntax valid; dialects labeled (PostgreSQL, MySQL, SQL Server).
+      Parameterized queries shown correctly per dialect. sp_executesql with typed params
+      for MSSQL; EXECUTE USING for MySQL. SECURITY DEFINER + search_path fix present.
+      RLS demonstrated with realistic PostgreSQL policy. Least-privilege grants scoped to
+      named tables; SUPERUSER and ALL PRIVILEGES flagged as Don't. No deprecated
+      mitigations. CWE IDs all valid. OWASP refs use 2025 numbering throughout.
+      Minor note: pg_write_file removed in PG15, but the REVOKE is defensive and harmless.
+      No defects found.
     issues_filed: []
