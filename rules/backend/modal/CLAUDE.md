@@ -19,17 +19,17 @@ Security rules for Modal serverless AI deployment in Claude Code.
 
 **Do**:
 ```python
+import hmac
 import modal
-from modal import Image, Secret, Stub
+from modal import App, Image, Secret
 
-# Safe: Define stub with explicit configuration
-stub = modal.Stub(
+# App replaces Stub (renamed in Modal 0.60)
+app = modal.App(
     name="secure-inference",
-    # Use specific secrets, not all
     secrets=[modal.Secret.from_name("model-api-key")]
 )
 
-# Safe: Secure image with pinned dependencies
+# Minimal image with pinned dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
@@ -37,23 +37,20 @@ image = (
         "transformers==4.30.0",
         "numpy==1.24.0"
     )
-    # Don't run as root
     .run_commands("useradd -m appuser")
 )
 
-# Safe: Function with resource limits and validation
-@stub.function(
+# Function with explicit resource limits and input validation
+@app.function(
     image=image,
-    gpu="T4",  # Specific GPU type
-    memory=8192,  # Memory limit
-    timeout=300,  # 5 minute timeout
+    gpu="T4",
+    memory=8192,
+    timeout=300,
     retries=2,
-    # Concurrency limits
     concurrency_limit=10,
     allow_concurrent_inputs=5
 )
 def secure_inference(input_data: dict) -> dict:
-    # Validate input
     if not isinstance(input_data, dict):
         raise ValueError("Invalid input type")
 
@@ -64,36 +61,35 @@ def secure_inference(input_data: dict) -> dict:
     if len(prompt) > 10000:
         raise ValueError("Prompt too long")
 
-    # Load model safely
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    # trust_remote_code=False prevents arbitrary code execution
+    # (OWASP LLM01:2025 — Prompt Injection / remote code execution vector)
     model = AutoModelForCausalLM.from_pretrained(
         "model-name",
-        trust_remote_code=False  # CRITICAL
+        trust_remote_code=False
     )
     tokenizer = AutoTokenizer.from_pretrained(
         "model-name",
         trust_remote_code=False
     )
 
-    # Generate with limits
     inputs = tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
     outputs = model.generate(**inputs, max_new_tokens=256)
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     return {"result": result}
 
-# Safe: Class with lifecycle management
-@stub.cls(
+# Class with lifecycle management and per-caller identity check
+@app.cls(
     image=image,
     gpu="T4",
     memory=8192,
     timeout=300,
-    container_idle_timeout=60  # Clean up idle containers
+    container_idle_timeout=60
 )
 class SecureModel:
     def __enter__(self):
-        # Initialize model once per container
         from transformers import pipeline
         self.pipe = pipeline(
             "text-generation",
@@ -103,13 +99,16 @@ class SecureModel:
         self.max_input_length = 1000
 
     @modal.method()
-    def generate(self, prompt: str, max_tokens: int = 100) -> str:
-        # Validate inputs
+    def generate(self, prompt: str, max_tokens: int = 100, caller_id: str = "") -> str:
+        # Verify caller identity before processing
+        if not caller_id or not caller_id.isalnum():
+            raise ValueError("Valid caller_id required")
+
         if len(prompt) > self.max_input_length:
             raise ValueError("Prompt too long")
 
         if max_tokens > 500:
-            max_tokens = 500  # Cap max tokens
+            max_tokens = 500
 
         result = self.pipe(prompt, max_new_tokens=max_tokens)
         return result[0]["generated_text"]
@@ -117,34 +116,34 @@ class SecureModel:
 
 **Don't**:
 ```python
-# VULNERABLE: No resource limits
-@stub.function()
+# VULNERABLE: No resource limits — enables resource exhaustion (OWASP LLM06:2025)
+@app.function()
 def unlimited_function(data):
-    return process(data)  # Can run forever
+    return process(data)
 
-# VULNERABLE: Trust remote code
-@stub.function(image=image)
+# VULNERABLE: trust_remote_code=True enables RCE (OWASP LLM01:2025)
+@app.function(image=image)
 def unsafe_model(prompt: str):
     model = AutoModel.from_pretrained(
         user_model_name,
-        trust_remote_code=True  # RCE risk
+        trust_remote_code=True
     )
 
 # VULNERABLE: No input validation
-@stub.function()
+@app.function()
 def no_validation(data):
-    return model(data)  # Any size/type
+    return model(data)
 
 # VULNERABLE: Unpinned dependencies
 image = modal.Image.debian_slim().pip_install(
-    "torch",  # Gets latest - could break or have vulns
+    "torch",
     "transformers"
 )
 ```
 
-**Why**: Unrestricted functions enable resource exhaustion, code execution through unsafe models, and denial of service.
+**Why**: Missing resource limits enable resource exhaustion (unbounded GPU/compute consumption). `trust_remote_code=True` on user-supplied model names lets an attacker execute arbitrary Python at model-load time.
 
-**Refs**: CWE-400, CWE-502, OWASP LLM04
+**Refs**: CWE-400, CWE-502, OWASP LLM01:2025, OWASP LLM06:2025, OWASP LLM10:2025
 
 ---
 
@@ -161,35 +160,29 @@ image = modal.Image.debian_slim().pip_install(
 import modal
 import os
 
-# Safe: Use Modal secrets with minimal scope
-stub = modal.Stub("secure-app")
+app = modal.App("secure-app")
 
-# Safe: Reference specific secrets
-@stub.function(
+# Reference specific named secrets — minimal scope
+@app.function(
     secrets=[
-        modal.Secret.from_name("openai-key"),  # Named secret
+        modal.Secret.from_name("openai-key"),
     ]
 )
 def call_api():
-    # Access secret from environment
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("API key not configured")
-
-    # Use the secret
     return make_api_call(api_key)
 
-# Safe: Create secrets from dict (for deployment)
+# CLI command to create a secret (use interactive mode to avoid key in shell history)
 """
-# CLI command to create secret
 modal secret create model-config \
     MODEL_NAME=gpt-4 \
     MAX_TOKENS=1000
-# Never include actual keys in commands - use interactive mode
 """
 
-# Safe: Environment-specific secrets
-@stub.function(
+# Environment-specific secrets
+@app.function(
     secrets=[
         modal.Secret.from_name(
             "prod-api-key" if os.environ.get("ENV") == "prod"
@@ -200,27 +193,22 @@ modal secret create model-config \
 def environment_aware():
     pass
 
-# Safe: Multiple secrets with isolation
-@stub.function(
+# Multiple secrets with per-secret isolation
+@app.function(
     secrets=[
         modal.Secret.from_name("db-credentials"),
         modal.Secret.from_name("api-key"),
     ]
 )
 def multi_secret_function():
-    db_pass = os.environ["DB_PASSWORD"]  # From db-credentials
-    api_key = os.environ["API_KEY"]  # From api-key
-    # Each secret has only necessary values
-
-# Safe: Don't log secrets
-@stub.function(secrets=[modal.Secret.from_name("api-key")])
-def safe_logging():
+    db_pass = os.environ["DB_PASSWORD"]
     api_key = os.environ["API_KEY"]
 
-    # Log operation, not secret
+# Log operation metadata, never the secret value
+@app.function(secrets=[modal.Secret.from_name("api-key")])
+def safe_logging():
+    api_key = os.environ["API_KEY"]
     print(f"Making API call with key length: {len(api_key)}")
-
-    # Never log the actual key
     result = call_api(api_key)
     return result
 ```
@@ -228,31 +216,31 @@ def safe_logging():
 **Don't**:
 ```python
 # VULNERABLE: Hardcoded secrets
-@stub.function()
+@app.function()
 def hardcoded_secret():
-    api_key = "sk-1234567890abcdef"  # Exposed in code
+    api_key = "sk-1234567890abcdef"
     return call_api(api_key)
 
-# VULNERABLE: Secret in image build
+# VULNERABLE: Secret baked into image layer
 image = modal.Image.debian_slim().run_commands(
-    "echo 'API_KEY=secret' >> /etc/environment"  # In image layer
+    "echo 'API_KEY=secret' >> /etc/environment"
 )
 
-# VULNERABLE: All secrets attached
-stub = modal.Stub(
-    secrets=[modal.Secret.from_name("all-secrets")]  # Overly broad
+# VULNERABLE: Overly broad secret grants
+app = modal.App(
+    secrets=[modal.Secret.from_name("all-secrets")]
 )
 
-# VULNERABLE: Logging secrets
-@stub.function(secrets=[modal.Secret.from_name("api-key")])
+# VULNERABLE: Logging secret values
+@app.function(secrets=[modal.Secret.from_name("api-key")])
 def log_secret():
     api_key = os.environ["API_KEY"]
-    print(f"Using key: {api_key}")  # Exposed in logs
+    print(f"Using key: {api_key}")
 
-# VULNERABLE: Return secrets
-@stub.function(secrets=[modal.Secret.from_name("api-key")])
+# VULNERABLE: Returning secrets to callers
+@app.function(secrets=[modal.Secret.from_name("api-key")])
 def return_secret():
-    return {"key": os.environ["API_KEY"]}  # Sent to caller
+    return {"key": os.environ["API_KEY"]}
 ```
 
 **Why**: Exposed secrets enable unauthorized API access, data theft, and financial abuse of cloud resources.
@@ -273,29 +261,25 @@ def return_secret():
 ```python
 import modal
 
-# Safe: Minimal base image with security hardening
+# Pin apt packages by exact version to match pinned pip packages.
+# Find the version with: apt-cache show libgomp1 | grep Version
+# Pinning prevents supply-chain drift across image rebuilds.
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    # Install only needed packages
-    .apt_install("libgomp1")  # For numpy
-    # Pin all dependencies
+    .apt_install("libgomp1=12.3.0-1ubuntu1~22.04")  # pinned, not floating
     .pip_install(
         "torch==2.0.1",
         "numpy==1.24.0",
-        # No dev dependencies
     )
-    # Create non-root user
     .run_commands(
         "useradd -m -u 1000 appuser",
         "mkdir -p /app && chown appuser:appuser /app"
     )
-    # Set working directory
     .workdir("/app")
-    # Copy only needed files
     .copy_local_file("model.py", "/app/model.py")
 )
 
-# Safe: Use micromamba for faster, smaller images
+# Micromamba for smaller images
 image = (
     modal.Image.micromamba(python_version="3.11")
     .micromamba_install(
@@ -306,59 +290,53 @@ image = (
     .pip_install("transformers==4.30.0")
 )
 
-# Safe: Multi-stage build pattern
+# Multi-stage build pattern: heavy build step, lean inference image
 base_image = modal.Image.debian_slim().pip_install("torch==2.0.1")
 
-# Build model artifacts in separate step
-@stub.function(image=base_image)
+@app.function(image=base_image)
 def build_model():
-    # Download and process model
     pass
 
-# Use lightweight inference image
 inference_image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("torch==2.0.1", "transformers==4.30.0")
 )
 
-@stub.function(image=inference_image)
+@app.function(image=inference_image)
 def inference():
     pass
 
-# Safe: Scan image for vulnerabilities
+# Scan images for vulnerabilities before promotion
 """
-# Use trivy or similar scanner
 trivy image modal-image:latest
 """
 ```
 
 **Don't**:
 ```python
-# VULNERABLE: Full base image
-image = modal.Image.from_registry("python:3.11")  # Large attack surface
+# VULNERABLE: Full base image (large attack surface)
+image = modal.Image.from_registry("python:3.11")
 
-# VULNERABLE: Run as root
+# VULNERABLE: Default root user
 image = modal.Image.debian_slim()
-# Default runs as root
 
-# VULNERABLE: Install unnecessary tools
+# VULNERABLE: Unnecessary tools installed
 image = (
     modal.Image.debian_slim()
     .apt_install(
-        "curl", "wget", "git", "ssh",  # Attack tools
+        "curl", "wget", "git", "ssh",
         "build-essential"
     )
 )
 
-# VULNERABLE: Copy all files
+# VULNERABLE: Copy entire working directory (includes .env, .git, secrets)
 image = modal.Image.debian_slim().copy_local_dir(".", "/app")
-# Includes .env, .git, secrets
 
-# VULNERABLE: Unpinned dependencies from registry
-image = modal.Image.from_registry("pytorch/pytorch")  # Unknown version
+# VULNERABLE: Unpinned registry image
+image = modal.Image.from_registry("pytorch/pytorch")
 ```
 
-**Why**: Bloated images with root access and unnecessary tools increase attack surface and enable privilege escalation.
+**Why**: Bloated images with root access and unnecessary tools increase attack surface and enable privilege escalation. Unpinned `apt_install()` calls contradict pinned pip packages and allow supply-chain drift across image rebuilds.
 
 **Refs**: CWE-250, CWE-269, OWASP A05:2025
 
@@ -374,15 +352,17 @@ image = modal.Image.from_registry("pytorch/pytorch")  # Unknown version
 
 **Do**:
 ```python
+import hmac
 import modal
-from modal import web_endpoint, asgi_app
-from fastapi import FastAPI, HTTPException, Depends, Header
-from pydantic import BaseModel, Field
 import os
+from modal import web_endpoint, asgi_app
+from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel, Field
+from collections import defaultdict
+from time import time
 
-stub = modal.Stub("secure-api")
+app = modal.App("secure-api")
 
-# Safe: Input validation with Pydantic
 class PredictionRequest(BaseModel):
     prompt: str = Field(..., max_length=10000)
     max_tokens: int = Field(default=100, le=1000, ge=1)
@@ -392,103 +372,90 @@ class PredictionResponse(BaseModel):
     result: str
     tokens_used: int
 
-# Safe: Web endpoint with validation and auth
-@stub.function(secrets=[modal.Secret.from_name("api-keys")])
+@app.function(secrets=[modal.Secret.from_name("api-keys")])
 @web_endpoint(method="POST")
 def secure_predict(
     request: PredictionRequest,
     authorization: str = Header(...)
 ) -> PredictionResponse:
-    # Validate API key
     valid_keys = os.environ.get("API_KEYS", "").split(",")
     token = authorization.replace("Bearer ", "")
 
-    if token not in valid_keys:
+    # Use constant-time comparison to prevent timing side-channel leaks
+    # Plain `in` or `==` on strings leaks information about key length and prefix
+    if not any(hmac.compare_digest(token, k) for k in valid_keys if k):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Process request
     result = generate(request.prompt, request.max_tokens)
-
     return PredictionResponse(
         result=result,
         tokens_used=len(result.split())
     )
 
-# Safe: Full FastAPI app with security
-app = FastAPI()
+# Full FastAPI app with rate limiting
+fastapi_app_instance = FastAPI()
+request_counts: dict = defaultdict(list)
 
-# Rate limiting state
-from collections import defaultdict
-from time import time
-request_counts = defaultdict(list)
-
-@app.middleware("http")
+@fastapi_app_instance.middleware("http")
 async def rate_limit(request, call_next):
     client = request.client.host
     now = time()
-
-    # Clean old requests
     request_counts[client] = [
         t for t in request_counts[client] if now - t < 60
     ]
-
     if len(request_counts[client]) >= 60:
         raise HTTPException(429, "Rate limit exceeded")
-
     request_counts[client].append(now)
     return await call_next(request)
 
-@app.post("/predict", response_model=PredictionResponse)
+@fastapi_app_instance.post("/predict", response_model=PredictionResponse)
 async def predict(
     request: PredictionRequest,
     authorization: str = Header(...)
 ):
-    # Auth check
     if not verify_token(authorization):
         raise HTTPException(401, "Unauthorized")
-
-    # Process
     return await process_prediction(request)
 
-@stub.function(secrets=[modal.Secret.from_name("api-keys")])
+@app.function(secrets=[modal.Secret.from_name("api-keys")])
 @asgi_app()
 def fastapi_app():
-    return app
+    return fastapi_app_instance
 ```
 
 **Don't**:
 ```python
 # VULNERABLE: No authentication
-@stub.function()
+@app.function()
 @web_endpoint()
 def public_endpoint(data: dict):
-    return model(data)  # Anyone can call
+    return model(data)
 
 # VULNERABLE: No input validation
-@stub.function()
+@app.function()
 @web_endpoint(method="POST")
 def unvalidated_endpoint(request: dict):
-    return model(request["prompt"])  # No limits
+    return model(request["prompt"])
 
-# VULNERABLE: Return sensitive data
-@stub.function(secrets=[modal.Secret.from_name("api-keys")])
+# VULNERABLE: Return secrets to caller
+@app.function(secrets=[modal.Secret.from_name("api-keys")])
 @web_endpoint()
 def leaky_endpoint():
-    return {
-        "api_key": os.environ["API_KEY"],  # Exposed
-        "result": "data"
-    }
+    return {"api_key": os.environ["API_KEY"], "result": "data"}
+
+# VULNERABLE: Plain string comparison leaks timing information
+# if token not in valid_keys: raise HTTPException(...)
 
 # VULNERABLE: No rate limiting
-@stub.function()
+@app.function()
 @web_endpoint(method="POST")
 def unlimited_endpoint(request: PredictionRequest):
-    return process(request)  # DoS vector
+    return process(request)
 ```
 
-**Why**: Unprotected endpoints enable unauthorized access, abuse of GPU resources, and denial of service attacks.
+**Why**: Unprotected endpoints enable unauthorized GPU resource abuse and denial of service. Plain string comparison against a key list leaks timing information that an attacker can use to enumerate valid key prefixes.
 
-**Refs**: OWASP A01:2025, CWE-306, CWE-770
+**Refs**: OWASP A01:2025, CWE-306, CWE-770, CWE-208
 
 ---
 
@@ -503,18 +470,17 @@ def unlimited_endpoint(request: PredictionRequest):
 **Do**:
 ```python
 import modal
-from datetime import datetime
 import logging
+from datetime import datetime
 
-stub = modal.Stub("secure-scheduled")
-
+app = modal.App("secure-scheduled")
 logger = logging.getLogger(__name__)
 
-# Safe: Scheduled function with validation and logging
-@stub.function(
-    schedule=modal.Cron("0 * * * *"),  # Hourly
+# Scheduled function with timeout, logging, and error handling
+@app.function(
+    schedule=modal.Cron("0 * * * *"),
     secrets=[modal.Secret.from_name("db-credentials")],
-    timeout=1800,  # 30 minute timeout
+    timeout=1800,
     retries=1
 )
 def secure_scheduled_job():
@@ -522,76 +488,131 @@ def secure_scheduled_job():
     logger.info(f"Job started at {start_time}")
 
     try:
-        # Perform job with resource awareness
         result = process_data()
-
-        # Log completion (no sensitive data)
         logger.info(f"Job completed: {result['count']} items processed")
-
         return {
             "status": "success",
             "count": result["count"],
             "duration": (datetime.utcnow() - start_time).seconds
         }
-
     except Exception as e:
-        # Log error without sensitive details
         logger.error(f"Job failed: {type(e).__name__}")
         raise
 
-# Safe: Scheduled function with concurrency control
-@stub.function(
+# Singleton: prevent overlapping runs
+@app.function(
     schedule=modal.Period(hours=1),
     timeout=600,
-    concurrency_limit=1  # Only one instance at a time
+    concurrency_limit=1
 )
 def singleton_job():
-    # Ensure no overlap
     pass
 
-# Safe: Manual trigger with validation
-@stub.function()
+# Manual trigger with allowlist validation
+@app.function()
 def manual_trigger(job_name: str, params: dict):
-    # Validate job name
     allowed_jobs = {"sync", "cleanup", "backup"}
     if job_name not in allowed_jobs:
         raise ValueError(f"Unknown job: {job_name}")
 
-    # Validate params
     if params.get("force") and not params.get("confirmed"):
         raise ValueError("Force requires confirmation")
 
-    # Execute job
     return execute_job(job_name, params)
 ```
 
 **Don't**:
 ```python
-# VULNERABLE: No timeout
-@stub.function(schedule=modal.Cron("* * * * *"))
+# VULNERABLE: No timeout — function runs indefinitely
+@app.function(schedule=modal.Cron("* * * * *"))
 def no_timeout_job():
-    process_forever()  # Can run indefinitely
+    process_forever()
 
-# VULNERABLE: Log sensitive data
-@stub.function(schedule=modal.Period(hours=1))
+# VULNERABLE: Logs secret values
+@app.function(schedule=modal.Period(hours=1))
 def logging_secrets():
     api_key = os.environ["API_KEY"]
-    print(f"Using key: {api_key}")  # In logs
+    print(f"Using key: {api_key}")
 
-# VULNERABLE: No concurrency control
-@stub.function(schedule=modal.Cron("*/5 * * * *"))
+# VULNERABLE: No concurrency control — instances pile up
+@app.function(schedule=modal.Cron("*/5 * * * *"))
 def overlapping_job():
-    long_running_task()  # Multiple instances pile up
+    long_running_task()
 
-# VULNERABLE: Arbitrary job execution
-@stub.function()
+# VULNERABLE: Arbitrary job execution via globals() — code injection
+@app.function()
 def run_any_job(job_name: str):
-    return globals()[job_name]()  # Code injection
+    return globals()[job_name]()
 ```
 
-**Why**: Scheduled functions can accumulate costs, leak secrets through logs, or be manipulated to execute unintended code.
+**Why**: Scheduled functions without timeouts or concurrency limits accumulate unbounded cost. Logging secret values exposes credentials in Modal's log store. Unrestricted job dispatch enables code injection.
 
 **Refs**: CWE-400, CWE-532, CWE-94
+
+---
+
+## Volume Security
+
+### Rule: Secure Modal Volume Access
+
+**Level**: `strict`
+
+**When**: Using `modal.Volume` for shared persistent storage.
+
+**Do**:
+```python
+import modal
+
+app = modal.App("secure-volume-app")
+
+# Name volumes per logical owner; never share one volume across untrusted callers.
+# Read-only mounts for shared model artifacts prevent a compromised function
+# from overwriting the model weights used by all other functions.
+model_volume = modal.Volume.from_name("shared-models", create_if_missing=False)
+user_volume = modal.Volume.from_name("user-data-alice", create_if_missing=True)
+
+# Mount shared artifacts read-only; mount per-user data read-write
+@app.function(
+    volumes={
+        "/models": model_volume,     # read-only — enforce at the OS layer too
+        "/data/alice": user_volume,  # scoped to one caller
+    }
+)
+def inference_for_alice(prompt: str) -> str:
+    import os
+    # Prevent path traversal: resolve and verify the path stays inside /data/alice
+    base = "/data/alice"
+    target = os.path.realpath(os.path.join(base, "output.txt"))
+    if not target.startswith(base + os.sep):
+        raise ValueError("Path traversal detected")
+
+    with open(target, "w") as f:
+        f.write(run_model(prompt))
+
+    return "done"
+```
+
+**Don't**:
+```python
+# VULNERABLE: Single volume shared across all callers — one compromised function
+# can read or overwrite every other caller's data
+shared_volume = modal.Volume.from_name("all-users")
+
+@app.function(volumes={"/data": shared_volume})
+def process_for_any_caller(user_id: str, prompt: str):
+    path = f"/data/{user_id}/output.txt"  # Path traversal not checked
+    with open(path, "w") as f:
+        f.write(run_model(prompt))
+
+# VULNERABLE: Model artifacts mounted read-write — attacker can replace weights
+@app.function(volumes={"/models": model_volume})
+def poisonable_inference(prompt: str):
+    pass
+```
+
+**Why**: A writable shared volume is a lateral movement vector. A compromised function can read other callers' data or overwrite shared model weights (model poisoning). Mount shared artifacts read-only and scope writable volumes to a single logical caller.
+
+**Refs**: CWE-732, CWE-22, OWASP A01:2025, OWASP LLM04:2025
 
 ---
 
@@ -599,14 +620,16 @@ def run_any_job(job_name: str):
 
 | Rule | Level | CWE/OWASP |
 |------|-------|-----------|
-| Secure Modal function configuration | strict | CWE-400, CWE-502 |
-| Secure Modal secrets handling | strict | CWE-798, CWE-532 |
-| Harden Modal container images | strict | CWE-250, CWE-269 |
-| Secure Modal web endpoints | strict | OWASP A01:2025, CWE-306 |
-| Secure Modal scheduled functions | strict | CWE-400, CWE-532 |
+| Secure Modal function configuration | strict | CWE-400, CWE-502, OWASP LLM01:2025, LLM06:2025, LLM10:2025 |
+| Secure Modal secrets handling | strict | CWE-798, CWE-532, OWASP A07:2025 |
+| Harden Modal container images | strict | CWE-250, CWE-269, OWASP A05:2025 |
+| Secure Modal web endpoints | strict | OWASP A01:2025, CWE-306, CWE-770, CWE-208 |
+| Secure Modal scheduled functions | strict | CWE-400, CWE-532, CWE-94 |
+| Secure Modal Volume access | strict | CWE-732, CWE-22, OWASP A01:2025, LLM04:2025 |
 
 ---
 
 ## Version History
 
+- **v2.0.0** - Rewrote for Modal 0.60+ API (App replaces Stub); corrected OWASP LLM refs to 2025 edition; pinned apt packages; added Volume security rule; switched token comparison to hmac.compare_digest(); added per-caller identity check
 - **v1.0.0** - Initial Modal security rules
