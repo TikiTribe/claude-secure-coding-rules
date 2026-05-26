@@ -233,3 +233,58 @@ sigma: 15
     skill_md_path = skill_dir / "SKILL.md"
     skill_md_path.write_text(skill_md)
     return skill_md_path
+
+
+def _build_cli_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m tools.rule_to_skill_converter",
+        description="Convert a v1 CLAUDE.md rule file into a v2 SKILL.md skill.",
+    )
+    parser.add_argument(
+        "rule_path",
+        type=Path,
+        help="Path to the v1 rule file (e.g., rules/_core/owasp-2025.md).",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output directory under which the skill directory is created.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Refuse rules not present in the audit YAML with status=passed.",
+    )
+    parser.add_argument(
+        "--audit",
+        type=Path,
+        default=None,
+        help="Path to docs/p05-audit-output.yaml. Required when --strict is set.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+    try:
+        skill_md_path = convert_rule_file(
+            rule_path=args.rule_path,
+            out_dir=args.out,
+            strict=args.strict,
+            audit_path=args.audit,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 2
+    print(skill_md_path)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main(sys.argv[1:]))
