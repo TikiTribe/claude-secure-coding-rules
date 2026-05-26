@@ -16,6 +16,7 @@ Security patterns for document parsing, chunking, and preprocessing in RAG pipel
 | Image and OCR Security | `warning` | Metadata leakage, malicious images | EXIF stripping, sanitization |
 | Metadata Sanitization | `warning` | Information disclosure | Field whitelisting |
 | Malformed Document Protection | `strict` | PDF bombs, zip bombs | Structure validation |
+| Polyglot File Detection | `advisory` | Magic-byte/extension mismatch attacks | Secondary format consistency check |
 
 ---
 
@@ -30,6 +31,7 @@ Security patterns for document parsing, chunking, and preprocessing in RAG pipel
 import magic
 import hashlib
 import os
+import zipfile
 from pathlib import Path
 from typing import BinaryIO, Optional
 from dataclasses import dataclass
@@ -71,6 +73,11 @@ class SecureDocumentUpload:
                 f"Invalid file type: {detected_mime}. "
                 f"Allowed: {self.config.allowed_mimes}"
             )
+
+        # Reject polyglot files — files valid in more than one binary format
+        # simultaneously (e.g., a JPEG/ZIP polyglot). python-magic reads only
+        # the primary magic bytes; a secondary consistency check is required.
+        self._reject_polyglots(content, detected_mime)
 
         # Generate secure filename (prevent path traversal)
         safe_filename = self._sanitize_filename(original_filename)
@@ -125,14 +132,53 @@ class SecureDocumentUpload:
         base_dir = Path(self.config.upload_dir).resolve()
         upload_path = (base_dir / filename).resolve()
 
-        # Ensure path is within upload directory
-        if not str(upload_path).startswith(str(base_dir)):
+        # Append os.sep so '/var/uploads/documents_evil/x' does not pass a
+        # prefix check against '/var/uploads/documents'. Python 3.9+ alternative:
+        # upload_path.is_relative_to(base_dir).
+        if not str(upload_path).startswith(str(base_dir) + os.sep):
             raise ValueError("Invalid upload path detected")
 
         # Create directory if needed
         upload_path.parent.mkdir(parents=True, exist_ok=True)
 
         return upload_path
+
+    @staticmethod
+    def _reject_polyglots(content: bytes, detected_mime: str) -> None:
+        """
+        Reject files that are simultaneously valid in more than one recognized
+        binary format (polyglot files).
+
+        python-magic identifies the primary format from magic bytes at the start
+        of the file. A JPEG/ZIP polyglot, for example, has JPEG magic bytes at
+        offset 0 but a valid ZIP central-directory at the end. A downstream
+        handler that trusts the MIME label and then extracts the ZIP can process
+        content the upload validator believed was a harmless image.
+
+        This check is advisory-level defense-in-depth: reject any file whose
+        primary MIME does not match the expectation implied by secondary format
+        parsers. Extend the secondary checks as your allowed_mimes list grows.
+        """
+        import io
+
+        # A file detected as non-ZIP that is also a valid ZIP is a polyglot.
+        if detected_mime != 'application/zip':
+            try:
+                if zipfile.is_zipfile(io.BytesIO(content)):
+                    raise ValueError(
+                        f"Polyglot file rejected: detected as '{detected_mime}' "
+                        "but content also parses as a valid ZIP archive."
+                    )
+            except zipfile.BadZipFile:
+                pass  # Not a ZIP — expected
+
+        # A file detected as non-PDF whose first bytes contain '%PDF-' is
+        # potentially a PDF polyglot carrying a different magic-byte disguise.
+        if detected_mime != 'application/pdf' and content[:8].lstrip().startswith(b'%PDF-'):
+            raise ValueError(
+                f"Polyglot file rejected: detected as '{detected_mime}' "
+                "but content starts with PDF header bytes."
+            )
 ```
 
 **Don't**:
@@ -150,9 +196,9 @@ def upload_document(file, filename):
     return path
 ```
 
-**Why**: Attackers can upload malicious files disguised with safe extensions, traverse directories to overwrite system files, or exhaust storage with oversized uploads. Content-based MIME detection prevents extension spoofing.
+**Why**: Attackers can upload malicious files disguised with safe extensions, traverse directories to overwrite system files, or exhaust storage with oversized uploads. Content-based MIME detection prevents extension spoofing. The `os.sep` suffix on the path prefix check prevents the `/var/uploads/documents_evil/` bypass. Polyglot detection blocks files that pass MIME validation but are also valid in a second binary format, which can be exploited by downstream handlers.
 
-**Refs**: CWE-22 (Path Traversal), CWE-434 (Unrestricted Upload), OWASP A03:2021 (Injection)
+**Refs**: CWE-22 (Path Traversal), CWE-434 (Unrestricted Upload), OWASP A03:2025 (Injection)
 
 ---
 
@@ -302,7 +348,7 @@ def parse_pdf(pdf_path):
 
 **Why**: Malicious documents can exploit parser vulnerabilities to exhaust memory (zip bombs, PDF bombs), CPU (infinite loops, complex rendering), or disk space. Subprocess isolation prevents crashes from affecting the main application.
 
-**Refs**: CWE-400 (Resource Exhaustion), CWE-770 (Allocation Without Limits), OWASP A05:2021 (Security Misconfiguration)
+**Refs**: CWE-400 (Resource Exhaustion), CWE-770 (Allocation Without Limits), OWASP A05:2025 (Security Misconfiguration)
 
 ---
 
@@ -486,7 +532,7 @@ def weak_redact(text):
 
 **Why**: Documents often contain PII that should not be stored in vector databases or exposed through RAG queries. Presidio uses NLP models and pattern matching for comprehensive detection, catching variations that simple regex misses.
 
-**Refs**: CWE-359 (Privacy Violation), GDPR Article 17 (Right to Erasure), CCPA, OWASP A01:2021 (Broken Access Control)
+**Refs**: CWE-359 (Privacy Violation), GDPR Article 17 (Right to Erasure), CCPA, OWASP A01:2025 (Broken Access Control)
 
 ---
 
@@ -858,9 +904,9 @@ def chunk_and_embed(text):
         embed_and_store(chunk)  # Malicious content embedded
 ```
 
-**Why**: Attackers can craft payloads that appear benign in individual chunks but form malicious instructions when retrieved together. Boundary analysis catches split attacks that evade single-chunk scanning.
+**Why**: Attackers can craft payloads that appear benign in individual chunks but form malicious instructions when retrieved together. Boundary analysis catches split attacks that evade single-chunk scanning. Pattern matching here is defense-in-depth; structural isolation at inference time (separate system/user roles in the message array) is the primary injection defense per OWASP LLM01:2025.
 
-**Refs**: OWASP LLM Top 10 - Prompt Injection, CWE-74 (Injection)
+**Refs**: OWASP LLM01:2025 (Prompt Injection), CWE-74 (Injection)
 
 ---
 
@@ -981,8 +1027,10 @@ class SecureOCR:
         # Remove control characters (except newline, tab)
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
 
-        # Remove potential injection sequences
-        # (These might be embedded in images as text)
+        # Remove potential injection sequences.
+        # Note: regex removal is defense-in-depth only. Structural isolation
+        # at inference time (system/user role separation) is the primary
+        # injection defense per OWASP LLM01:2025.
         dangerous_patterns = [
             r'<script[^>]*>.*?</script>',  # Script tags
             r'javascript:',  # JS URLs
@@ -1015,7 +1063,7 @@ def process_image(image_path):
 
 **Why**: Images can contain sensitive metadata (GPS coordinates, device info), be crafted to exhaust memory (decompression bombs), or contain malicious text that OCR extracts. EXIF stripping prevents metadata leakage.
 
-**Refs**: CWE-400 (Resource Exhaustion), CWE-201 (Information Exposure Through Sent Data), OWASP A05:2021
+**Refs**: CWE-400 (Resource Exhaustion), CWE-359 (Privacy Violation), OWASP A05:2025
 
 ---
 
@@ -1151,7 +1199,7 @@ def extract_metadata(pdf_path):
 
 **Why**: Document metadata often contains unintended information: author emails, internal file paths, software versions (useful for targeting vulnerabilities), and even hidden comments. Whitelisting fields and redacting PII prevents data leakage.
 
-**Refs**: CWE-200 (Information Exposure), CWE-359 (Privacy Violation), OWASP A01:2021
+**Refs**: CWE-200 (Information Exposure), CWE-359 (Privacy Violation), OWASP A01:2025
 
 ---
 
@@ -1225,15 +1273,23 @@ class MalformedDocumentDetector:
                     'risk_level': 'medium',
                 }
 
-            # Check for JavaScript (potential exploit vector)
-            has_js = False
-            for page in doc:
-                if page.get_text("dict").get("annots"):
-                    # Simplified check - real implementation would be more thorough
-                    pass
+            # Detect embedded JavaScript via pikepdf, which exposes the raw
+            # PDF object tree. /JS, /JavaScript, /OpenAction, and /AA triggers
+            # are all primary RCE vectors (CWE-78). Detection does NOT make a
+            # PDF safe to render — a True result is a rejection signal only.
+            # Strip with a dedicated sanitizer (pikepdf, Ghostscript -dSAFER)
+            # if you must preserve the document.
+            doc.close()
+            has_js = self._detect_pdf_javascript(file_path)
+            if has_js:
+                return {
+                    'safe': False,
+                    'reason': 'PDF contains JavaScript (/JS, /JavaScript, /OpenAction)',
+                    'risk_level': 'critical',
+                }
+            doc = fitz.open(file_path)  # Reopen for remaining checks
 
             # Check for excessive objects (PDF bomb indicator)
-            # Note: This is a simplified check
             xref_count = doc.xref_length()
             if xref_count > self.config.max_pdf_objects:
                 doc.close()
@@ -1339,6 +1395,93 @@ class MalformedDocumentDetector:
                 'risk_level': 'medium',
             }
 
+    @staticmethod
+    def _detect_pdf_javascript(file_path: str) -> bool:
+        """
+        Return True if the PDF contains JavaScript in any form.
+
+        Uses pikepdf to walk the raw object tree because PyMuPDF's text
+        extraction layer does not expose /AA, /OpenAction, or /JS dictionary
+        keys directly. Falls back to pypdf when pikepdf is unavailable.
+
+        Detection only. A True result means the file must be rejected or sent
+        to a sanitizer — do not attempt to strip JavaScript inline here.
+        """
+        try:
+            import pikepdf
+
+            js_keys = {'/JS', '/JavaScript'}
+            trigger_keys = {'/OpenAction', '/AA'}
+
+            with pikepdf.open(file_path) as pdf:
+                # Walk every indirect object in the xref table.
+                for objid in range(1, len(pdf.objects)):
+                    try:
+                        obj = pdf.objects[objid]
+                    except Exception:
+                        continue
+
+                    if not isinstance(obj, pikepdf.Dictionary):
+                        continue
+
+                    obj_keys = set(str(k) for k in obj.keys())
+
+                    # /JS or /JavaScript present in any dictionary
+                    if obj_keys & js_keys:
+                        return True
+
+                    # /OpenAction or /AA (automatic action) — check one level
+                    # deep for a /JS child.
+                    if obj_keys & trigger_keys:
+                        for trigger in trigger_keys:
+                            if trigger in obj:
+                                action = obj[trigger]
+                                if isinstance(action, pikepdf.Dictionary):
+                                    action_keys = set(str(k) for k in action.keys())
+                                    if action_keys & js_keys:
+                                        return True
+
+            return False
+
+        except ImportError:
+            pass  # Fall through to pypdf
+
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(file_path)
+
+            def _walk(obj, visited=None):
+                """Recursively walk PDF object tree."""
+                if visited is None:
+                    visited = set()
+                obj_id = id(obj)
+                if obj_id in visited:
+                    return False
+                visited.add(obj_id)
+
+                if isinstance(obj, dict):
+                    for key in obj:
+                        if str(key) in ('/JS', '/JavaScript'):
+                            return True
+                        if _walk(obj[key], visited):
+                            return True
+                elif isinstance(obj, list):
+                    for item in obj:
+                        if _walk(item, visited):
+                            return True
+                return False
+
+            return _walk(reader.trailer)
+
+        except ImportError:
+            # Neither pikepdf nor pypdf is available. Fail closed: treat as
+            # potentially dangerous so callers cannot silently skip the check.
+            raise RuntimeError(
+                "PDF JavaScript detection requires pikepdf or pypdf. "
+                "Install one before processing untrusted PDFs."
+            )
+
 
 # Usage example
 def safe_document_processing(file_path: str) -> Dict:
@@ -1374,6 +1517,148 @@ def process_any_document(file_path):
 **Why**: Attackers craft malicious documents that exploit parser vulnerabilities: PDF bombs with recursive page references, zip bombs with extreme compression ratios, and XML billion laughs attacks. Pre-validation prevents resource exhaustion and potential code execution.
 
 **Refs**: CWE-400 (Resource Exhaustion), CWE-611 (XXE), CWE-776 (Billion Laughs), CVE-2013-0156
+
+---
+
+## Rule: XXE Prevention in XML Parsing
+
+**Level**: `strict`
+
+**When**: Parsing XML, SVG, or DOCX body content with a Python XML parser
+
+**Do**:
+```python
+# defusedxml disables entity expansion, DTD loading, and external references
+# by default. Use it whenever you parse XML from an untrusted source.
+import defusedxml.ElementTree as ET
+
+def parse_xml_safely(xml_bytes: bytes) -> ET.Element:
+    """Parse XML with external entity resolution and DTD loading disabled."""
+    # defusedxml.ElementTree raises DefusedXmlException on any XXE attempt:
+    # entity expansion, external DTD, SYSTEM/PUBLIC entity references.
+    return ET.fromstring(xml_bytes)
+
+
+# lxml alternative — set both flags; resolve_entities alone does not block
+# network DTD fetches in all lxml versions.
+from lxml import etree
+
+def parse_xml_lxml(xml_bytes: bytes) -> etree._Element:
+    """Parse XML with lxml, hardened against XXE (CWE-611)."""
+    parser = etree.XMLParser(
+        resolve_entities=False,   # Block entity expansion
+        no_network=True,          # Block network DTD/entity fetches
+        load_dtd=False,           # Do not load inline DTDs
+    )
+    return etree.fromstring(xml_bytes, parser)
+
+
+# SVG files embedded in DOCX or uploaded directly are XML; apply the same
+# parser hardening before any attribute or element inspection.
+def parse_svg_safely(svg_bytes: bytes) -> ET.Element:
+    """Parse SVG with XXE protections. SVG is XML and carries the same risks."""
+    return ET.fromstring(svg_bytes)  # defusedxml imported above
+```
+
+**Don't**:
+```python
+import xml.etree.ElementTree as ET  # Standard library — NOT safe for untrusted input
+
+def parse_xml_unsafe(xml_bytes: bytes):
+    # xml.etree.ElementTree does not disable external entity resolution in all
+    # Python versions. On CPython < 3.8 the expat backend resolves SYSTEM
+    # entities, allowing file read and SSRF via XXE (CWE-611).
+    return ET.fromstring(xml_bytes)
+
+from lxml import etree
+
+def parse_xml_lxml_unsafe(xml_bytes: bytes):
+    # Default lxml parser resolves entities and fetches network DTDs.
+    return etree.fromstring(xml_bytes)
+```
+
+**Why**: XML external entity (XXE) injection allows attackers to read local files (`file:///etc/passwd`) or trigger server-side request forgery via crafted `SYSTEM` or `PUBLIC` entity references. DOCX, XLSX, PPTX, and SVG files are all XML and carry this risk. `defusedxml` disables all dangerous XML features by default; `lxml` requires explicit parser flags.
+
+**Refs**: CWE-611 (Improper Restriction of XML External Entity Reference), OWASP A05:2025 (Security Misconfiguration)
+
+---
+
+## Rule: Polyglot File Detection
+
+**Level**: `advisory`
+
+**When**: Accepting any file that a downstream handler will parse, decompress, or execute
+
+**Do**:
+```python
+import io
+import zipfile
+import magic
+from typing import Optional
+
+# Known binary format secondary checks. Extend as your allowed format list grows.
+# Each entry is (secondary_check_fn, secondary_mime_label).
+_SECONDARY_CHECKS = [
+    (zipfile.is_zipfile, 'application/zip'),
+]
+
+def detect_polyglot(content: bytes, primary_mime: str) -> Optional[str]:
+    """
+    Return a description string if content is valid in more than one recognized
+    binary format, otherwise return None.
+
+    Background: python-magic reads magic bytes at the start of a file to
+    determine the primary MIME type. Polyglot files are crafted so that
+    magic bytes at offset 0 satisfy one parser (e.g., JPEG) while a second
+    parser (e.g., ZIP) finds its own valid structure elsewhere in the file.
+    A JPEG/ZIP polyglot passes MIME validation as 'image/jpeg' but remains
+    extractable as a ZIP archive by any handler that trusts the content
+    unconditionally.
+
+    Common exploit patterns:
+    - PDF/ZIP: valid PDF header + ZIP central-directory at EOF (used in
+      malicious DOCX delivery).
+    - JPEG/ZIP: JPEG SOI marker + ZIP archive appended after JPEG EOI.
+    - HTML/ZIP: HTML comment wrapping a ZIP archive (Chrome's zip-in-html
+      download behavior).
+
+    Reject or quarantine any file where this function returns a non-None value.
+    """
+    for check_fn, secondary_label in _SECONDARY_CHECKS:
+        if primary_mime == secondary_label:
+            continue  # Primary and secondary are the same format; not a polyglot
+        try:
+            if check_fn(io.BytesIO(content)):
+                return (
+                    f"Polyglot: primary MIME '{primary_mime}' but content is "
+                    f"also valid as '{secondary_label}'"
+                )
+        except Exception:
+            pass  # Parser raised — not that format
+
+    # PDF magic bytes in a file not identified as PDF
+    if primary_mime != 'application/pdf' and content[:8].lstrip().startswith(b'%PDF-'):
+        return (
+            f"Polyglot: primary MIME '{primary_mime}' but content starts with "
+            "PDF header bytes"
+        )
+
+    return None
+```
+
+**Don't**:
+```python
+# VULNERABLE: Trust python-magic exclusively
+def validate_upload(content: bytes) -> str:
+    mime = magic.Magic(mime=True).from_buffer(content)
+    if mime not in ALLOWED_MIMES:
+        raise ValueError("Disallowed MIME type")
+    return mime  # A JPEG/ZIP polyglot passes here and reaches ZIP extraction
+```
+
+**Why**: A file crafted to be simultaneously valid as a JPEG and a ZIP archive passes MIME validation and then gets extracted as a ZIP by a downstream handler that was never intended to run on image uploads. The gap between what the validator sees and what the handler does is the attack surface. Secondary format consistency checks close that gap without adding a heavy dependency.
+
+**Refs**: CWE-434 (Unrestricted Upload of File with Dangerous Type), OWASP A03:2025 (Injection)
 
 ---
 
@@ -1481,6 +1766,7 @@ class SecureDocumentPipeline:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2024-01-15 | Initial release with 8 core rules |
+| 2.0 | 2026-05-26 | Fix path-traversal prefix check; add real PDF JS detection via pikepdf/pypdf; add XXE Do example with defusedxml/lxml; update OWASP refs to 2025; add polyglot file detection rule |
 
 ---
 
@@ -1493,8 +1779,9 @@ class SecureDocumentPipeline:
 - CWE-359: Exposure of Private Personal Information
 - CWE-345: Insufficient Verification of Data Authenticity
 - CWE-611: Improper Restriction of XML External Entity Reference
-- OWASP A03:2021 - Injection
-- OWASP A01:2021 - Broken Access Control
-- OWASP A05:2021 - Security Misconfiguration
+- OWASP A03:2025 - Injection
+- OWASP A01:2025 - Broken Access Control
+- OWASP A05:2025 - Security Misconfiguration
+- OWASP LLM01:2025 - Prompt Injection
 - NIST SP 800-53 AU-10 - Non-repudiation
 - GDPR Article 17 - Right to Erasure
