@@ -3474,3 +3474,227 @@ audited_rules:
       - All CWE IDs are valid: CWE-20, CWE-22, CWE-77, CWE-78, CWE-79, CWE-94, CWE-200,
         CWE-359, CWE-400, CWE-532, CWE-798. No fake or retired IDs.
     issues_filed: []
+
+  - path: rules/backend/bentoml/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Secure Bento Building and Signing
+      - Implement Secure BentoML Services
+      - Configure Secure Runner Execution
+      - Secure BentoML Deployment Configuration
+      - Implement API Authentication and Rate Limiting
+    notes: |
+      Audited all 5 rule sections. Three blocking defects found: two wrong OWASP LLM
+      category numbers (missing :2025 qualifiers and mapped to wrong 2025 IDs), and
+      deprecated Pydantic @validator incompatible with BentoML 1.3.x (Pydantic v2).
+      Two required checklist items (OpenAPI /docs exposure, Yatai/BentoCloud image
+      signing) are absent.
+
+      All CWE IDs valid: CWE-502, CWE-200, CWE-20, CWE-94, CWE-400, CWE-269, CWE-250,
+      CWE-306, CWE-770. OWASP A01:2025 and A05:2025 correct.
+      bentoml.pytorch.save_model(), to_runner(), bentoml.Service, bentoml.Runnable,
+      bentoml.Runner, bentoml.Context all valid BentoML 1.x APIs.
+      bentofile.yaml lock_packages: true is valid. Dockerfile non-root user pattern
+      correct. Kubernetes securityContext block correct. Runner resource YAML correct.
+      Don't examples reflect real vulns (pickle.loads RCE, shell=True injection,
+      Docker socket mount escape, hardcoded secrets).
+
+      ISSUE 1 - OWASP LLM refs use wrong 2025 category numbers (STANDARDS MISMATCH / BLOCKING)
+        Bento Packaging Refs cites "OWASP LLM05" without :2025 qualifier. In OWASP
+        LLM Top 10 2025, LLM05:2025 = "Improper Output Handling." Supply chain attacks
+        on ML packaging map to LLM03:2025 (Supply Chain). The 2023 v1.1 LLM05 was
+        "Sensitive Information Disclosure" -- neither mapping fits the rule topic.
+        Service Security Refs cites "OWASP LLM04" without :2025 qualifier. In 2025,
+        LLM04:2025 = "Data and Model Poisoning." The rule covers input validation to
+        prevent injection / arbitrary code execution, which maps to LLM01:2025 (Prompt
+        Injection) for LLM-facing services. LLM04:2025 is the wrong category.
+        Fix required: update "OWASP LLM05" to "OWASP LLM03:2025 (Supply Chain)" in
+        Bento Packaging Refs; update "OWASP LLM04" to "OWASP LLM01:2025 (Prompt
+        Injection)" or remove the LLM ref and rely on CWE-20/94 if the service does
+        not expose an LLM interface. Add :2025 qualifier to all OWASP LLM citations.
+
+      ISSUE 2 - Pydantic @validator deprecated; incompatible with BentoML 1.3.x (DEPRECATED MITIGATION / BLOCKING)
+        PredictionInput uses @validator("data") and @validator("options") from Pydantic
+        v1. BentoML 1.3.x requires Pydantic v2; Pydantic v2 removed @validator in its
+        stable API (deprecated since v2.0, unavailable without the v1 compatibility
+        shim). Using @validator in a BentoML 1.3.x environment raises PydanticUserError
+        at service startup. The current secure pattern is @field_validator with
+        mode='before' and the @classmethod decorator.
+        Fix required: replace @validator("data") and @validator("options") with
+        @field_validator("data", "options", mode='before') decorated with @classmethod;
+        update import to 'from pydantic import BaseModel, Field, field_validator'.
+
+      ISSUE 3 - No warning on default OpenAPI /docs exposure (MISSING REQUIRED COVERAGE / BLOCKING)
+        The audit checklist requires coverage of: "API security (auth middleware
+        required; default OpenAPI exposes /docs and /readyz)." The API Security rule
+        adds auth middleware correctly, but never notes that BentoML enables /docs
+        (Swagger UI) and /metrics by default on the same port. In production,
+        unauthenticated callers can enumerate every endpoint, input schema, and output
+        schema via /docs. The shown auth middleware does not block /docs because BentoML
+        registers the OpenAPI docs route before ASGI middleware in its stack.
+        Fix required: add a note or rule stating that /docs must be disabled
+        (BENTOML_HTTP_SWAGGER_ENABLED=false or equivalent) or that auth middleware must
+        explicitly gate /docs; reference BentoCloud/Yatai deployment hardening guidance.
+
+      Non-blocking observations (no status change):
+      - bentoml.io.JSON(pydantic_model=...) is used in the Service Security rule.
+        In BentoML 1.3.x this IO descriptor API is a compatibility layer; the
+        recommended pattern is Pydantic models as direct type annotations in @svc.api
+        method signatures. Still functional but generates a deprecation warning.
+        Advisory: migrate example to type-annotation style to match current BentoML docs.
+      - Yatai/BentoCloud image signing: the deployment checklist item has no
+        corresponding rule or note. Yatai supports OCI image signing via cosign;
+        BentoCloud enforces signed images via deployment policy. Advisory only.
+      - AuthMiddleware reads API keys from a comma-separated env var split at startup,
+        with no TTL refresh. Key rotation requires a service restart. Advisory: note
+        the operational limitation and suggest secrets-manager lookup with refresh.
+      - verify_bento() hashes service.py only. Complete provenance should cover the
+        full bento directory or use bentoml's content-address hash. Advisory only.
+    issues_filed: []
+
+  - path: rules/backend/mlflow/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 4 rules. CWE IDs (22, 200, 311, 306, 319, 502, 532) are all valid and
+      correctly mapped. MITRE ATLAS AML.T0010 (ML Supply Chain Compromise) is a real
+      technique ID. Three blocking defects found.
+
+      ISSUE 1 — Wrong OWASP LLM category for supply chain model loading (BLOCKING)
+        Line 156 cites "OWASP LLM05" for the secure model registration/loading rule,
+        with the Why text explaining "supply chain attacks through poisoned models."
+        In OWASP LLM Top 10 2025, LLM05 = Improper Output Handling. Supply chain
+        attacks on models map to LLM03:2025 (Supply Chain). LLM05 was "Insecure Output
+        Handling" in the 2023 draft — this is a stale 2023 reference. Quick Reference
+        table (line 566) repeats the same wrong mapping.
+        Fix required: replace "OWASP LLM05" with "OWASP LLM03:2025" in both line 156
+        and the Quick Reference table at line 566.
+
+      ISSUE 2 — Deprecated MLflow 2.x stage API used throughout Do examples (BLOCKING)
+        The Do examples in the first rule use three APIs deprecated since MLflow 2.9:
+        (a) client.get_latest_versions(model_name) — line 84, deprecated; replaced by
+            client.get_model_versions() or alias-based lookup.
+        (b) model_version.current_stage — line 92, the stage concept is deprecated in
+            2.x in favor of model aliases; current_stage returns None for alias-managed
+            versions.
+        (c) client.transition_model_version_stage() — lines 125-128 and 142, deprecated;
+            replacement is client.set_registered_model_alias() / copy_model_version().
+        Additionally, time.time() is called at line 121 but import time is never
+        included in the code block's imports (lines 22-25), making the Do example fail
+        with NameError at runtime.
+        Fix required: replace deprecated stage API calls with MLflow 2.x alias-based
+        equivalents (set_registered_model_alias, get_model_version_by_alias); add
+        import time to the imports block.
+
+      ISSUE 3 — mlflow.pyfunc.load_model() RCE risk absent from Do example (BLOCKING)
+        Line 96 in the Do example calls mlflow.pyfunc.load_model(model_uri) without any
+        warning comment. For most flavors (sklearn, keras, pytorch, custom pyfunc),
+        load_model() deserializes pickle artifacts. Loading a model from an untrusted or
+        unverified source is direct RCE — CVE-2023-30172 and follow-on advisories
+        document active exploitation of unprotected MLflow tracking servers precisely
+        because model artifacts are pickle-based. The Do example presents the load as
+        safe after URI and stage validation, but the RCE vector remains unless the
+        artifact store is fully access-controlled. The Don't example (line 134) warns
+        about user-provided URIs but omits the underlying pickle deserialization risk
+        that makes any load from an untrusted store dangerous regardless of URI origin.
+        Fix required: add a comment above line 96 warning that load_model() is
+        pickle-based for most flavors and that artifact store access control (not URI
+        validation alone) is the required mitigation against RCE; reference the
+        pickle/pyfunc risk in the Why section.
+
+      Non-blocking observations (no status change):
+      - Server rule (line 370): --app-name basic-auth is correctly shown, but no warning
+        that unauthenticated mode (no --app-name flag) is the default in MLflow 2.x.
+        CVE-2023-30172 and related advisories target exactly this default-open posture.
+        An advisory note that the flag must be explicitly set would strengthen the rule.
+      - Kubernetes example (line 506): image: mlflow-server:latest uses a mutable tag,
+        contradicting the posture required by the containers/ rules. Advisory only.
+    issues_filed: []
+
+  - path: rules/backend/torchserve/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Validate MAR File Integrity
+      - Implement Secure Custom Handlers
+      - Secure Management API Access
+      - Validate Inference Requests
+    notes: |
+      Audited all 4 rule sections. Three distinct blocking issues found. CWE IDs are
+      all valid (CWE-502, CWE-94, CWE-78, CWE-22, CWE-306, CWE-918, CWE-400, CWE-770).
+      Management API port-8081 binding (localhost-only, proxy auth, enable_model_api=false)
+      is correctly addressed. Don't examples reflect real vulns throughout. Code parses
+      as valid Python 3.x.
+
+      ISSUE 1 — No deprecation/EOL notice for TorchServe (BLOCKING / CRITICAL)
+        TorchServe was archived by AWS and the PyTorch project in 2024 due to mounting
+        maintenance burden and an unresolved CVE backlog. The framework is no longer
+        receiving security patches. The file contains no deprecation notice, no EOL
+        callout, and no guidance toward maintained alternatives (Triton Inference Server,
+        vLLM, Ray Serve, BentoML). A developer following this file as written would
+        deploy an archived, unpatched serving framework in production. This is a material
+        misleading omission, not a style issue.
+        Fix required: add a prominent deprecation block at the top of the file stating
+        that TorchServe is archived and unmaintained as of 2024; name at least two
+        maintained alternatives; all rules should remain present for teams with existing
+        TorchServe deployments but must be framed as legacy support only.
+
+      ISSUE 2 — OWASP LLM refs use stale 2023 numbering (STANDARDS MISMATCH)
+        Line 126 Refs: cites "OWASP LLM05" for the MAR file supply-chain rule.
+          In the 2025 taxonomy, LLM05:2025 = "Improper Output Handling."
+          Supply-chain / model-artifact integrity maps to LLM03:2025 (Supply Chain).
+          Fix: change to "OWASP LLM03:2025 (Supply Chain)."
+        Line 521 Refs: cites "OWASP LLM04" for resource-exhaustion inference DoS.
+          In the 2025 taxonomy, LLM04:2025 = "Data and Model Poisoning."
+          OWASP LLM04:2023 was "Model Denial of Service" -- the file is using the 2023
+          numbering. Inference-layer DoS maps primarily to CWE-400/CWE-770 in the 2025
+          taxonomy; at minimum, add the :2025 qualifier to avoid readers interpreting
+          the number against the 2023 name map.
+          Fix: update both refs to include :2025 qualifier; clarify that inference DoS
+          maps to CWE-400/CWE-770 rather than to any 2025 LLM category directly.
+
+      ISSUE 3 — MAR handler denylist presented as reliable security control (DEPRECATED MITIGATION)
+        Lines 53-59: the Do example in "Validate MAR File Integrity" inspects custom
+        handler Python source with a substring denylist:
+          DANGEROUS_PATTERNS = ["subprocess", "os.system", "eval(", "exec(",
+                                "__import__", "pickle.loads"]
+          for pattern in DANGEROUS_PATTERNS:
+              if pattern in content:
+                  raise ValueError(...)
+        This is trivially bypassed: an attacker encodes the import
+        (e.g., __builtins__['ev'+'al']()), uses importlib.import_module("subprocess"),
+        or aliases via getattr(). The check is presented without a caveat that it is
+        a weak heuristic. Handler code executes as arbitrary Python inside the server
+        process; static substring analysis against a short list provides negligible real
+        security. The correct primary mitigation is cryptographic signing of MAR files
+        (attestation that the handler was authored and reviewed by a trusted party)
+        combined with OS-level execution sandboxing, not source scanning. The MITRE
+        ATLAS AML.T0010 ref (supply-chain attack) is valid, but the Do mitigation does
+        not match the threat it claims to address.
+        Fix required: remove the denylist as the named primary control; replace with
+        guidance to sign MAR files and verify the signature before loading; note that
+        static source analysis is defense-in-depth only; add a note that handler code
+        executes with full server privileges and real sandboxing requires OS-level
+        controls (seccomp, containers, separate process).
+
+      Non-blocking observations (no status change):
+      - Pydantic @validator (line 435, InferenceRequest) is deprecated since Pydantic
+        v2 (2023). Production code in 2026 should use @field_validator with
+        mode='before'/'after'. Same advisory pattern seen in mcp-security.md.
+      - model_name.isalnum() check (line 455) rejects valid model names with underscores
+        and hyphens (e.g., "bert-base", "my_model_v2"). A regex whitelist
+        (^[a-zA-Z0-9_-]+$) is less restrictive without opening injection. Advisory only.
+      - Management API proxy logs api_key directly in the audit line
+        (logging.info(f"Model unload: {model_name} by {api_key}"), line 360). Full API
+        keys must not appear in logs; log a key prefix or key ID only. Advisory only.
+      - MITRE ATLAS AML.T0010 (line 126) was unreachable from the live ATLAS site during
+        this audit (same 404 pattern seen in prior audits). From training-set knowledge
+        of ATLAS v4, AML.T0010 is plausibly "ML Supply Chain Compromise." Flagged as
+        unverifiable from the live catalog, not definitively wrong.
+    issues_filed: []
