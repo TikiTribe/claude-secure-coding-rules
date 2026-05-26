@@ -957,3 +957,30 @@ async def metrics():
 - OpenTelemetry Security Best Practices
 - Prometheus Security Model
 - Grafana Security Best Practices
+
+---
+
+## Audit Log
+
+```yaml
+- file: rules/rag/observability/monitoring/CLAUDE.md
+  audit: p0.5
+  date: 2026-05-26
+  status: failed
+  defects:
+    - id: D1
+      check: owasp-2025-refs
+      detail: All OWASP refs use :2021 suffix; no :2025 or LLM:2025 refs present anywhere in the file.
+    - id: D2
+      check: log-injection
+      detail: Log Aggregation rule sanitizes PII fields but does not address CRLF/newline injection when user input appears in log messages (e.g., f-string interpolation in the Don't example logs raw user_id and query without newline escaping).
+    - id: D3
+      check: trace-sampling-high-volume-llm
+      detail: No rule or guidance on tail/adaptive sampling strategies for high-volume LLM traces to prevent collector overload and cost blowout.
+    - id: D4
+      check: alerting-prompt-injection-detection-signals
+      detail: Alerting Security rule covers transport/template hygiene but contains no alert rule example for firing on prompt-injection-detection signals (e.g., counter thresholds from a detection layer).
+    - id: D5
+      check: cost-tracking-llm10-2025
+      detail: No rule covering cost monitoring or alerting for unbounded LLM token consumption; LLM10:2025 (Unbounded Consumption) not referenced.
+```
