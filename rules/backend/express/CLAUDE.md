@@ -340,15 +340,22 @@ const storage = multer.diskStorage({
   },
 });
 
+// Both extension and MIME type are attacker-controlled, so neither alone is
+// sufficient. Check both as defense-in-depth. For high-assurance contexts,
+// add server-side magic-byte verification using the `file-type` package after
+// the upload completes, since that reads actual file content rather than
+// trusting metadata supplied by the client.
+const allowedExts = ['.jpg', '.jpeg', '.png', '.pdf'];
+const allowedMimes = ['image/jpeg', 'image/png', 'application/pdf'];
+
 const upload = multer({
   storage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB
   },
   fileFilter: (req, file, cb) => {
-    const allowed = ['.jpg', '.jpeg', '.png', '.pdf'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) {
+    if (allowedExts.includes(ext) && allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error('Invalid file type'));
