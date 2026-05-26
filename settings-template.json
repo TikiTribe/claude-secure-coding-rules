@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/secrets/**)",
+      "Read(**/.aws/credentials)",
+      "Read(**/.ssh/id_*)",
+      "Read(**/.ssh/*_rsa)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Write(./.env)",
+      "Write(./.env.*)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(sh -c *curl*)",
+      "Bash(bash -c *curl*)",
+      "Bash(eval *curl*)",
+      "Bash(git push --force main)",
+      "Bash(git push --force master)",
+      "Bash(git push --force-with-lease main)",
+      "Bash(git push --force-with-lease master)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf $HOME)"
+    ]
+  }
+}
