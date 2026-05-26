@@ -4427,7 +4427,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/_core/embedding-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4499,10 +4499,17 @@ audited_rules:
         deduplication. Non-blocking.
       - MITRE ATLAS AML.T0020 cited in three rules. ATLAS live site inaccessible;
         citations are consistent with prior audit decisions. Retained as plausible.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: LLM08:2025 added to Input Sanitization, Adversarial Detection, Model Version Pinning, Cache Security, and Drift Detection rules.
+      - ISSUE 2: All five unqualified OWASP LLM refs now carry :2025 suffix (LLM06:2025, LLM01:2025, LLM10:2025).
+      - ISSUE 3: Embedding Inversion Attack Prevention rule added (Vec2Text coverage, noise injection, access-only-internal pattern).
+      - ISSUE 4: Trusted Source Provenance rule added (SHA-256 corpus digest, signed manifests, source allowlisting).
+      - ISSUE 5: hash_pii() docstring corrected from "reversible" to "one-way PII hash".
     issues_filed: []
 
   - path: rules/rag/chunking/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4553,10 +4560,15 @@ audited_rules:
       - Markdown-aware chunking (preserving code-block boundaries) is absent from both
         rules and checklist. The checklist item in the audit spec is not present in the
         file's own checklist. Advisory; no corresponding rule was promised by the file.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Cross-security-domain chunk boundary leakage rule added (per-chunk access classification tag, reject splits merging tiers).
+      - ISSUE 2: Overlap-at-boundary advisory added (disable overlap at document boundaries across sensitivity tiers).
+      - ISSUE 3: Universal pre-embedding PII scan rule added using Presidio/regex on every chunk regardless of splitter type.
     issues_filed: []
 
   - path: rules/rag/graph/neo4j/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4600,10 +4612,14 @@ audited_rules:
       - LDAP/SSO: not covered. The RBAC rule addresses only native auth. Advisory omission.
       - APOC CVE surface: rule correctly identifies dangerous procedure categories and
         requires an explicit allowlist. Addresses the CVE class adequately.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: neo4j.TRUST_SYSTEM_CA_SIGNED_CERTIFICATES replaced with neo4j.TrustSystemCAs() in both Do examples (lines 39 and 1232).
+      - ISSUE 2: All OWASP refs updated to :2025 (A01, A02, A03, A05); LLM06:2025 and LLM08:2025 added to APOC and Vector Index rules; Additional Resources links updated.
     issues_filed: []
 
   - path: rules/rag/_core/retrieval-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4687,6 +4703,14 @@ audited_rules:
         broken validators, or no-op resource limits found.
       - ScoreManipulationDetector score_history can grow unbounded between 10000-cap
         truncation points (minor implementation concern, not a security issue).
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All OWASP LLM refs now carry :2025 (LLM01:2025, LLM03:2025, LLM08:2025).
+      - ISSUE 2: LLM03:2025 and LLM08:2025 added to Context Stuffing Prevention and Chunk Sanitization Refs.
+      - ISSUE 3: ACL Enforcement at Retrieval Time rule added (metadata filter injection into vector DB query, Don't shows post-retrieval filtering).
+      - ISSUE 4: Cross-Tenant Retrieval Isolation rule added (per-tenant collection separation, mandatory filter injection, metadata assertion).
+      - ISSUE 5: Vector DB Query Injection Prevention rule added (allowlisted/type-validated filter params, injection examples per Qdrant/Weaviate/Pinecone).
+      - ISSUE 6: Chunk Sanitization rule demoted to secondary/defense-in-depth; Why section documents regex denylist limitations per OWASP LLM01:2025.
     issues_filed: []
 
   - path: rules/rag/_core/vector-store-security.md
@@ -4767,10 +4791,16 @@ audited_rules:
         mode 0o600 would be stronger. Non-blocking; recommend as fix-opportunity note.
       - Fernet symmetric key loaded from BACKUP_ENCRYPTION_KEY env var with no
         key-rotation mechanism shown. Non-blocking at advisory level.
+
+      RE-AUDIT 2026-05-26: Blocking issues NOT fixed. Status remains failed.
+      - ISSUE 1 (ATLAS ML04 fake ID): Line 804 still reads "MITRE ATLAS ML04 (ML Model Inversion)" — fake ID not corrected.
+      - ISSUE 2 (Data Lineage missing OWASP ref): Line 572 Refs still lists only GDPR/CCPA/CWE, no OWASP A09:2025.
+      - COVERAGE GAP 1 (LLM08:2025 absent): No OWASP LLM08:2025 appears anywhere in the file.
+      - COVERAGE GAP 2 (rate limiting/admin/replication): No rate limiting, admin API hardening, or replication trust boundary rules added.
     issues_filed: []
 
   - path: rules/rag/embeddings/api-embeddings/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4836,10 +4866,17 @@ audited_rules:
         Consistent with prior passing audits; not a blocker.
       - CWE-404 on Long Context Security (line 977) is tangential to chunking; CWE-119
         would be tighter. Not blocking.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: LLM refs updated to :2025 throughout; LLM03:2025 (Supply Chain) and LLM02:2025 (Sensitive Information Disclosure) added; stale LLM06 mapping corrected.
+      - ISSUE 2: CVE-2022-41853 removed; replaced with CWE-based supply chain note on PyMuPDF/MuPDF memory-safety exposure and version pinning.
+      - ISSUE 3: SQL denylist removed from sanitize_ocr_output(); comment added directing SQL injection prevention to parameterized queries at the database layer.
+      - ISSUE 4: OCR confidence threshold rule added (Tesseract pytesseract.image_to_data and EasyOCR per-word confidence gating with 60% recommended minimum).
+      - ISSUE 5: Visual prompt injection via OCR rule added (structural isolation, detection pattern scan, LLM01:2025 ref).
     issues_filed: []
 
   - path: rules/rag/document-processing/parsers-ocr/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4931,7 +4968,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/orchestration/dspy-txtai-ragas/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -4998,10 +5035,17 @@ audited_rules:
       - txtai Embeddings, Graph, Textractor, and pipeline imports are consistent with
         txtai 7.x API. The parameters=params kwarg to embeddings.search() is supported.
       - ex.toDict() on DSPy Example objects is valid DSPy 2.x API.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: txtai YAML workflow injection rule added (schema allowlisting, YAML validation against permitted pipeline steps).
+      - ISSUE 2: Ragas/DSPy eval-train isolation rule added (hash-based overlap detection before compile() runs).
+      - ISSUE 3: Ragas adversarial defense evaluation rule added (custom ragas metric scoring injection defense effectiveness).
+      - ISSUE 4: timed_metric wired into teleprompter.compile() as metric= argument; timeout guard is now functional.
+      - ISSUE 5: All OWASP LLM refs carry :2025; LLM06 corrected to LLM02:2025 for Sensitive Information Disclosure citations.
     issues_filed: []
 
   - path: rules/rag/embeddings/local-embeddings/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5042,10 +5086,14 @@ audited_rules:
       - use_safetensors=True present in load_hf_model. Correct.
       - SecureModelCache env var pattern and path-traversal sanitization in
         get_cache_path() are correct.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All OWASP LLM refs carry :2025; LLM05:2025 (Supply Chain) cited in Model Loading rule; token= replaces use_auth_token= in Do example.
+      - ISSUE 2 (non-blocking but also fixed): use_auth_token= replaced with token= (transformers 4.40+ current API).
     issues_filed: []
 
   - path: rules/rag/orchestration/langchain-loaders/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5102,10 +5150,19 @@ audited_rules:
         =, +, -, @ execute as formulas when data is exported to Excel downstream.
         Fix required: add CSVLoader rule stripping or quoting leading formula
         characters before any downstream Excel export path (CWE-1236).
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All OWASP refs updated to :2025 throughout; References section updated to OWASP Top 10 2025.
+      - ISSUE 2: OWASP LLM01:2025 added to Web Loader and API Loader rules; LLM Top 10 subsection added to References.
+      - ISSUE 3: GitLoader SecureGitLoader rule added (credential outside URL, token scoping, .git access control, secret scanning).
+      - ISSUE 4: SecureS3Loader rule added (instance role preference, bucket allowlist, IAM least-privilege).
+      - ISSUE 5: UnstructuredFileLoader CVE advisory added (pin parser deps, sandbox subprocess isolation pattern).
+      - ISSUE 6: JSONLoader jq_schema injection rule added (static allowlist of pre-approved selectors).
+      - ISSUE 7: CSVLoader formula injection rule added (strip/quote =+/-/@ prefix, CWE-1236).
     issues_filed: []
 
   - path: rules/rag/vector-managed/mongodb-atlas/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5163,10 +5220,17 @@ audited_rules:
         alongside the createRole driver-level RBAC examples. Advisory only.
       - ACID transaction rule correctly uses ReadConcern("snapshot") and
         WriteConcern(w="majority", j=True) with max_commit_time_ms. Correct.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All OWASP refs updated to :2025; LLM01:2025 added to filter injection rules; LLM Top 10 added to References.
+      - ISSUE 2: LLM01:2025 (Prompt Injection) added to $vectorSearch filter and Aggregation Pipeline rules.
+      - ISSUE 3: Atlas IP access list rule added (0.0.0.0/0 prohibition, restrict to VPC CIDR).
+      - ISSUE 4: CMK encryption at rest rule added (EncryptionKey on SearchIndex and data source, Key Vault-backed).
+      - ISSUE 5: PrivateLink/VNet peering rule added (private endpoint creation and registration, disable public endpoint).
     issues_filed: []
 
   - path: rules/rag/search-rerank/lexical/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5258,9 +5322,18 @@ audited_rules:
       - OWASP refs lack year tags. The single OWASP reference ("OWASP Information
         Disclosure", line 238) has no :2025 year tag. Advisory; inconsistent with the
         project's ref format standard but not a standalone blocker.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All 7 blocking missing rules added (query_string injection, Painless script RCE, cross-tenant index isolation, TLS+API-key auth, rate limiting, field-level security, document-level security); OWASP refs carry :2025 in informal format (e.g., "OWASP Injection:2025").
+      - ISSUE 2: Elasticsearch/OpenSearch query_string DSL injection rule added (use match/multi_match only; block query_string for untrusted input).
+      - ISSUE 3: Painless script RCE rule added (params: {} bindings, disable dynamic scripting on user-facing indices).
+      - ISSUE 4: Cross-tenant index isolation rule added (server-side tenant-to-index map, wildcard patterns disabled).
+      - ISSUE 5: TLS+API-key auth rule added (ca_certs, verify_certs=True, api_key auth).
+      - ISSUE 6: Rate limiting rule added (per-user token bucket at HTTP layer).
+      - ISSUE 7: Field-level security and document-level security rules added.
     issues_filed: []
   - path: rules/rag/orchestration/haystack/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5296,10 +5369,16 @@ audited_rules:
       - Pipeline component allowlist: covered in Pipeline Configuration Security rule.
       - Document store TLS enforcement: covered in Document Store Security rule.
       - Multi-tenant isolation: TenantIsolatedDocumentStore pattern is correct.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: No :2025 OWASP or LLM:2025 refs — all refs updated to :2025 format ("OWASP LLM Top 10:2025 LLMxx").
+      - ISSUE 2: ComponentTool agent boundary rule added (least-privilege tool design, step cap, ComponentTool trust boundary).
+      - ISSUE 3: PromptBuilder Jinja injection rule added (static-only templates, reject user-controlled template strings).
+      - ISSUE 4: Secret.from_env_var() pattern adopted throughout credential examples.
     issues_filed: []
 
   - path: rules/rag/orchestration/llamaindex/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5376,10 +5455,18 @@ audited_rules:
       - Injection pattern denylist in SecureQueryEngine is warn-and-filter (not hard block),
         appropriate given the limitations of substring-based detection.
       - cryptography.fernet API usage in SecureIndexStorage is correct and current.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: SimpleNodeParser removed from import line (both the broken import and its usage in Don't examples updated).
+      - ISSUE 2: ComposableGraph replaced with SubQuestionQueryEngine; import from removed composability module replaced.
+      - ISSUE 3: service_context= kwarg removed from load_index_from_storage(); comment directs callers to Settings global.
+      - ISSUE 4: _check_rate_limit uses per-user dict[str, list[float]] keyed by user_id; all users no longer share one bucket.
+      - ISSUE 5: All OWASP LLM refs carry :2025 in "OWASP LLM Top 10:2025 LLMxx" format; 2025 edition category names used; References section updated.
+      - ISSUE 6: QueryFusionRetriever rule added (sub-query sanitization); PromptTemplate variable injection rule added; trust_remote_code strict rule added; node post-processor advisory note added.
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/pgvector/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5441,10 +5528,15 @@ audited_rules:
       - CWE-319, CWE-798, CWE-295, CWE-89, CWE-943, CWE-284, CWE-863,
         CWE-400, CWE-208, CWE-829, CWE-269, CWE-311, CWE-312, CWE-770: all
         valid, non-retired IDs, correctly mapped to rule categories.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP refs updated to :2025; pg_hba.conf auth rule added (scram-sha-256, reject trust/md5, narrow CIDR, audit function).
+      - ISSUE 2: pg_hba.conf authentication rule added with correct configuration guidance.
+      - ISSUE 3: PARTITION BY LIST (tenant_id) rule added with partition-per-tenant guidance and complement-to-RLS explanation.
     issues_filed: []
 
   - path: rules/rag/observability/langsmith/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5522,10 +5614,17 @@ audited_rules:
         explicitly committed in the file structure, but worth a future addition.
       - hub.pull() and hub.push(): valid langchain (not langsmith) SDK calls; correctly
         scoped to LangChain Hub integration.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: list_workspace_members() and invite_to_workspace() removed; replaced with UI/REST API guidance.
+      - ISSUE 2: trace_retention_days= kwarg removed from create_project(); retention note directs to UI.
+      - ISSUE 3: update_project() corrected to accept project_id (UUID); trace_retention_days= kwarg removed.
+      - ISSUE 4: share_dataset(share_with=..., permission=...) fabricated params removed; is_public removed from create_dataset; correct alternatives documented.
+      - ISSUE 5: All OWASP/LLM refs carry :2025; LLM06 corrected to LLM02:2025 for Sensitive Information Disclosure.
     issues_filed: []
 
   - path: rules/rag/vector-managed/azure-ai-search/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5591,10 +5690,16 @@ audited_rules:
       - Query key vs admin key separation: covered.
       - Semantic ranker auth and configuration validation: covered.
       - Document-level security trimming via allowed_groups OData filter: covered.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP LLM01:2025 and LLM06:2025 added to Hybrid Search Security and Index Schema Security Refs.
+      - ISSUE 2: Search.in() safe construction example added (list-based input, validated individually, explicit non-comma delimiter).
+      - ISSUE 3: CMK encryption at rest rule added (EncryptionKey on SearchIndex, Key Vault Managed HSM, pinned key version).
+      - ISSUE 4: Private endpoint/VNet isolation rule added (disable public_network_access, private endpoint, IP firewall).
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/chroma/CLAUDE.md
-    status: passed
+    status: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5662,10 +5767,15 @@ audited_rules:
       - chromadb.Client used as a type hint on line 145; valid in 0.5.x as a typing alias.
       - anonymized_telemetry=False and allow_reset=False in Settings remain valid
         0.5.x Settings fields.
+
+      RE-AUDIT 2026-05-26: Blocking issues NOT fixed. Status remains failed. Rewrite agent incorrectly set status to passed.
+      - ISSUE 1 (API breakage — Settings kwargs): Lines 78-84 still pass chroma_server_auth_provider, chroma_server_auth_credentials_file, chroma_server_auth_token_transport_header, chroma_server_ssl_* as Settings() kwargs. These do not exist in chromadb 0.5.x Settings and raise Pydantic ValidationError. Not fixed.
+      - ISSUE 2 (LLM06 missing :2025): Line 269 still reads "OWASP LLM06 Sensitive Information Disclosure" without :2025 qualifier. Not fixed.
+      - ISSUE 3 (Missing coverage — metadata filter injection, SQLite/Postgres, CORS, rate limiting, volume encryption): None of these five sub-items have corresponding rules or advisory notes. Not fixed.
     issues_filed: []
 
   - path: rules/rag/document-processing/docling/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     docling_version_checked: "2.95.0"
@@ -5743,10 +5853,17 @@ audited_rules:
       - CWE-502, CWE-434, CWE-22, CWE-400, CWE-770, CWE-79, CWE-78, CWE-377,
         CWE-732, CWE-116, CWE-89, CWE-209: all valid, non-retired CWE IDs,
         correctly mapped to their respective rules.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: pipeline_options.page_range removed from both Do examples; max_num_pages=MAX_PAGES added to converter.convert() calls.
+      - ISSUE 2: TesseractCliOcrOptions() typed subclass used instead of plain dict; trust_remote_code removed; artifacts_path documented; allow_external_plugins and enable_remote_services documented.
+      - ISSUE 3: result.input.page_count used instead of result.document.page_count.
+      - ISSUE 4: result.document.main_text replaced with result.document.texts iteration.
+      - ISSUE 5: All OWASP LLM refs carry :2025 (LLM05:2025, LLM01:2025).
     issues_filed: []
 
   - path: rules/rag/vector-managed/pinecone/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     notes: |
@@ -5811,6 +5928,12 @@ audited_rules:
       - Project-scoped keys: separate env vars per role (query/index/admin). PASSES.
       - Webhook security: not applicable; Pinecone 5.x has no webhook surface.
         Deferred.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (fake MITRE ATLAS ML03): Replaced with AML.T0020 (Craft Adversarial Data) in Hybrid Search Security Refs.
+      - ISSUE 2 (missing LLM08:2025 and LLM02:2025): Both added to Namespace Isolation, Metadata Filter Injection, Query Result Validation, and PII metadata rules.
+      - ISSUE 3 (PII storage at upsert time): Strict rule added requiring presidio/scrubadub PII scan on all metadata values before upsert.
+      - ISSUE 4 (top_k cap absent): Warning-level rule added capping top_k at configurable maximum (default 100), clamp_top_k() enforces bounds.
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/weaviate/CLAUDE.md
@@ -5872,8 +5995,13 @@ audited_rules:
         QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, and reverse-proxy limiting on /v1/graphql
       - Raft consensus port (8300) and mTLS requirement absent from Replication Security rule
 
+      RE-AUDIT 2026-05-26: Blocking issues NOT fixed. Status remains failed.
+      - FAIL (LLM 2025 refs absent): No OWASP LLM Top 10 :2025 refs in the file; no LLM06:2025 in Module Configuration Refs.
+      - FAIL (GraphQL depth/complexity): No QUERY_MAX_DEPTH, QUERY_MAX_COMPLEXITY, or reverse-proxy limiting rule added.
+      - FAIL (Raft consensus port 8300): Replication Security rule still does not mention Raft port or mTLS requirement.
+
   - path: rules/rag/search-rerank/neural-rerankers/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -5896,8 +6024,16 @@ audited_rules:
       ISSUE 5 — No inference timeout on local model calls (Jina, FlashRank, ColBERT) to bound DoS tail latency.
       ISSUE 6 — Adversarial input detection covers prompt-injection markers but not Unicode homoglyphs or invisible characters.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: cohere.ClientV2 used in all Cohere Do examples; cohere.Client shown only in Don't as deprecated/removed.
+      - ISSUE 2: All OWASP LLM refs carry :2025 throughout the file.
+      - ISSUE 3: PII redaction rule added before documents are sent to Cohere external API.
+      - ISSUE 4: use_safetensors=True added to Jina model loading; ColBERT enforces safetensors via checkpoint validation.
+      - ISSUE 5: Inference timeout (30s Jina, 20s FlashRank) wired via threading.Thread.join(timeout=) pattern for all local models.
+      - ISSUE 6: Unicode homoglyph and zero-width/invisible character detection added to adversarial input detection rule.
+
   - path: rules/rag/vector-managed/zilliz/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -5921,8 +6057,13 @@ audited_rules:
 
       Passed: MilvusClient uri+token API correct for pymilvus 2.x / Zilliz Cloud; cluster auth via API key with TLS; partition key multi-tenancy isolation; expr filter injection prevention.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP API refs correctly use :2023 (OWASP API Security Top 10 latest is 2023, not 2025); OWASP LLM03:2025 added; remaining refs carry appropriate year qualifiers.
+      - ISSUE 2: VPC peering/PrivateLink rule added with AWS, GCP, and Azure private connectivity patterns.
+      - ISSUE 3: pymilvus RBAC API calls added (create_role, grant_privilege, grant_role, add_user_to_role) with explicit cluster-enforced role grants.
+
   - path: rules/rag/_core/document-processing-security.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6020,6 +6161,13 @@ audited_rules:
         leakage. Advisory: replace CWE-201 with CWE-359.
       - _check_zip correctly detects '..' in ZIP entry filenames (line 1278), covering
         ZIP slip path traversal. Good; no defect.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Path traversal check fixed: uses str(upload_path).startswith(str(base_dir) + os.sep) and upload_path.is_relative_to(base_dir) fallback.
+      - ISSUE 2: PDF JavaScript detection implemented via pikepdf/pypdf with actual /AA, /OpenAction, /JS detection (not a no-op stub).
+      - ISSUE 3: XXE Do example added using defusedxml.ElementTree for SVG/XML parsing; lxml with resolve_entities=False also shown; tied to CWE-611 Refs.
+      - ISSUE 4: All OWASP refs updated A01:2021->A01:2025, A03:2021->A03:2025, A05:2021->A05:2025; LLM ref corrected to OWASP LLM01:2025.
+      - ISSUE 5: Polyglot file detection rule added (_reject_polyglots using zipfile.is_zipfile secondary check, reject dual-format files).
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/milvus/CLAUDE.md
@@ -6105,6 +6253,13 @@ audited_rules:
       - GPU Resource Security and Index Configuration Security rules cite only CWE-400
         and CWE-770 with no OWASP mapping. Advisory; no OWASP Top 10 category maps
         cleanly to resource exhaustion in this context.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status confirmed passed.
+      - ISSUE 1 (RBAC disabled by default): authorizationEnabled: true rule added with milvus.yaml config and pymilvus RBAC primitives (create_role, grant_privilege, add_user_to_role).
+      - ISSUE 2 (mTLS not covered): tlsMode: 2 and client_pem_path/client_key_path rule added for mutual TLS.
+      - ISSUE 3 (partition_key_field guidance absent): Advisory/warning rule added comparing partition_key_field vs collection-per-tenant isolation; bypass risk documented.
+      - ISSUE 4 (etcd auth not covered): Rule added covering etcd authentication, port 2379 isolation via NetworkPolicy.
+      - ISSUE 5 (MinIO/S3 access control absent): Warning-level rule added covering dedicated IAM user, bucket policy, MinIO KES encryption, minio.useSSL: true.
     issues_filed: []
 
   - path: rules/rag/vector-selfhosted/qdrant/CLAUDE.md
@@ -6143,7 +6298,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/rag/observability/arize-phoenix/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6221,10 +6376,18 @@ audited_rules:
         configuration and an advisory covering collector-side attribute filters,
         with explicit note that INPUT_VALUE and OUTPUT_VALUE are exported by
         default and must be masked if prompts/responses contain PII.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: px.launch_app() auth params removed; replaced with PHOENIX_ENABLE_AUTH/PHOENIX_SECRET env-var configuration and TLS-via-reverse-proxy note.
+      - ISSUE 2: EmbeddingDrift removed; rewritten using scipy.spatial distance functions with current Phoenix evals API.
+      - ISSUE 3: OpenInferenceSpan replaced with standard OTel tracer pattern using opentelemetry.trace.get_tracer() and openinference SemanticConventions.
+      - ISSUE 4: phoenix.datasets.Dataset removed; rewritten using pandas with sha256 integrity checks.
+      - ISSUE 5: LLM06 changed to LLM02:2025; LLM01 tagged with :2025.
+      - ISSUE 6: OTLP TLS/bearer-token rule added; Collector-Side Attribute Filtering rule added (input.value, output.value redaction); INPUT_VALUE/OUTPUT_VALUE PII export default documented.
     issues_filed: []
 
   - path: rules/rag/graph/memgraph/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6245,6 +6408,14 @@ audited_rules:
       ISSUE 5 — OWASP LLM Top 10 2025 refs missing — LLM01:2025 (prompt injection) and LLM02:2025 (insecure output) applicable in a RAG context but absent.
       ISSUE 6 — MAGE module trust gap: module provenance (directory permissions, C .so signing, Python source vetting) uncovered.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: gqlalchemy TLS fixed to use bolt+s:// URI; encrypted=True documented as neo4j-driver kwarg that silently no-ops in gqlalchemy.
+      - ISSUE 2: pymgclient alternative added to TLS rule with explicit sslmode/sslcert/sslkey/sslca kwargs.
+      - ISSUE 3: LOAD CSV Trust and SSRF Prevention rule added (SSRF via user-supplied CSV URLs, malicious-data CSV injection).
+      - ISSUE 4: Memgraph Lab UI Authentication rule added (default credential change, bind to internal interface, disable in production).
+      - ISSUE 5: LLM01:2025 and LLM02:2025 added in RAG-context rule covering Cypher-as-output validation and prompt injection.
+      - ISSUE 6: MAGE Module Trust rule added (directory permissions, C .so signing, Python source vetting, hash verification).
+
   - path: rules/rag/graph/arangodb/CLAUDE.md
     status: passed
     reviewed_by: rocklambros
@@ -6264,7 +6435,7 @@ audited_rules:
       Note: previous version contained an HTML-comment audit block; removed in cleanup commit.
 
   - path: rules/rag/graph/neptune/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6285,8 +6456,14 @@ audited_rules:
 
       Passing: boto3 1.35 and gremlinpython 3.8.1 signatures valid; SigV4/IAM auth, VPC-only, encryption-at-rest, CloudWatch audit logging all present.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: OWASP refs updated :2021 -> :2025 throughout; A03:2025, A09:2025 used.
+      - ISSUE 2: LLM02:2025 and LLM06:2025 added for agent-driven graph traversal rules.
+      - ISSUE 3: openCypher injection prevention rule added (parameterized MATCH/RETURN with execute_open_cypher_query parameters= argument).
+      - ISSUE 4: Cross-account IAM access guidance added (trust policy scoped to specific role ARN, STS short-lived tokens, validate_cross_account_trust_policy() helper).
+
   - path: rules/rag/graph/tigergraph/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6304,8 +6481,14 @@ audited_rules:
       ISSUE 3 — All OWASP refs use :2021; spec requires :2025. No OWASP LLM Top 10:2025 citations despite ML Workbench rule covering model inversion/membership inference.
       ISSUE 4 — No UDF security rule (C++ UDF trusted-path enforcement) and no dedicated REST++ endpoint auth hardening rule.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: conn.setQueryTimeout() removed; timeout= added to runInstalledQuery() calls as the correct pyTigerGraph 2.0.4 API.
+      - ISSUE 2: conn.escapeString() removed; server-side parameterized GSQL parameters used instead.
+      - ISSUE 3: All OWASP refs updated :2021 -> :2025; LLM02:2025 and LLM03:2025 added to ML Workbench rule.
+      - ISSUE 4: C++ UDF trusted-path enforcement rule added (directory permissions, SHA-256 digest verification, no user-supplied compilation); REST++ endpoint auth hardening rule added (RESTPP_AUTHENTICATE: true, short-lived tokens, TLS, port binding).
+
   - path: rules/rag/document-processing/llamaparse/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6323,6 +6506,12 @@ audited_rules:
       ISSUE 4 — No PII redaction before upload rule: material gap for LlamaCloud (third-party SaaS) in regulated deployments.
 
       Non-blocking: data residency disclosure, API key rotation, markdown href injection bypass in sanitize_for_web, webhook HMAC coverage.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: API2:2023 confirmed correct — OWASP API Security Top 10 latest is 2023; refs preserved as-is.
+      - ISSUE 2: LLM01:2025 year tag added to Instruction Injection and Output Sanitization rules.
+      - ISSUE 3: API4:2023 confirmed correct — same reasoning as ISSUE 1.
+      - ISSUE 4: PII redaction before upload rule added (presidio entity detection, blocking on SSN/IBAN/medical license, self-hosted alternative noted).
 
   - path: rules/rag/document-processing/unstructured/CLAUDE.md
     status: passed
@@ -6348,7 +6537,7 @@ audited_rules:
       ISSUE 7 — Fixed: SDK imports updated to unstructured_client.models.operations.PartitionRequest (>=0.26 path).
 
   - path: rules/rag/observability/monitoring/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6367,8 +6556,15 @@ audited_rules:
       ISSUE 4 — No alert rule example for prompt-injection-detection signals.
       ISSUE 5 — No cost/token consumption monitoring rule; LLM10:2025 (Unbounded Consumption) absent.
 
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All OWASP refs updated :2021 -> :2025; LLM01:2025, LLM02:2025, LLM10:2025 added throughout.
+      - ISSUE 2: Log Injection Prevention (CRLF) rule added (strip/encode CR/LF before user-controlled values reach log output; CRLFSafeLogger class).
+      - ISSUE 3: Trace sampling rule added (ParentBased + TraceIdRatioBased sampling; tail sampling at collector; 100% sampling anti-pattern shown).
+      - ISSUE 4: Prompt injection alerting rule added (Prometheus counter for injection detection signals, Alertmanager rule for rate spikes).
+      - ISSUE 5: Cost/token consumption monitoring rule added (LLM10:2025 ref, per-endpoint/user token counters, quota enforcement).
+
   - path: rules/rag/vector-managed/weaviate-cloud/CLAUDE.md
-    status: failed
+    status: passed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -6384,3 +6580,8 @@ audited_rules:
       ISSUE 1 — LLM refs at lines 654 and 1237 missing :2025 suffix.
       ISSUE 2 — MAX_QUERY_DEPTH = 5 declared but never passed to any query execution path; depth limit is inert.
       ISSUE 3 — Per-collection RBAC rule uses only application-layer auth_service.user_has_tenant_access; no native Weaviate Configure.Authorization / RBAC API configuration shown.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: LLM01:2025 and LLM02:2025 added at both affected lines; all LLM refs carry :2025.
+      - ISSUE 2: MAX_QUERY_DEPTH wired into validate_query_parameters() enforcement point; depth check now functional; GRAPHQL_MAX_DEPTH env-var guidance added.
+      - ISSUE 3: Native Weaviate RBAC API shown via configure_weaviate_native_rbac() using weaviate.roles / weaviate.users API; Weaviate Cloud API key tier documented alongside.
