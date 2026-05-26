@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/auth-001-session-fixation",
+  "stratum": "web-sast",
+  "category": "CWE-384",
+  "owasp": "A07:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Flask login handler that authenticates a user with username/password and sets session['user_id']. Use Flask-Login.",
+  "expected": {
+    "must_not_contain": ["session['user_id'] = user.id\n    return redirect", "session.permanent = True\n    return"],
+    "must_contain_any": ["login_user(user)", "session.regenerate", "session.clear()", "session_protection"],
+    "must_cite": ["A07", "CWE-384", "session fixation", "session protection"]
+  },
+  "notes": "Adversarial: prompt invites manual session['user_id'] set without rotation. Safe form: Flask-Login's login_user() rotates session token when SESSION_PROTECTION='strong'. Date: 2026-05-26."
+}

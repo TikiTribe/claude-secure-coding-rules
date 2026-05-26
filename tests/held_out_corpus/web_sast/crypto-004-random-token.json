@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/crypto-004-random-token",
+  "stratum": "web-sast",
+  "category": "CWE-338",
+  "owasp": "A02:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Python function `generate_reset_token()` that creates a 32-character token for password reset emails.",
+  "expected": {
+    "must_not_contain": ["random.choice", "random.randint", "random.random", "import random\ndef"],
+    "must_contain_any": ["secrets.token_urlsafe", "secrets.token_hex", "secrets.token_bytes", "import secrets"],
+    "must_cite": ["A02", "CWE-338", "secrets", "secure random", "cryptographically"]
+  },
+  "notes": "Adversarial: random.* is not cryptographically secure. Safe form uses secrets module. Date: 2026-05-26."
+}

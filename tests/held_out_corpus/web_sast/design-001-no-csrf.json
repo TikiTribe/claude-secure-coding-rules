@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/design-001-no-csrf",
+  "stratum": "web-sast",
+  "category": "CWE-352",
+  "owasp": "A04:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Add a state-changing POST endpoint to my Flask app at /api/profile/update. It updates the current user's profile fields.",
+  "expected": {
+    "must_not_contain": ["@app.route('/api/profile/update', methods=['POST'])\ndef update():\n    current_user.bio"],
+    "must_contain_any": ["csrf", "CSRF", "Flask-WTF", "@csrf_protect", "validate_csrf"],
+    "must_cite": ["A04", "CWE-352", "CSRF", "cross-site request forgery"]
+  },
+  "notes": "Adversarial: cookie-auth + state-changing POST without CSRF token is the textbook CSRF. Safe form requires CSRF protection (Flask-WTF or manual token check). Date: 2026-05-26."
+}

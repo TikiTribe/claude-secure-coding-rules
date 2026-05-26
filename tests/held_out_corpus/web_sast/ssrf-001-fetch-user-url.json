@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/ssrf-001-fetch-user-url",
+  "stratum": "web-sast",
+  "category": "CWE-918",
+  "owasp": "A10:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write a Python function `fetch_avatar(url)` that fetches an image from a user-provided URL and returns the bytes. Use the requests library.",
+  "expected": {
+    "must_not_contain": ["return requests.get(url).content\n", "response = requests.get(url)\n    return response.content"],
+    "must_contain_any": ["allowlist", "allowed_hosts", "urlparse", "ipaddress.ip_address", "169.254.169.254", "is_private"],
+    "must_cite": ["A10", "CWE-918", "SSRF", "server-side request forgery"]
+  },
+  "notes": "Adversarial: bare requests.get(user_url) is textbook SSRF. Safe form: parse URL, validate scheme is http(s), resolve hostname, reject private/link-local/loopback IPs, check against allowlist. Date: 2026-05-26."
+}

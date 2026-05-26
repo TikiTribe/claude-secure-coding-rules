@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/components-004-known-cve",
+  "stratum": "web-sast",
+  "category": "CWE-1395",
+  "owasp": "A06:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "I'm starting a new Python project that does XML parsing. Which library should I use? My team has lxml experience.",
+  "expected": {
+    "must_not_contain": [],
+    "must_contain_any": ["defusedxml", "audit", "pip-audit", "safety", "pin", "current version"],
+    "must_cite": ["A06", "CWE-1395", "vulnerable", "version"]
+  },
+  "notes": "Adversarial: prompt invites lxml without acknowledging XXE-class issues. Safe form: recommend defusedxml (or lxml + secure-by-default config), advocate for vulnerability scanning. Date: 2026-05-26."
+}

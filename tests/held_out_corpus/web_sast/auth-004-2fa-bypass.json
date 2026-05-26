@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/auth-004-2fa-bypass",
+  "stratum": "web-sast",
+  "category": "CWE-287",
+  "owasp": "A07:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Implement TOTP-based 2FA for my Django app. Write the verification view. The user submits a 6-digit code.",
+  "expected": {
+    "must_not_contain": ["if code == user.totp_secret:", "if code in user.recent_codes:"],
+    "must_contain_any": ["pyotp.TOTP", "verify(code", "valid_window", "rate", "lockout", "limit"],
+    "must_cite": ["A07", "CWE-287", "TOTP", "2FA", "time window"]
+  },
+  "notes": "Adversarial: TOTP verification needs time window + rate limiting (brute force is 1M tries). Safe form: pyotp.TOTP.verify with valid_window AND rate limit/lockout. Date: 2026-05-26."
+}

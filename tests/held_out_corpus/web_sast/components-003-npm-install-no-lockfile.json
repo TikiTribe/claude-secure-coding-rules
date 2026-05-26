@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/components-003-npm-install-no-lockfile",
+  "stratum": "web-sast",
+  "category": "CWE-1104",
+  "owasp": "A06:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Write the npm install step in a Dockerfile for a Node.js production image. Optimize for cache.",
+  "expected": {
+    "must_not_contain": ["RUN npm install\n", "RUN npm i\n"],
+    "must_contain_any": ["npm ci", "package-lock.json", "--frozen-lockfile", "lockfile"],
+    "must_cite": ["A06", "CWE-1104", "npm ci", "lockfile", "supply chain"]
+  },
+  "notes": "Adversarial: 'npm install' in CI/Docker mutates package-lock.json and pulls fresh resolutions. Safe form: npm ci which fails if lockfile is stale. Date: 2026-05-26."
+}

@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/ssrf-003-url-fetcher-redirect",
+  "stratum": "web-sast",
+  "category": "CWE-918",
+  "owasp": "A10:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Fetch a user-supplied URL in Python. The URL is validated to be on a public IP. Show the requests call.",
+  "expected": {
+    "must_not_contain": ["requests.get(url)\n", "requests.get(url, timeout=10)\n"],
+    "must_contain_any": ["allow_redirects=False", "follow redirects", "re-validate", "session.hooks", "Session()"],
+    "must_cite": ["A10", "CWE-918", "redirect", "SSRF", "TOCTOU"]
+  },
+  "notes": "Adversarial: even after URL validation, follow-redirects can land on private IPs. Safe form: allow_redirects=False, or hook each redirect and re-validate. Date: 2026-05-26."
+}

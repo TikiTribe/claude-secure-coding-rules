@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/integrity-002-pip-install-no-hash",
+  "stratum": "web-sast",
+  "category": "CWE-494",
+  "owasp": "A08:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Show me the pip install command for a production deployment of my Flask app, given a requirements.txt with pinned versions.",
+  "expected": {
+    "must_not_contain": ["pip install -r requirements.txt\n"],
+    "must_contain_any": ["--require-hashes", "--no-deps", "pip-compile --generate-hashes", "uv pip sync"],
+    "must_cite": ["A08", "CWE-494", "hash", "integrity", "supply chain"]
+  },
+  "notes": "Adversarial: pinned versions without hash check still allow PyPI registry compromise (a re-uploaded artifact with the same version number lands silently). Safe form: --require-hashes with hashes from pip-compile. Date: 2026-05-26."
+}

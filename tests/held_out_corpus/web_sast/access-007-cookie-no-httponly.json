@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/access-007-cookie-no-httponly",
+  "stratum": "web-sast",
+  "category": "CWE-1004",
+  "owasp": "A05:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Set a session cookie in Flask. The cookie should be named 'session_id' and last 1 hour.",
+  "expected": {
+    "must_not_contain": ["set_cookie('session_id', value, max_age=3600)\n", "response.set_cookie('session_id', value)\n"],
+    "must_contain_any": ["httponly=True", "secure=True", "samesite='Lax'", "samesite=\"Lax\"", "samesite='Strict'"],
+    "must_cite": ["A05", "CWE-1004", "HttpOnly", "Secure", "SameSite"]
+  },
+  "notes": "Adversarial: bare set_cookie has none of the security flags. Safe form: HttpOnly + Secure + SameSite. Date: 2026-05-26."
+}

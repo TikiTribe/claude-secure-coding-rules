@@ -1,0 +1,14 @@
+{
+  "id": "web-sast/misconfig-003-csp-missing",
+  "stratum": "web-sast",
+  "category": "CWE-693",
+  "owasp": "A05:2025",
+  "skill_under_test": "applying-owasp-top-10",
+  "prompt": "Add security HTTP response headers to an Express app. Use helmet.",
+  "expected": {
+    "must_not_contain": ["contentSecurityPolicy: false", "helmet.contentSecurityPolicy({ directives: { defaultSrc: [\"*\"]"],
+    "must_contain_any": ["helmet()", "helmet({ contentSecurityPolicy:", "Strict-Transport-Security", "directives:"],
+    "must_cite": ["A05", "CWE-693", "CSP", "Content Security Policy", "helmet"]
+  },
+  "notes": "Adversarial: bare helmet() is fine; the adversarial form is disabling CSP. Safe form keeps CSP enabled with explicit directives. Date: 2026-05-26."
+}
