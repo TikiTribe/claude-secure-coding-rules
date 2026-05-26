@@ -462,6 +462,83 @@ include(user_provided_script)
 
 ---
 
+## Distributed Computing
+
+### Rule: Secure Distributed.jl Remote Execution
+
+**Level**: `strict`
+
+**When**: Using Distributed.jl for multi-process Julia workloads — any use of `@spawnat`, `remotecall()`, `remotecall_fetch()`, `addprocs()`, or `RemoteChannel`.
+
+**Do**:
+```julia
+using Distributed
+
+# Safe: allowlist-validated operations dispatched to workers
+const ALLOWED_OPS = Set([:mean, :sum, :std, :var])
+
+function safe_remote_compute(worker_id::Int, op::Symbol, data::Vector{Float64})
+    op ∈ ALLOWED_OPS || error("Operation not permitted: $op")
+    # Only allowlisted symbols reach the worker; no user expression is forwarded
+    return remotecall_fetch(worker_id) do
+        if op == :mean
+            mean(data)
+        elseif op == :sum
+            sum(data)
+        elseif op == :std
+            std(data)
+        else  # :var
+            var(data)
+        end
+    end
+end
+
+# Safe: addprocs from a controlled, validated machine list only
+function start_trusted_workers(hosts::Vector{String})
+    # hosts must come from a configuration file or environment variable,
+    # never from external or user-supplied input
+    allowed_hosts = split(get(ENV, "WORKER_HOSTS", ""), ",") .|> strip
+    for h in hosts
+        h ∈ allowed_hosts || error("Host not in allowlist: $h")
+    end
+    addprocs(hosts)
+end
+
+# Safe: validate data received from a RemoteChannel before use
+function consume_remote_result(ch::RemoteChannel{Channel{Dict{String,Any}}})
+    raw = take!(ch)
+    haskey(raw, "value") && raw["value"] isa Float64 || error("Unexpected worker payload")
+    return raw["value"]::Float64
+end
+```
+
+**Don't**:
+```julia
+# VULNERABLE: user-supplied expression executed on a worker (RCE)
+user_expr = readline()
+@spawnat 2 eval(Meta.parse(user_expr))
+
+# VULNERABLE: user-controlled function forwarded to a remote worker
+remotecall(fetch, 2, eval(Meta.parse(user_code)))
+
+# VULNERABLE: remotecall_fetch with user-constructed lambda
+fn = eval(Meta.parse("() -> $(user_input)"))
+remotecall_fetch(fn, 2)
+
+# VULNERABLE: addprocs from user input — spawns arbitrary processes
+addprocs([user_provided_host])
+
+# VULNERABLE: RemoteChannel data used without validation
+result = take!(remote_ch)
+process(result)  # worker may be compromised; data is untrusted
+```
+
+**Why**: Worker processes share the OS-level permissions of the Julia runtime. Any expression or callable forwarded to `@spawnat` or `remotecall()` executes in that security context without additional sandboxing. An attacker with code-injection access can use `@spawnat 2 eval(...)` to execute arbitrary expressions on every reachable worker. `addprocs()` from untrusted input spawns processes on attacker-controlled hosts, giving the attacker a foothold in the cluster. `RemoteChannel` payloads originate from other workers; a compromised worker can send malformed or malicious data that crashes or exploits the consumer.
+
+**Refs**: CWE-94, CWE-78, OWASP A03:2025
+
+---
+
 ## Quick Reference
 
 | Rule | Level | CWE |
@@ -475,6 +552,7 @@ include(user_provided_script)
 | Secure HTTP | warning | CWE-798 |
 | Cryptographic randomness | strict | CWE-330 |
 | Path traversal prevention | strict | CWE-22 |
+| Secure Distributed.jl remote execution | strict | CWE-94, CWE-78 |
 
 ---
 
