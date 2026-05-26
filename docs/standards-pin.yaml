@@ -1,34 +1,40 @@
 # Machine-readable pins for external standards CSCR cites.
 # Updated per the SLA in docs/governance.md.
 # CI checks freshness via tools/standards-check.py (daily via GitHub Actions).
+#
+# Last reviewed: 2026-05-26 (P0.6 Task 21 — refresh against canonical sources).
 
 standards:
   - id: OWASP-Top-10
     version: "2025"
-    revision: "RC1"
+    revision: "final"
     published: "2025-11-15"
     url: "https://owasp.org/Top10/2025/"
+    notes: "Status confirmed final at https://owasp.org/www-project-top-ten/ as of 2026-05-26. Exact publication date not surfaced on the OWASP project page; 2025-11-15 retained from initial RC announcement and should be re-verified when OWASP publishes a definitive release date."
     skills_citing: ["applying-owasp-top-10"]
 
   - id: OWASP-LLM-Top-10
     version: "2025"
     revision: "stable"
-    published: "2025-04-01"
+    published: "2025-03-12"
     url: "https://genai.owasp.org/llm-top-10/"
+    notes: "Publication date corrected from 2025-04-01 to 2025-03-12 per the canonical landing page revision date."
     skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security", "applying-mcp-security", "applying-rag-security", "langchain-security"]
 
   - id: OWASP-MCP-Top-10
     version: "2025"
-    revision: "stable"
-    published: "2025-09-01"
-    url: "https://owasp.org/mcp-top-10/"
+    revision: "v0.1 beta"
+    published: "2025"
+    url: "https://owasp.org/www-project-mcp-top-10/"
+    notes: "URL corrected from the non-existent https://owasp.org/mcp-top-10/. Project is in Phase 3 Beta Release per the canonical page; previous pin marking this as stable was incorrect. Use with awareness that vulnerabilities may be renumbered before final release."
     skills_citing: ["applying-mcp-security"]
 
   - id: NIST-AI-RMF
     version: "1.0"
-    revision: "with NIST AI 600-1 (GenAI Profile, 2024)"
+    revision: "with NIST AI 600-1 (GenAI Profile, 2024-07-26)"
     published: "2023-01-26"
     url: "https://www.nist.gov/itl/ai-risk-management-framework"
+    notes: "Core framework unchanged since 2023-01-26. Companion NIST AI 600-1 GenAI Profile published 2024-07-26 — date added to revision field. AI RMF Profile for Critical Infrastructure announced as concept note 2026-04-07 but not yet published."
     skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security"]
 
   - id: NIST-SSDF
@@ -43,11 +49,13 @@ standards:
     revision: "rolling"
     published: "rolling"
     url: "https://atlas.mitre.org/"
+    notes: "Matrix updates roll continuously without versioned releases. Rule citations should reference specific AML.TXXXX technique IDs which are stable identifiers."
     skills_citing: ["applying-ai-ml-security", "applying-agentic-ai-security"]
 
   - id: CWE
-    version: "4.15"
+    version: "4.20"
     revision: "stable"
-    published: "2024-07-16"
+    published: "2026-04-30"
     url: "https://cwe.mitre.org/"
+    notes: "Bumped from 4.15 (2024-07-16) to 4.20 (2026-04-30) per https://cwe.mitre.org/. Intermediate versions: 4.16 (2025-01-30), 4.17 (2025-03-27), 4.18 (2025-07-31), 4.19 (2025-11-19), 4.20 (2026-04-30). Rule citations use stable CWE-XXX IDs unchanged across these versions."
     skills_citing: ["applying-owasp-top-10", "python-security", "javascript-security", "typescript-security"]
