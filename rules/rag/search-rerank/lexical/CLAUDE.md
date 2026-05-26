@@ -111,7 +111,7 @@ def es_search(query: str, es_client):
 
 **Why**: Unsanitized queries enable keyword injection attacks where adversaries craft queries with repeated terms, boolean operators, or special characters to manipulate BM25 scores. Attackers can boost irrelevant documents or suppress legitimate results by exploiting term frequency calculations.
 
-**Refs**: CWE-20 (Improper Input Validation), CWE-943 (Improper Neutralization of Special Elements in Data Query Logic)
+**Refs**: CWE-20 (Improper Input Validation), CWE-943 (Improper Neutralization of Special Elements in Data Query Logic), OWASP Injection:2025
 
 ---
 
@@ -994,7 +994,7 @@ def index_documents(documents: list, whoosh_index):
 
 **Why**: Index poisoning allows attackers to inject malicious documents that manipulate search results. Without validation, adversaries can add term-stuffed content, duplicate documents, or content with hidden patterns designed to bias rankings toward attacker-controlled results.
 
-**Refs**: CWE-20 (Improper Input Validation), MITRE ATLAS AML.T0020 (Poisoning Attacks)
+**Refs**: CWE-20 (Improper Input Validation), MITRE ATLAS AML.T0020 (Poisoning Attacks), OWASP Data Integrity:2025
 
 ---
 
@@ -1154,7 +1154,7 @@ class UnsafeHybridSearch:
 
 **Why**: Without proper score normalization, attackers can exploit scale differences between vector and lexical scores. BM25 scores (unbounded) mixed with cosine similarity (0-1) allows manipulation by inflating one search type. Improper fusion enables ranking attacks across the hybrid search pipeline.
 
-**Refs**: CWE-20 (Improper Input Validation), CWE-682 (Incorrect Calculation)
+**Refs**: CWE-20 (Improper Input Validation), CWE-682 (Incorrect Calculation), OWASP Injection:2025
 
 ---
 
@@ -1279,7 +1279,7 @@ def create_tokenizer(user_pattern: str):
 
 **Why**: Attackers can manipulate stopword lists to suppress important query terms or allow noise terms that skew results. User-controlled tokenizer patterns enable ReDoS attacks. Mutable stopword lists can be poisoned over time to gradually degrade search quality.
 
-**Refs**: CWE-20 (Improper Input Validation), CWE-1333 (ReDoS), CWE-400 (Resource Exhaustion)
+**Refs**: CWE-20 (Improper Input Validation), CWE-1333 (ReDoS), CWE-400 (Resource Exhaustion), OWASP Security Misconfiguration:2025
 
 ---
 
@@ -1442,7 +1442,7 @@ def add_user_synonyms(user_synonyms: dict, global_synonyms: dict):
 
 **Why**: Uncontrolled query expansion creates attack vectors where adversaries inject malicious synonym mappings to redirect queries to attacker-controlled content. Unlimited expansion enables DoS through exponential term growth. Circular synonyms without depth limits cause infinite loops.
 
-**Refs**: CWE-20 (Improper Input Validation), CWE-400 (Resource Exhaustion), CWE-835 (Infinite Loop)
+**Refs**: CWE-20 (Improper Input Validation), CWE-400 (Resource Exhaustion), CWE-835 (Infinite Loop), OWASP Security Misconfiguration:2025
 
 ---
 
@@ -1661,7 +1661,7 @@ def combine_scores(scores_list):
 
 **Why**: Invalid fusion parameters (negative weights, unbounded k values) can produce nonsensical rankings or be exploited to bias results. Attackers who can influence weights or parameters can manipulate which documents rank highest. Lack of bounds checking allows numeric overflow/underflow attacks.
 
-**Refs**: CWE-20 (Improper Input Validation), CWE-682 (Incorrect Calculation), CWE-190 (Integer Overflow)
+**Refs**: CWE-20 (Improper Input Validation), CWE-682 (Incorrect Calculation), CWE-190 (Integer Overflow), OWASP Injection:2025
 
 ---
 
@@ -1877,7 +1877,7 @@ def get_all_results(bm25, query):
 
 **Why**: Without resource limits, adversaries can craft queries that exhaust server memory or CPU, causing denial of service. Complex queries on large corpora can take minutes to execute, blocking other operations. Unbounded result sets can crash applications or expose excessive data.
 
-**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), CWE-834 (Excessive Iteration)
+**Refs**: CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits), CWE-834 (Excessive Iteration), OWASP Security Misconfiguration:2025
 
 ---
 
