@@ -9,10 +9,13 @@ Security rules for Azure AI Search (formerly Azure Cognitive Search) implementat
 | API Key and RBAC Security | `strict` | Unauthorized access, key exposure |
 | Semantic Ranking Security | `warning` | Score manipulation, information leakage |
 | Hybrid Search Security | `warning` | Filter bypass, result manipulation |
+| OData Filter Injection | `strict` | Filter bypass via Search.in() injection |
 | Azure OpenAI Integration | `strict` | Endpoint exposure, credential theft |
 | Index Schema Security | `warning` | Data exposure, injection attacks |
 | Skillset Security | `warning` | Custom skill abuse, cognitive service key exposure |
 | Data Source Connection | `strict` | Connection string exposure, unauthorized data access |
+| Customer-Managed Keys | `advisory` | Encryption at rest, regulatory compliance |
+| Network Isolation | `advisory` | Public endpoint exposure, lateral movement |
 
 ---
 
@@ -392,7 +395,7 @@ def secure_hybrid_search(
     # Validate and process results
     validated_results = []
     for result in results:
-        # Verify tenant isolation
+        # Verify tenant isolation post-retrieval as defense-in-depth
         if result.get("tenant_id") != tenant_id:
             logger.error(f"Tenant leak detected: expected {tenant_id}, got {result.get('tenant_id')}")
             continue
@@ -512,9 +515,116 @@ def insecure_hybrid(client, query_vector, tenant_id):
     return [r for r in results if r["tenant_id"] == tenant_id]
 ```
 
-**Why**: Hybrid search combines two retrieval paths that must both enforce access controls. Pre-filtering ensures vector search only accesses authorized documents. OData injection can bypass filters and expose unauthorized data.
+**Why**: Hybrid search combines two retrieval paths that must both enforce access controls. Pre-filtering ensures vector search only accesses authorized documents. OData injection can bypass filters and expose unauthorized data. In a RAG pipeline, a filter bypass lets an adversary retrieve documents from another tenant and inject their content into the LLM context (OWASP LLM01:2025). Cross-tenant document retrieval is a direct path to sensitive information disclosure (OWASP LLM06:2025).
 
-**Refs**: OWASP A03:2025 (Injection), CWE-89, Azure AI Search Vector Search documentation
+**Refs**: OWASP A03:2025 (Injection), OWASP LLM01:2025 (Prompt Injection), OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-89, Azure AI Search Vector Search documentation
+
+---
+
+## Rule: OData Filter Injection — Search.in()
+
+**Level**: `strict`
+
+**When**: Using the OData `Search.in()` function to match a field against a set of values
+
+**Do**: Build the value list from individually validated items, enforce a length cap, and join with a safe delimiter
+
+```python
+import re
+
+# Maximum values to allow in a single Search.in() call
+SEARCH_IN_MAX_VALUES = 50
+# Maximum length of each individual value
+SEARCH_IN_VALUE_MAX_LEN = 200
+
+def build_safe_search_in_filter(field: str, values: list, allowed_fields: set) -> str:
+    """Build a safe OData Search.in() filter expression.
+
+    Search.in(field, 'val1,val2,val3') accepts a delimiter-separated string.
+    Raw concatenation of user input into that string lets an attacker inject
+    additional comma-separated values and widen the filter.
+
+    Safe construction: validate and escape each item individually, then join.
+    """
+    if field not in allowed_fields:
+        raise ValueError(f"Field not allowed in filter: {field}")
+
+    if not values:
+        raise ValueError("Value list must not be empty")
+
+    if len(values) > SEARCH_IN_MAX_VALUES:
+        raise ValueError(f"Too many filter values (max {SEARCH_IN_MAX_VALUES})")
+
+    cleaned = []
+    for v in values:
+        if not isinstance(v, str):
+            raise TypeError(f"Filter value must be a string, got {type(v)}")
+        if len(v) > SEARCH_IN_VALUE_MAX_LEN:
+            raise ValueError(f"Filter value exceeds max length: {v[:40]!r}...")
+        # Search.in() uses the pipe '|' as the delimiter in the third argument.
+        # Using pipe as the delimiter and escaping pipes within values is the
+        # safest approach — commas inside values remain literal.
+        if '|' in v:
+            raise ValueError(f"Filter value contains reserved delimiter: {v!r}")
+        # Escape single quotes for OData string literals
+        cleaned.append(v.replace("'", "''"))
+
+    # Join with pipe delimiter; pass '|' as the explicit delimiter to Search.in()
+    value_list = "|".join(cleaned)
+    return f"Search.in({field}, '{value_list}', '|')"
+
+
+def build_group_access_filter(user_groups: list[str], tenant_id: str) -> str:
+    """Compose a security filter for group-based document access.
+
+    Combines mandatory tenant isolation with a Search.in() group check.
+    Both components are built through validated helpers to prevent injection.
+    """
+    ALLOWED_FIELDS = {"allowed_groups", "category", "status"}
+
+    # Validate tenant_id independently (simple equality, not Search.in)
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", tenant_id):
+        raise ValueError(f"Invalid tenant_id format: {tenant_id!r}")
+
+    group_filter = build_safe_search_in_filter(
+        field="allowed_groups",
+        values=user_groups,
+        allowed_fields=ALLOWED_FIELDS
+    )
+
+    return f"tenant_id eq '{tenant_id}' and {group_filter}"
+
+
+# Usage
+def search_with_group_access(client, query, user_groups, tenant_id):
+    security_filter = build_group_access_filter(user_groups, tenant_id)
+    return client.search(
+        search_text=sanitize_search_query(query),
+        filter=security_filter,
+        select=["id", "title", "content"]
+    )
+```
+
+**Don't**: Concatenate raw user input into the Search.in() value string
+
+```python
+# VULNERABLE: Raw user-supplied groups concatenated into Search.in() string
+def search_with_groups(client, query, user_groups_str):
+    # user_groups_str = "group1,group2') or tenant_id ne 'x"
+    filter_str = f"Search.in(allowed_groups, '{user_groups_str}')"
+    # Attacker widens filter: allowed_groups matches group1 OR tenant_id ne 'x'
+    return client.search(search_text=query, filter=filter_str)
+
+# VULNERABLE: No length cap — attacker can inject thousands of values
+def search_any_group(client, query, groups: list):
+    joined = ",".join(groups)  # No validation or escaping
+    filter_str = f"Search.in(allowed_groups, '{joined}')"
+    return client.search(search_text=query, filter=filter_str)
+```
+
+**Why**: `Search.in()` accepts a single delimited string, not an array. Concatenating unsanitized user input into that string is an OData injection vector: an attacker who controls the delimiter character or supplies mismatched quotes can escape the value list and append arbitrary OData predicates, bypassing tenant or group filters. The safe pattern validates each value individually, caps list length, and uses an explicit non-comma delimiter.
+
+**Refs**: OWASP A03:2025 (Injection), OWASP LLM01:2025 (Prompt Injection), OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-89, Azure AI Search OData Filter documentation
 
 ---
 
@@ -826,13 +936,14 @@ def search_with_document_security(
 ) -> list:
     """Search with document-level security trimming."""
 
-    # Build security filter
-    group_filters = " or ".join([
-        f"allowed_groups/any(g: g eq '{group}')"
-        for group in user_groups
-    ])
+    # Build security filter using safe Search.in() construction
+    group_filter = build_safe_search_in_filter(
+        field="allowed_groups",
+        values=user_groups,
+        allowed_fields={"allowed_groups"}
+    )
 
-    security_filter = f"tenant_id eq '{tenant_id}' and ({group_filters})"
+    security_filter = f"tenant_id eq '{tenant_id}' and ({group_filter})"
 
     results = client.search(
         search_text=query,
@@ -889,7 +1000,7 @@ fields = [
 
 # VULNERABLE: No tenant isolation capability
 fields = [
-    SearchableField(name="content", ...),
+    SearchableField(name="content"),
     # No tenant_id field - cannot filter by tenant
 ]
 
@@ -905,9 +1016,9 @@ fields = [
 ]
 ```
 
-**Why**: Index schema determines what can be searched, filtered, and returned. Sensitive fields must be marked non-searchable and non-retrievable. Facetable fields expose distinct values to users. Tenant isolation requires filterable fields.
+**Why**: Index schema determines what can be searched, filtered, and returned. Sensitive fields must be marked non-searchable and non-retrievable. Facetable fields expose distinct values to users. Tenant isolation requires filterable fields. Misconfigured schemas are a primary enabler of cross-tenant data leakage in RAG pipelines (OWASP LLM06:2025) and can surface content that aids prompt injection attacks (OWASP LLM01:2025).
 
-**Refs**: OWASP A01:2025 (Broken Access Control), CWE-200, Azure AI Search Field Attributes documentation
+**Refs**: OWASP A01:2025 (Broken Access Control), OWASP LLM01:2025 (Prompt Injection), OWASP LLM06:2025 (Sensitive Information Disclosure), CWE-200, Azure AI Search Field Attributes documentation
 
 ---
 
@@ -1067,7 +1178,6 @@ def audit_custom_skill_execution(skill_name: str, endpoint: str,
 custom_skill = WebApiSkill(
     name="custom",
     uri="http://my-function.azurewebsites.net/api/enrich",  # Not HTTPS
-    ...
 )
 
 # VULNERABLE: Hardcoded cognitive services key
@@ -1080,7 +1190,6 @@ custom_skill = WebApiSkill(
     name="custom",
     uri="https://api.example.com/enrich",
     http_headers={"api-key": "hardcoded-key"},  # Exposed
-    ...
 )
 
 # VULNERABLE: No validation of custom skill endpoint
@@ -1268,7 +1377,6 @@ datasource = SearchIndexerDataSourceConnection(
         "AccountName=mystorage;"
         "AccountKey=abc123xyz789=="  # Hardcoded key
     ),
-    ...
 )
 
 # VULNERABLE: SQL password in connection string
@@ -1281,7 +1389,6 @@ datasource = SearchIndexerDataSourceConnection(
         "User=admin;"
         "Password=SuperSecret123!"  # Password in code
     ),
-    ...
 )
 
 # VULNERABLE: Cosmos DB with hardcoded key
@@ -1293,7 +1400,6 @@ datasource = SearchIndexerDataSourceConnection(
         f"AccountKey=abc123xyz789==;"  # Hardcoded
         f"Database=mydb"
     ),
-    ...
 )
 
 # VULNERABLE: No query filter - indexes everything
@@ -1311,11 +1417,246 @@ datasource = SearchIndexerDataSourceConnection(
 
 ---
 
+## Rule: Customer-Managed Keys (CMK)
+
+**Level**: `advisory`
+
+**When**: Storing regulated or sensitive data — HIPAA, PCI-DSS, FedRAMP, or any workload with an encryption-at-rest compliance requirement
+
+**Do**: Configure `EncryptionKey` on the `SearchIndex` and on each `SearchIndexerDataSourceConnection`, backed by Azure Key Vault or Managed HSM
+
+```python
+from azure.search.documents.indexes import SearchIndexClient, SearchIndexerClient
+from azure.search.documents.indexes.models import (
+    SearchIndex,
+    SearchIndexerDataSourceConnection,
+    SearchResourceEncryptionKey
+)
+from azure.identity import DefaultAzureCredential
+import os
+
+def create_cmk_encryption_key() -> SearchResourceEncryptionKey:
+    """Build an EncryptionKey object pointing at a Key Vault key.
+
+    The search service must have a system-assigned or user-assigned managed
+    identity with 'Key Vault Crypto User' role on the Key Vault.
+    Azure Managed HSM keys are supported with the same API shape.
+    """
+    return SearchResourceEncryptionKey(
+        key_name=os.environ["AKV_KEY_NAME"],
+        key_version=os.environ["AKV_KEY_VERSION"],  # Pin version; never use "latest"
+        vault_uri=os.environ["AKV_VAULT_URI"]
+        # No access_credentials — authentication uses the service's managed identity
+    )
+
+def create_cmk_index(
+    index_client: SearchIndexClient,
+    base_index: SearchIndex
+) -> SearchIndex:
+    """Attach CMK encryption to a SearchIndex before creation.
+
+    Must be set at creation time; adding CMK to an existing index requires
+    re-indexing all documents.
+    """
+    encryption_key = create_cmk_encryption_key()
+    base_index.encryption_key = encryption_key
+    return index_client.create_or_update_index(base_index)
+
+def create_cmk_datasource(
+    indexer_client: SearchIndexerClient,
+    base_datasource: SearchIndexerDataSourceConnection
+) -> SearchIndexerDataSourceConnection:
+    """Attach CMK encryption to a data source connection.
+
+    Encrypts the stored connection string at rest using the Key Vault key.
+    """
+    encryption_key = create_cmk_encryption_key()
+    base_datasource.encryption_key = encryption_key
+    return indexer_client.create_or_update_data_source_connection(base_datasource)
+
+def verify_cmk_configuration(index_client: SearchIndexClient, index_name: str) -> bool:
+    """Confirm an index has CMK enabled and key version is pinned."""
+    index = index_client.get_index(index_name)
+    enc = index.encryption_key
+
+    if not enc:
+        return False
+
+    if not enc.key_version:
+        # Unpinned key version rotates silently; pin it explicitly
+        raise ValueError(f"Index '{index_name}': CMK key_version is not pinned")
+
+    return True
+
+# ARM / Bicep equivalent for reference (infrastructure as code path)
+"""
+resource searchIndex 'Microsoft.Search/searchServices/indexes@2023-11-01' = {
+  name: '${searchServiceName}/${indexName}'
+  properties: {
+    encryptionKey: {
+      keyVaultKeyName: keyVaultKeyName
+      keyVaultKeyVersion: keyVaultKeyVersion   // pin the version
+      keyVaultUri: keyVaultUri
+    }
+    ...
+  }
+}
+"""
+```
+
+**Don't**: Create regulated indexes without CMK, or leave the key version unpinned
+
+```python
+# VULNERABLE: Index with no encryption_key — uses Microsoft-managed keys only
+index = SearchIndex(name="patient-records", fields=fields)
+index_client.create_or_update_index(index)
+# Patient data encrypted with Microsoft keys; CMK requirement unmet for HIPAA
+
+# VULNERABLE: Unpinned key version — key rotation silently changes decryption key
+enc_key = SearchResourceEncryptionKey(
+    key_name="my-search-key",
+    key_version=None,           # Unpinned: reads whatever is current at access time
+    vault_uri="https://myvault.vault.azure.net"
+)
+```
+
+**Why**: Azure AI Search applies Microsoft-managed encryption by default. For regulated workloads, CMK provides double encryption (Microsoft key + customer key) and enforces data sovereignty — if the Key Vault key is revoked, the index becomes unreadable. Unpinned key versions allow silent key rotation without audit visibility; pinning the version ensures every decryption event uses an approved, auditable key.
+
+**Refs**: OWASP A02:2025 (Cryptographic Failures), CWE-311 (Missing Encryption), Azure AI Search customer-managed keys documentation, NIST SP 800-111
+
+---
+
+## Rule: Network Isolation — Private Endpoint and IP Firewall
+
+**Level**: `advisory`
+
+**When**: Deploying Azure AI Search in any environment where the index holds non-public data
+
+**Do**: Disable public network access, route traffic through a private endpoint, restrict residual access with an IP allowlist
+
+```python
+# Infrastructure control via Azure CLI — apply before any data lands in the index
+"""
+# 1. Disable public network access on the search service
+az search service update \
+    --name <search-service-name> \
+    --resource-group <rg> \
+    --public-access Disabled
+
+# 2. Create a private endpoint in the application VNet
+az network private-endpoint create \
+    --name pe-search \
+    --resource-group <rg> \
+    --vnet-name <vnet-name> \
+    --subnet <subnet-name> \
+    --private-connection-resource-id \
+        /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<search-service-name> \
+    --group-id searchService \
+    --connection-name pe-conn-search
+
+# 3. Add a private DNS zone so the service FQDN resolves to the private IP
+az network private-dns zone create \
+    --resource-group <rg> \
+    --name privatelink.search.windows.net
+
+az network private-dns link vnet create \
+    --resource-group <rg> \
+    --zone-name privatelink.search.windows.net \
+    --name dns-link-search \
+    --virtual-network <vnet-name> \
+    --registration-enabled false
+
+# 4. (Optional) If a specific public CIDR must reach the service, add an IP rule
+#    rather than re-enabling broad public access
+az search service update \
+    --name <search-service-name> \
+    --resource-group <rg> \
+    --ip-rules <your-cidr-range>
+"""
+
+# Shared private link for indexer data sources — prevents indexer from calling
+# out to data sources over the public internet
+"""
+az search shared-private-link-resource create \
+    --name spl-storage \
+    --service-name <search-service-name> \
+    --resource-group <rg> \
+    --scope /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/<storage-account> \
+    --group-id blob \
+    --request-message "Search indexer shared private link"
+
+# Approve the private endpoint request on the target resource
+az storage account private-endpoint-connection approve \
+    --name <connection-name> \
+    --resource-group <rg> \
+    --account-name <storage-account>
+"""
+
+# Terraform equivalent for the search service network settings
+"""
+resource "azurerm_search_service" "main" {
+  name                = var.search_service_name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  sku                 = "standard"
+  public_network_access_enabled = false   # Disable public endpoint
+
+  # IP firewall: restrict residual access if public_network_access_enabled = true
+  # ip_configuration {
+  #   allowed_ips = [var.management_cidr]
+  # }
+}
+
+resource "azurerm_private_endpoint" "search" {
+  name                = "pe-search"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  subnet_id           = var.private_endpoint_subnet_id
+
+  private_service_connection {
+    name                           = "psc-search"
+    private_connection_resource_id = azurerm_search_service.main.id
+    subresource_names              = ["searchService"]
+    is_manual_connection           = false
+  }
+}
+"""
+```
+
+**Don't**: Leave the public endpoint enabled without an IP firewall, or let indexers call data sources over the public internet
+
+```python
+# VULNERABLE: Public access left enabled (Azure default) — any IP can reach the endpoint
+"""
+az search service update \
+    --name my-search \
+    --resource-group my-rg
+    # No --public-access flag: defaults to Enabled
+"""
+
+# VULNERABLE: Indexer pulls from Blob Storage over public internet
+# Even with Managed Identity auth, the traffic traverses the public internet
+# without a shared private link. Network-level controls (Storage firewall) are bypassed.
+datasource = SearchIndexerDataSourceConnection(
+    name="blob-source",
+    type="azureblob",
+    connection_string=f"ResourceId={resource_id};Storage={storage_account}",
+    # No encryptionKey, no shared private link configured
+)
+```
+
+**Why**: Authentication controls (RBAC, Managed Identity) do not stop network-level attacks. A publicly accessible search endpoint is reachable from any IP, exposing it to credential stuffing, token replay, and denial-of-service. Private endpoints ensure all traffic stays on the Azure backbone. Shared private links extend the same isolation to the indexer's outbound connections to data sources. Without both, an attacker who obtains a query key can reach the index from anywhere.
+
+**Refs**: OWASP A01:2025 (Broken Access Control), CWE-284 (Improper Access Control), Azure AI Search private endpoint documentation, Azure network security baseline for AI Search
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-01-15 | Initial release with 7 core rules |
+| 2.0 | 2026-05-26 | Added OWASP LLM Top 10 :2025 refs; added Search.in() injection rule; added CMK rule; added network isolation rule |
 
 ---
 
@@ -1324,5 +1665,8 @@ datasource = SearchIndexerDataSourceConnection(
 - [Azure AI Search Security Overview](https://learn.microsoft.com/en-us/azure/search/search-security-overview)
 - [Azure AI Search RBAC](https://learn.microsoft.com/en-us/azure/search/search-security-rbac)
 - [Azure AI Search Managed Identity](https://learn.microsoft.com/en-us/azure/search/search-howto-managed-identities-data-sources)
+- [Azure AI Search Customer-Managed Keys](https://learn.microsoft.com/en-us/azure/search/search-security-manage-encryption-keys)
+- [Azure AI Search Private Endpoints](https://learn.microsoft.com/en-us/azure/search/service-create-private-endpoint)
 - [Azure OpenAI Service Security](https://learn.microsoft.com/en-us/azure/cognitive-services/openai/how-to/managed-identity)
 - [OWASP Top 10 2025](https://owasp.org/Top10/)
+- [OWASP LLM Top 10 2025](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
