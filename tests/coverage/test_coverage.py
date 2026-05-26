@@ -150,17 +150,24 @@ class TestOWASPCoverage:
         "A10:2021": "Server-Side Request Forgery"
     }
 
+    # OWASP LLM Top 10 — 2025 edition (v2.0, April 2025).
+    # Source: https://genai.owasp.org/llm-top-10/
+    # 2023 v1.1 numbering has been retired across the CSCR corpus; do not add
+    # 2023 names back to this map without adding a year-aware match (the
+    # substring test below uses `LLM0N` as a bare prefix, which matches both
+    # `LLM01` and `LLM01:2025`, so the version qualifier is enforced in the
+    # rule content itself, not here).
     OWASP_LLM = {
         "LLM01": "Prompt Injection",
-        "LLM02": "Insecure Output Handling",
-        "LLM03": "Training Data Poisoning",
-        "LLM04": "Model Denial of Service",
-        "LLM05": "Supply Chain Vulnerabilities",
-        "LLM06": "Sensitive Information Disclosure",
-        "LLM07": "Insecure Plugin Design",
-        "LLM08": "Excessive Agency",
-        "LLM09": "Overreliance",
-        "LLM10": "Model Theft"
+        "LLM02": "Sensitive Information Disclosure",
+        "LLM03": "Supply Chain",
+        "LLM04": "Data and Model Poisoning",
+        "LLM05": "Improper Output Handling",
+        "LLM06": "Excessive Agency",
+        "LLM07": "System Prompt Leakage",
+        "LLM08": "Vector and Embedding Weaknesses",
+        "LLM09": "Misinformation",
+        "LLM10": "Unbounded Consumption"
     }
 
     def test_owasp_2021_coverage(
