@@ -5661,3 +5661,84 @@ audited_rules:
       - anonymized_telemetry=False and allow_reset=False in Settings remain valid
         0.5.x Settings fields.
     issues_filed: []
+
+  - path: rules/rag/document-processing/docling/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    docling_version_checked: "2.95.0"
+    notes: |
+      Audited 7 rules against docling 2.95.0 (IBM, PyPI). 5 distinct issues found.
+
+      ISSUE 1 — pipeline_options.page_range does not exist (BROKEN API / BLOCKING)
+        Lines 200 and 641: Both "Scientific Document Resource Limits" and "Pipeline
+        Configuration Security" set pipeline_options.page_range = (1, MAX_PAGES).
+        PdfPipelineOptions (and its parent PaginatedPipelineOptions) has no page_range
+        field. Setting this attribute is silently accepted by Python as an ad-hoc
+        attribute but is never read by the docling pipeline. The page limit is a no-op.
+        The correct API is the max_num_pages parameter on converter.convert(), e.g.:
+          result = converter.convert(file_path, max_num_pages=MAX_PAGES)
+        A page_range parameter also exists on converter.convert() for selecting a range
+        (not just a ceiling): converter.convert(file_path, page_range=(1, 500)).
+        Fix required: remove pipeline_options.page_range from both Do examples; add
+        max_num_pages=MAX_PAGES to the converter.convert() call in each affected rule.
+
+      ISSUE 2 — ocr_options assigned a dict instead of OcrOptions subclass (TYPE BUG / BLOCKING)
+        Lines 27-30: The "Secure Model Loading" Do example sets:
+          pipeline_options.ocr_options = {"trust_remote_code": False, "use_gpu": False}
+        PdfPipelineOptions.ocr_options is typed as OcrOptions (an OcrAutoOptions
+        instance by default, a Pydantic model). Assigning a plain dict is silently
+        accepted but docling reads the field expecting an OcrOptions object, causing
+        AttributeError at runtime. Additionally, trust_remote_code is a HuggingFace
+        transformers parameter; it is not part of docling's OcrOptions API. The genuine
+        Docling-specific model download trust controls are PipelineOptions fields that
+        both default to False: allow_external_plugins=False, enable_remote_services=False,
+        plus artifacts_path for pinning pre-downloaded model weights offline.
+        Fix required: replace the dict assignment with a typed OcrOptions subclass
+        (e.g., TesseractCliOcrOptions()); document artifacts_path as the mechanism for
+        offline model pinning; drop trust_remote_code from the example.
+
+      ISSUE 3 — result.document.page_count does not exist on DoclingDocument (BROKEN API / BLOCKING)
+        Line 659: The secure error handler returns {"success": True, "page_count":
+        result.document.page_count}. In docling v2, page_count is a field on
+        InputDocument (result.input.page_count), not on DoclingDocument
+        (result.document). Accessing result.document.page_count raises AttributeError
+        at runtime on every successful conversion.
+        Fix required: change to result.input.page_count.
+
+      ISSUE 4 — result.document.main_text is v1 API, removed in v2 (DEPRECATED API / BLOCKING)
+        Lines 386 and 437: The "Equation and Formula Handling" rule iterates
+        result.document.main_text. This attribute does not exist in docling v2's
+        DoclingDocument. In v2 documents are accessed via result.document.texts,
+        result.document.pictures, etc., or by walking result.document.export_to_dict().
+        The code raises AttributeError immediately in any docling v2 environment.
+        Fix required: replace main_text iteration with the v2 API. For formula items,
+        docling v2 uses the do_formula_enrichment flag; iterate result.document.texts
+        and check item type against the DocItem hierarchy.
+
+      ISSUE 5 — OWASP LLM refs missing :2025 qualifier (REF FORMAT)
+        Lines 64 and 571: Refs cite "OWASP LLM05 (Supply Chain)" and "OWASP LLM01
+        (Prompt Injection)" without the :2025 suffix. The audit spec requires OWASP
+        LLM Top 10 references to carry the year qualifier (e.g., OWASP LLM05:2025,
+        OWASP LLM01:2025) to disambiguate from the 2023 edition.
+        Fix required: append :2025 to all OWASP LLM references.
+
+      Non-blocking observations (no status change):
+      - CWE-349 (line 824): CWE-349 "Acceptance of Extraneous Untrusted Data with
+        Trusted Data" is retired. CWE-345 (Insufficient Verification of Data
+        Authenticity) is the current preferred mapping for cache poisoning. Should be
+        corrected alongside the blocking issues.
+      - generate_picture_images (line 279): deprecated in docling v2 in favor of
+        generate_page_images. Field is retained for backwards compatibility but
+        triggers a deprecation warning in recent versions.
+      - allow_external_plugins=False and enable_remote_services=False are the primary
+        Docling-specific model-download trust controls (both default False in
+        PipelineOptions). Neither is explicitly mentioned in any rule; they should be
+        added to the Secure Model Loading Do example when fixing ISSUE 2.
+      - ConversionStatus.FAILURE comparison (line 649) is correct; enum value is the
+        string "failure". The Don't example's uppercase "FAILURE" string comparison
+        is intentionally wrong as an anti-pattern demonstration.
+      - CWE-502, CWE-434, CWE-22, CWE-400, CWE-770, CWE-79, CWE-78, CWE-377,
+        CWE-732, CWE-116, CWE-89, CWE-209: all valid, non-retired CWE IDs,
+        correctly mapped to their respective rules.
+    issues_filed: []
