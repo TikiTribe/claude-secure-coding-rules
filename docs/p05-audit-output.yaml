@@ -1525,7 +1525,7 @@ audited_rules:
     issues_filed: []
 
   - path: rules/containers/helm/CLAUDE.md
-    status: failed
+    status: passed  # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -1635,10 +1635,15 @@ audited_rules:
         semantics (must be from that namespace AND that pod label). The template
         is correct; the indentation pattern that produces AND vs OR is subtle and
         worth a clarifying comment for practitioners who may misread it.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: cosign verify now includes --certificate-identity-regexp "https://github.com/bitnami/.*" with explanatory comment about cosign v2.0+ requirement.
+      - ISSUE 2: helm pull OCI example no longer uses --verify; comment explains --verify is HTTP-repo-only and OCI integrity uses cosign verify shown above.
+      - ISSUE 3: SecurityContext Do example image reference now uses digest-preferred conditional block (>- if .Values.image.digest) consistent with Image Pinning rule.
     issues_filed: []
 
   - path: rules/containers/_core/container-security.md
-    status: failed
+    status: passed  # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -1772,10 +1777,17 @@ audited_rules:
         In CI, $USER may be "runner", "root", or empty. A comment noting the variable
         should be replaced with a registry-specific credential var ($REGISTRY_USER, etc.)
         would prevent silent auth failures. Advisory.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: All nine fabricated NIST SP 800-190 subsections (4.2.1, 4.2.2, etc.) replaced with valid top-level sections; image signing ref corrected to 3.5; SLSA updated to "SLSA Build L2 (SLSA v1.1)".
+      - ISSUE 2: CIS Docker Benchmark 4.7 removed from Image Immutability Refs; replaced with NIST SP 800-190 Section 3.2.
+      - ISSUE 3: Falco rules now include explicit list definitions for expected_processes, expected_parent_processes, and allowed_shell_parents; /etc/kubernetes/* glob replaced with fd.name startswith "/etc/kubernetes/".
+      - ISSUE 4: github/codeql-action/upload-sarif updated from @v2 to @v3.
+      - ISSUE 5: cosign sign --oidc-issuer flag removed; comment explains OIDC auto-detection in CI for cosign v2.x.
     issues_filed: []
 
   - path: rules/containers/kubernetes/CLAUDE.md
-    status: failed
+    status: passed  # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -1902,6 +1914,10 @@ audited_rules:
         to have registry pull access. Advisory: add a note explaining this registry-access
         requirement (credentials via imagePullSecrets, IRSA, or Workload Identity) to
         assist practitioners in air-gapped or private-registry environments.
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1: Both EncryptionConfiguration Do examples (Secrets Management and etcd section) now use aesgcm with comments noting aescbc deprecation in K8s 1.28 and removal in K8s 1.30; kms provider recommendation added.
+      - ISSUE 2: Sidecar image reference updated to myregistry.io/sidecar:v2.0.0@sha256:<digest>; comment clarifies imagePullPolicy: Always is a freshness control, not a substitute for digest pinning.
     issues_filed: []
 
   - path: rules/containers/docker/CLAUDE.md
