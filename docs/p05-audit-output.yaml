@@ -4848,3 +4848,238 @@ audited_rules:
         CWE-798, CWE-522, CWE-200, CWE-345, CWE-770, CWE-502) are all valid and correctly
         mapped to their respective rule categories.
     issues_filed: []
+
+  - path: rules/rag/orchestration/dspy-txtai-ragas/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules across DSPy, txtai, and Ragas. Five blocking issues found.
+
+      ISSUE 1 — txtai YAML workflow injection: NOT COVERED (MISSING RULE)
+        The file imports Workflow and Task from txtai.workflow but provides no rule
+        covering YAML-based workflow configuration injection. txtai supports YAML config
+        files (e.g., config.yml) for constructing full pipelines at load time; user-
+        supplied or externally sourced YAML can inject arbitrary pipeline steps, model
+        paths, or OS commands via the workflow backend. This is the primary txtai YAML
+        injection vector named in the audit spec and is entirely absent from the file.
+        Fix required: add a strict rule covering YAML workflow config validation,
+        schema allowlisting for permitted pipeline steps, and prohibition of loading
+        YAML from untrusted sources without sanitization.
+
+      ISSUE 2 — Ragas test set leakage into DSPy compiled prompts: NOT COVERED (MISSING RULE)
+        No rule addresses the boundary between ragas evaluation examples and the DSPy
+        teleprompter training loop. When ragas ground-truth question-answer pairs are
+        re-used as DSPy trainset examples, the evaluation benchmark contaminates the
+        compiled prompt (the model trains on its own benchmark). This is distinct from
+        the "do not use production data in eval sets" rule (Ragas Evaluation Data
+        Security) and covers eval-train data isolation.
+        Fix required: add a warning-level rule requiring that ragas evaluation sets
+        and DSPy training sets be drawn from independent splits with no overlap,
+        validated by hash comparison before optimization runs.
+
+      ISSUE 3 — Ragas evaluating against prompt-injection defenses: NOT COVERED (MISSING RULE)
+        The audit spec explicitly required a rule for using ragas (or a custom ragas
+        metric) to measure how well a RAG system's prompt-injection defenses hold
+        against adversarially crafted retrieval payloads. No rule in the file covers
+        this use case. The Ragas LLM Judge Security rule addresses judge bias but not
+        red-team evaluation of defenses.
+        Fix required: add an advisory rule demonstrating a custom ragas metric that
+        scores defense effectiveness against injected payloads in the retrieved context,
+        with guidance on separating the judge model from the system-under-test.
+
+      ISSUE 4 — Dead code makes teleprompter timeout protection non-functional
+        In SecureTeleprompter.compile_with_limits() (DSPy Teleprompter Security rule),
+        timed_metric is defined as a closure that checks elapsed time but is never
+        passed to teleprompter.compile(). The compile call receives only module and
+        trainset. The timeout guard is silently dead; an attacker-controlled training
+        set can run the optimizer indefinitely.
+        Fix required: pass timed_metric as the metric argument to
+        teleprompter.compile(), or restructure so the timeout-aware wrapper is what
+        the teleprompter actually uses.
+
+      ISSUE 5 — OWASP LLM refs missing :2025 year tag; LLM06 mapping is wrong
+        All seven OWASP LLM references (LLM01, LLM03, LLM06) lack the :2025 suffix
+        required by the project audit spec. Additionally, OWASP LLM06:2023 (Sensitive
+        Information Disclosure) was renumbered to LLM02:2025 in the 2025 release; the
+        file maps it as LLM06, which is incorrect under the 2025 taxonomy.
+        OWASP A03 (Injection) also lacks the :2025 tag.
+        Fix required: update all OWASP LLM refs to include :2025 and correct LLM06
+        to LLM02:2025 for Sensitive Information Disclosure citations.
+
+      Non-blocking observations (no status change):
+      - DSPy code uses BootstrapFewShotWithRandomSearch with metric passed to the
+        constructor (valid DSPy 2.x API). The compile() call omitting metric is correct
+        because DSPy 2.x teleprompters accept metric at construction, not at compile
+        time. No API breakage beyond the dead timed_metric issue (ISSUE 4).
+      - ragas.llms.LangchainLLMWrapper and ragas.metrics.faithfulness / answer_relevancy
+        / context_precision are current ragas 0.2.x API surface. No deprecated calls.
+      - txtai Embeddings, Graph, Textractor, and pipeline imports are consistent with
+        txtai 7.x API. The parameters=params kwarg to embeddings.search() is supported.
+      - ex.toDict() on DSPy Example objects is valid DSPy 2.x API.
+    issues_filed: []
+
+  - path: rules/rag/embeddings/local-embeddings/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 7 rules: Model Loading Security, Tokenizer Security, GPU Memory
+      Management, Model Cache Security, Inference Resource Limits, Model
+      Quantization Security, Pooling Strategy Security.
+
+      ISSUE 1 — OWASP LLM refs missing :2025 year suffix (BLOCKING)
+        All OWASP LLM Top 10 citations omit the mandatory :2025 year tag required
+        by the audit standard. Affected lines:
+          Line 152: "OWASP LLM05 (Supply Chain Vulnerabilities)" -> LLM05:2025
+          Line 301: "OWASP LLM01 (Prompt Injection)" -> LLM01:2025
+          Line 483: "OWASP LLM10 (Model Denial of Service)" -> LLM10:2025
+          Line 763: "OWASP LLM10 (Model Denial of Service)" -> LLM10:2025
+        Fix required: append :2025 to all four LLM reference identifiers.
+
+      ISSUE 2 — use_auth_token= deprecated in transformers >=4.34 (NON-BLOCKING)
+        Line 63 in the Do example: SentenceTransformer() is called with
+        use_auth_token=os.environ.get("HF_TOKEN"). The use_auth_token parameter
+        was deprecated in transformers 4.34 (Oct 2023) and removed in 4.40;
+        the current API is token=. A Do example using a deprecated and removed
+        parameter teaches incorrect code.
+        Fix required: replace use_auth_token= with token= in the Do example
+        for Model Loading Security.
+
+      Non-blocking observations (no status change):
+      - TRUSTED_MODELS checksum values are all None (placeholder) in the Do
+        example. The verify_model_integrity() method is present and correct.
+        The None placeholders are documented with a "Set to expected SHA256 for
+        production" comment; this is advisory guidance, not a code defect.
+      - GPU memory isolation per tenant is addressed via GPUMemoryManager
+        (memory fraction cap, cache clearing). No explicit per-tenant VRAM
+        namespace is provided, but the rule level is warning and the
+        framework-level controls shown are appropriate for that level.
+      - CWE-502, CWE-400, CWE-20, CWE-770, CWE-276, CWE-354, CWE-22: all
+        valid, non-retired IDs, correctly mapped to rule categories.
+      - trust_remote_code=False enforced on all model load paths. Correct.
+      - use_safetensors=True present in load_hf_model. Correct.
+      - SecureModelCache env var pattern and path-traversal sanitization in
+        get_cache_path() are correct.
+    issues_filed: []
+
+  - path: rules/rag/orchestration/langchain-loaders/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Audited 8 rules: Web Loader Security, File Loader Security, Database Loader
+      Security, API Loader Security, Recursive Chunking Security, Metadata Extraction
+      Security, Async Loader Security, Custom Loader Security.
+
+      ISSUE 1 — OWASP refs use :2021 vintage throughout (BLOCKING)
+        All OWASP Top 10 citations reference :2021. Audit standard requires :2025.
+        Affected lines: 138 (A10:2021), 284 (A03:2021), 449 (A03:2021, A01:2021),
+        610 (A05:2021), 861 (A01:2021), and the References section (lines 1267-1270).
+        Fix required: update all OWASP refs to :2025 vintage.
+
+      ISSUE 2 — No OWASP LLM Top 10 2025 references (BLOCKING)
+        No OWASP LLM Top 10 :2025 citation appears anywhere. LLM01:2025
+        (Prompt Injection) is directly relevant to Web Loader and API Loader rules
+        because attacker-controlled content fetched by these loaders can carry
+        prompt injection payloads into the RAG pipeline.
+        Fix required: add OWASP LLM01:2025 ref to Web Loader and API Loader rules;
+        add LLM Top 10 subsection to References.
+
+      ISSUE 3 — GitLoader auth coverage absent (BLOCKING)
+        No rule addresses GitLoader. Risks include credential leakage via .git
+        history, token exposure in remote URLs, and loading secrets committed to
+        git repos.
+        Fix required: add GitLoader auth rule covering credentials outside repo URL,
+        token scoping to read-only, .git directory access control, and scanning
+        loaded content for secrets before indexing.
+
+      ISSUE 4 — S3Loader / cloud storage auth coverage absent (BLOCKING)
+        No rule addresses S3FileLoader or equivalent cloud storage loaders. Risks
+        include long-lived key exposure, over-broad IAM permissions, and loading
+        from unintended buckets via user-controlled paths.
+        Fix required: add S3Loader rule: prefer instance role over long-lived keys,
+        enforce bucket allowlist, apply IAM least-privilege.
+
+      ISSUE 5 — UnstructuredFileLoader downstream parser CVE risk not addressed (BLOCKING)
+        File Loader Security covers path traversal and MIME validation but not
+        parser exploitation when Unstructured parses untrusted Office/PDF/HTML
+        documents. Parser CVEs (e.g., LibreOffice, poppler, python-docx) are a
+        distinct attack surface.
+        Fix required: add advisory to pin Unstructured and parser dependencies to
+        CVE-free versions and sandbox parsing of untrusted documents.
+
+      ISSUE 6 — JSONLoader jq_schema injection not covered (BLOCKING)
+        JSONLoader accepts a user-provided jq_schema parameter controlling field
+        extraction. An attacker controlling jq_schema can exfiltrate arbitrary
+        fields or trigger errors that leak data structure.
+        Fix required: add JSONLoader rule blocking user-controlled jq_schema;
+        require an allowlist of pre-approved selector expressions.
+
+      ISSUE 7 — CSVLoader formula injection not covered (BLOCKING)
+        CSVLoader does not sanitize cell values. Malicious cells beginning with
+        =, +, -, @ execute as formulas when data is exported to Excel downstream.
+        Fix required: add CSVLoader rule stripping or quoting leading formula
+        characters before any downstream Excel export path (CWE-1236).
+    issues_filed: []
+
+  - path: rules/rag/vector-managed/mongodb-atlas/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    notes: |
+      Checklist results:
+
+      PASS — pymongo API current: MongoClient with server_api=ServerApi('1'), $vectorSearch
+        used correctly in aggregation pipelines, field-level encryption via
+        AutoEncryptionOpts/ClientEncryption imports present.
+
+      PASS — $vectorSearch query injection via filter: covered in two rules
+        (Aggregation Pipeline Injection and Query Filter Security) with allowlisted fields,
+        operator validation, mandatory tenant_id pre-filter, and result-level tenant
+        verification. Cross-tenant leak detection present.
+
+      PASS — X.509 cert auth: get_x509_client() at line 71 uses authMechanism="MONGODB-X509"
+        with tlsCertificateKeyFile and tlsCAFile. AWS IAM (MONGODB-AWS) also covered.
+
+      PASS — Field-level encryption for PII: Collection-Level Access Control rule shows
+        AutoEncryptionOpts with AWS KMS, schema_map covering content and metadata.pii_data,
+        AEAD_AES_256_CBC_HMAC_SHA_512_Deterministic and _Random algorithms. Correct.
+
+      FAIL 1 — OWASP refs all :2021, none :2025 (BLOCKING)
+        Every Refs line uses :2021 suffixes: line 122 A02:2021, line 260 A01:2021,
+        line 450 A03:2021, line 628 A04:2021, line 841 A01:2021, line 1075 A01:2021 /
+        A03:2021, line 1325 A04:2021. Additional Resources links to "OWASP Top 10 2021"
+        (line 1343). All must be updated to :2025.
+
+      FAIL 2 — No OWASP LLM Top 10 2025 refs (BLOCKING)
+        Zero LLM:2025 references anywhere. At minimum required:
+          LLM01:2025 (Prompt Injection) for filter injection via $vectorSearch filter;
+          LLM02:2025 (Insecure Output Handling) for embedding exfiltration via $project;
+          LLM06:2025 (Excessive Agency) for unrestricted aggregation pipeline control.
+
+      FAIL 3 — IP access list / not 0.0.0.0/0 not covered (BLOCKING)
+        No coverage of Atlas network access list configuration. No rule or advisory
+        prohibiting the 0.0.0.0/0 CIDR. Atlas IP access list is a mandatory Atlas-specific
+        control not addressable at the driver level.
+
+      FAIL 4 — Encryption at rest with CMK not covered (BLOCKING)
+        Client-side CSFLE is present but Atlas server-side encryption at rest with
+        Customer Managed Keys (CMK via AWS KMS, Azure Key Vault, or GCP KMS configured
+        in the Atlas UI) is not mentioned. These are distinct controls; CSFLE does not
+        substitute for at-rest CMK on the Atlas cluster.
+
+      FAIL 5 — PrivateLink / VNet peering not covered (BLOCKING)
+        No mention of Atlas Private Endpoints (PrivateLink on AWS, Private Service Connect
+        on GCP, Private Link on Azure) or VPC/VNet peering. The connection string rule
+        enforces SRV format and TLS but omits network-layer isolation entirely.
+
+      Non-blocking observations (no status change):
+      - SCRAM not explicitly named. Do examples use MONGODB-X509 and MONGODB-AWS;
+        SCRAM-SHA-256 should be named as the password-based fallback and SCRAM-SHA-1
+        noted for disabling. Advisory only.
+      - Atlas UI role taxonomy (atlasAdmin, readWriteAnyDatabase, etc.) not mentioned
+        alongside the createRole driver-level RBAC examples. Advisory only.
+      - ACID transaction rule correctly uses ReadConcern("snapshot") and
+        WriteConcern(w="majority", j=True) with max_commit_time_ms. Correct.
+    issues_filed: []
