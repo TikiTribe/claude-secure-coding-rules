@@ -2419,10 +2419,17 @@ audited_rules:
         attempting it is wrong" understates the enforcement. SvelteKit enforces the
         $env/static/private boundary at build time with a module resolution error.
         Advisory: clarify "This is a build error, not a silent runtime failure."
+
+      RE-AUDIT 2026-05-26: Verified all blocking issues fixed. Status flipped failed -> passed.
+      - ISSUE 1 (throw error() SvelteKit 1.x syntax): all `throw error(...)` calls in Protect
+        Server Routes and Validate Load Function Data Do examples replaced with bare `error(...)`
+        (no throw); file-level version note added: "SvelteKit 2.x changed error() and redirect()
+        to throw internally — do not add an outer throw keyword." Svelte 5 migration notes section
+        added at bottom.
     issues_filed: []
 
   - path: rules/frontend/vue/CLAUDE.md
-    status: failed
+    status: passed   # was: failed
     reviewed_by: rocklambros
     reviewed_on: 2026-05-26
     audit_coverage: full
@@ -2524,4 +2531,47 @@ audited_rules:
       mitigations. CWE IDs all valid. OWASP refs use 2025 numbering throughout.
       Minor note: pg_write_file removed in PG15, but the REVOKE is defensive and harmless.
       No defects found.
+    issues_filed: []
+
+  - path: rules/languages/python/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Avoid Dangerous Deserialization
+      - Use Subprocess Safely
+      - Never Use eval() or exec() on Untrusted Input
+      - Prevent Path Traversal
+      - Secure Temporary Files
+      - Use Secure Random Numbers
+      - Hash Passwords Correctly
+      - Use Parameterized Queries
+      - Validate URL Schemes
+      - Set Secure Cookie Attributes
+      - Don't Expose Stack Traces
+    notes: |
+      Audited all 11 rule sections. One blocking defect found.
+
+      ISSUE 1 — Subprocess Do block: missing 'import re' (CODE BUG / BLOCKING)
+        Lines 69-71 of the "Use Subprocess Safely" Do block show a shell=True fallback
+        guarded by re.match(r'^[a-zA-Z0-9_-]+$', filename). The Do block imports only
+        subprocess and shlex; 'import re' is absent. Executing the shell=True branch
+        raises NameError: name 're' is not defined, silently negating the only input
+        validation guard on the shell=True path. A developer copying this example gets
+        a runtime crash precisely when the attack surface (shell=True) is reached.
+        Fix required: add 'import re' to the Do block imports.
+
+      Non-blocking observations (no status change):
+      - Hash Passwords Correctly Do example leads with bcrypt (rounds=12). Per OWASP
+        A02:2025, Argon2id is the preferred first-choice algorithm; bcrypt is
+        legacy-acceptable. The owasp-2025.md file (corrected in P0.7) leads with
+        Argon2id. Consistent with that corrected standard, bcrypt should be demoted to
+        a legacy-acceptable note here as well. Non-blocking because bcrypt is not broken
+        or deprecated for password hashing; it is a standards-hierarchy mismatch.
+      - Path traversal Do: Path.is_relative_to() requires Python 3.9+. With 3.12/3.13
+        current and 3.8 EOL'd October 2024, this is fine.
+      - All OWASP 2025 category mappings verified correct (A01, A02, A03, A05, A07,
+        A08, A10). All CWE IDs valid and correctly mapped. No fabricated identifiers.
+        yaml.safe_load vs yaml.load(Loader=yaml.Loader) distinction is correct.
     issues_filed: []
