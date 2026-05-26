@@ -2877,3 +2877,115 @@ audited_rules:
         (d) note that RemoteChannel data must be validated on receipt because workers
         may be compromised. Appropriate refs: CWE-94, CWE-78, OWASP A03:2025.
     issues_filed: []
+
+  - path: rules/languages/javascript/CLAUDE.md
+    status: passed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Never Use eval() with User Input
+      - Avoid Prototype Pollution
+      - Sanitize HTML Before Insertion
+      - Validate URLs Before Use
+      - Prevent Command Injection
+      - Validate File Paths
+      - Use Secure Dependencies
+      - Use Crypto Module Correctly
+      - Set Security Headers
+      - Configure CORS Properly
+    notes: |
+      Audited all 10 rule sections across 6 categories. No blocking defects found.
+      All OWASP 2025 category numbers are correct: A01:2025 (BAC), A03:2025 (Injection),
+      A05:2025 (Security Misconfiguration), A06:2025 (Vulnerable Components).
+      All CWE IDs are valid: CWE-94, CWE-95, CWE-79, CWE-601, CWE-78, CWE-22, CWE-1104,
+      CWE-330, CWE-328, CWE-942, CWE-1321.
+
+      JavaScript-specific checklist:
+      - eval()/Function() avoidance: both covered with correct CWE-94/CWE-95 classification.
+      - Prototype pollution: Object.create(null) and key denylist (__proto__/constructor/
+        prototype) correctly shown. Map for user-controlled keys also present.
+      - DOM XSS: DOMPurify + textContent correctly shown. document.write and innerHTML
+        template literal injection in Don't examples are accurate real vulns.
+      - Node.js command injection: execFile with argument array is the Do pattern; exec()
+        with string concatenation is the Don't. Examples correctly teach the distinction
+        without naming shell:true explicitly (exec always invokes a shell).
+      - No deprecated mitigations. No self-contradictions.
+      - bcrypt rounds=12 is appropriate for Node.js (OWASP Password Storage CS: work
+        factor 10+ minimum; bcrypt remains the standard JS recommendation).
+      - Path traversal guard (startsWith(SAFE_DIR + path.sep)) correctly prevents both
+        directory escape and neighbor-directory bypass.
+
+      Non-blocking observations (no status change):
+      - eval() Don't block: setTimeout(userCode, 1000) — variable name is ambiguous
+        (could be a function reference, which is safe). The comment "with strings"
+        partially mitigates this. A string literal argument would be clearer. Advisory.
+      - No Node.js version guidance. Node 16 EOL; current LTS 20/22. No version-gated
+        API usage in the examples, so no correctness risk. Advisory.
+      - Object.hasOwn() (ES2022/Node 18+) not shown as an alternative in the prototype
+        pollution rule. The denylist approach is sufficient. Advisory.
+      - shell:true danger not explicitly named in the Command Injection rule. The Do/Don't
+        contrast (execFile vs exec with string concat) makes the point implicitly. Advisory.
+    issues_filed: []
+
+  - path: rules/languages/cpp/CLAUDE.md
+    status: failed
+    reviewed_by: rocklambros
+    reviewed_on: 2026-05-26
+    audit_coverage: full
+    rules_audited:
+      - Use Smart Pointers
+      - Prevent Buffer Overflows
+      - Initialize Variables
+      - Validate Integer Operations
+      - Validate Format Strings
+      - Use RAII for Resource Management
+      - Prevent Command Injection
+      - Use Modern Cryptographic Libraries
+    notes: |
+      Audited all 8 rule sections. One blocking defect found: a deprecated unsafe
+      function appears in a Do example, creating a self-contradiction.
+
+      Standards refs: OWASP 2025 category numbers (A03:2025, A06:2025) correct.
+      All CWE IDs valid: CWE-416, CWE-415, CWE-401, CWE-120, CWE-121, CWE-122,
+      CWE-787, CWE-125, CWE-457, CWE-908, CWE-190, CWE-191, CWE-681, CWE-134,
+      CWE-404, CWE-772, CWE-78, CWE-327, CWE-328, CWE-208. No OWASP LLM numbering
+      issue (language rules file). Quick Reference table matches inline rule levels
+      and CWEs throughout.
+
+      C++17/20 compatibility: std::format (C++20) with correct #include <format>.
+      All other patterns C++17-compatible. Smart pointers (make_unique, make_shared),
+      .at() bounds-checked access, std::lock_guard RAII, std::numeric_limits overflow
+      checks are idiomatic modern C++. No raw new/delete in Do examples. No C-style
+      casts. Don't examples reflect real CVE classes (use-after-free, buffer overflow,
+      format string injection, command injection, timing attacks).
+
+      ISSUE 1 — Prevent Buffer Overflows Do example: strncpy in a Do block (SELF-CONTRADICTION / BLOCKING)
+        Lines 84-88 present a safe_copy() helper in the Do block:
+          void safe_copy(char* dest, size_t dest_size, const char* src) {
+              strncpy(dest, src, dest_size - 1);
+              dest[dest_size - 1] = '\0';
+          }
+        strncpy is the function class this rule exists to prohibit. The Don't block
+        (line 94) flags strcpy as "VULNERABLE: Stack buffer overflow." The Do block
+        then introduces strncpy, which shares the hazard class: it does not
+        null-terminate when src length equals dest_size - 1, it zero-pads when src
+        is shorter, and it is banned under Microsoft SDL and MISRA C. Modern C++
+        replaces char* buffers with std::string; when a raw char* destination is
+        unavoidable, snprintf(dest, dest_size, "%s", src) is the accepted replacement
+        per SEI CERT C STR07-C. Using strncpy in the Do block contradicts the rule
+        intent and teaches a pattern still considered unsafe by current secure coding
+        standards.
+        Fix required: remove safe_copy() / strncpy from the Do block; replace with a
+        std::string-based copy example, or if a char* destination is required show
+        snprintf(dest, dest_size, "%s", src) with a null-termination note.
+
+      Non-blocking observations (no status change):
+      - SafeInt.hpp (integer overflow Do example, line 192): assumes Microsoft SafeInt
+        install. A comment with the library URL (github.com/dcleblanc/SafeInt) would
+        aid practitioners. Advisory only.
+      - std::span (C++20) absent from buffer overflow rule as a bounds-safe view type
+        for function arguments. Advisory only.
+      - Command injection Do example uses POSIX fork/execlp. Correct on POSIX but
+        non-portable to Windows. Advisory only.
+    issues_filed: []
