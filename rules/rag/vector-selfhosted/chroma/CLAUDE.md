@@ -68,24 +68,33 @@ client = chromadb.PersistentClient(path="/tmp/chroma_data")
 
 **When**: Running Chroma in client-server mode
 
-**Do**: Configure authentication and TLS for server connections
+**Do**: Configure authentication via environment variables or `chroma.yaml`, and use TLS-terminated connections
+
+Chroma 0.5.x removed the old `Settings()` server kwargs. Auth is now configured server-side through env vars or the `chroma.yaml` config file; the Python client only sets client-side headers or a client auth provider.
+
+```bash
+# Server-side: Token authentication (chroma.yaml or env vars)
+# Option A — environment variables passed to the chroma server process
+export CHROMA_SERVER_AUTHN_PROVIDER="chromadb.auth.token_authn.TokenAuthenticationServerProvider"
+export CHROMA_SERVER_AUTHN_CREDENTIALS="s3cr3t-tok3n"          # single static token
+# Or use a credentials file instead:
+# export CHROMA_SERVER_AUTHN_CREDENTIALS_FILE="/etc/chroma/tokens.json"
+
+# Option B — chroma.yaml (preferred for production)
+# chroma_server_authn_provider: chromadb.auth.token_authn.TokenAuthenticationServerProvider
+# chroma_server_authn_credentials_file: /etc/chroma/tokens.json
+
+# Server-side: HTTP Basic authentication variant
+# export CHROMA_SERVER_AUTHN_PROVIDER="chromadb.auth.basic_authn.BasicAuthenticationServerProvider"
+# export CHROMA_SERVER_AUTHN_CREDENTIALS_FILE="/etc/chroma/htpasswd"
+```
+
 ```python
 import chromadb
-from chromadb.config import Settings
-import ssl
+import os
 
-# Server-side configuration with auth
-server_settings = Settings(
-    chroma_server_auth_provider="chromadb.auth.token.TokenAuthServerProvider",
-    chroma_server_auth_credentials_file="/etc/chroma/tokens.json",
-    chroma_server_auth_token_transport_header="Authorization",
-    chroma_server_ssl_enabled=True,
-    chroma_server_ssl_certfile="/etc/chroma/server.crt",
-    chroma_server_ssl_keyfile="/etc/chroma/server.key"
-)
-
-# Client-side with authentication
-def create_authenticated_client():
+# Client — Token auth (matches TokenAuthenticationServerProvider on server)
+def create_authenticated_client_token() -> chromadb.HttpClient:
     auth_token = os.environ.get("CHROMA_AUTH_TOKEN")
     if not auth_token:
         raise ValueError("CHROMA_AUTH_TOKEN environment variable required")
@@ -93,19 +102,27 @@ def create_authenticated_client():
     client = chromadb.HttpClient(
         host="chroma.internal",
         port=8000,
-        ssl=True,
+        ssl=True,   # TLS terminated at reverse proxy; use ssl=True here
         headers={"Authorization": f"Bearer {auth_token}"}
     )
-
-    # Verify connection
-    try:
-        client.heartbeat()
-    except Exception as e:
-        raise ConnectionError(f"Failed to authenticate with Chroma: {e}")
-
+    client.heartbeat()  # Fail fast on bad credentials
     return client
 
-client = create_authenticated_client()
+# Client — Basic auth (matches BasicAuthenticationServerProvider on server)
+from chromadb.config import Settings
+
+def create_authenticated_client_basic() -> chromadb.HttpClient:
+    client = chromadb.HttpClient(
+        host="chroma.internal",
+        port=8000,
+        ssl=True,
+        settings=Settings(
+            chroma_client_auth_provider="chromadb.auth.basic_authn.BasicAuthClientProvider",
+            chroma_client_auth_credentials="user:password"  # load from env in practice
+        )
+    )
+    client.heartbeat()
+    return client
 ```
 
 **Don't**: Run server mode without authentication
@@ -266,7 +283,7 @@ collection = client.create_collection(
 
 **Why**: Malicious inputs to embedding functions can cause DoS (memory exhaustion) or model exploitation. Invalid embeddings corrupt the vector index.
 
-**Refs**: OWASP LLM06 Sensitive Information Disclosure, CWE-20 Improper Input Validation
+**Refs**: OWASP LLM06:2025 Sensitive Information Disclosure, CWE-20 Improper Input Validation
 
 ---
 
@@ -587,6 +604,272 @@ params = {
 **Why**: Complex or malicious ranking expressions can cause CPU exhaustion and DoS. User-controlled expressions may access unauthorized fields.
 
 **Refs**: OWASP A01:2025 Broken Access Control, CWE-400 Uncontrolled Resource Consumption
+
+---
+
+## Rule: Chroma Metadata Filter Injection
+
+**Level**: `strict`
+
+**When**: Building `where`-clause metadata filters from user-supplied input
+
+**Do**: Allowlist field names and pin operators before passing filters to Chroma
+```python
+import chromadb
+from typing import Any
+
+# Allowlisted filterable fields and the operators each may use.
+# Anything not in this map is rejected before it reaches Chroma.
+ALLOWED_FILTER_FIELDS: dict[str, set[str]] = {
+    "tenant_id": {"$eq"},
+    "doc_type":  {"$eq", "$in"},
+    "year":      {"$eq", "$gt", "$gte", "$lt", "$lte"},
+}
+
+def build_safe_where(raw_filters: dict[str, Any]) -> dict:
+    """Validate and reconstruct a Chroma where-clause from user input."""
+    safe: dict[str, Any] = {}
+    for field, condition in raw_filters.items():
+        if field not in ALLOWED_FILTER_FIELDS:
+            raise ValueError(f"Filter field not allowed: {field!r}")
+        if not isinstance(condition, dict) or len(condition) != 1:
+            raise ValueError(f"Malformed condition for {field!r}")
+        operator, value = next(iter(condition.items()))
+        if operator not in ALLOWED_FILTER_FIELDS[field]:
+            raise ValueError(f"Operator {operator!r} not allowed for {field!r}")
+        # Value is passed as-is; Chroma handles parameterisation internally.
+        safe[field] = {operator: value}
+    return safe
+
+def query_with_safe_filter(collection: chromadb.Collection,
+                            query_embeddings: list,
+                            raw_filters: dict) -> dict:
+    where = build_safe_where(raw_filters)
+    return collection.query(query_embeddings=query_embeddings,
+                            n_results=10,
+                            where=where)
+```
+
+**Don't**: Pass user-supplied filter dicts directly to Chroma
+```python
+# VULNERABLE: attacker supplies {"$or": [...]} or unknown fields
+where = request.json.get("filters")
+results = collection.query(query_embeddings=embeddings, where=where)
+```
+
+**Why**: Chroma's `where` DSL supports `$and`/`$or` logical operators. An attacker who controls the filter dict can bypass tenant scoping or trigger unintended cross-collection reads.
+
+**Refs**: OWASP A01:2025 Broken Access Control, OWASP A03:2025 Injection, CWE-943 Improper Neutralization of Special Elements in Data Query Logic
+
+---
+
+## Rule: Chroma Backend Selection and Security Trade-offs
+
+**Level**: `warning`
+
+**When**: Choosing between Chroma's SQLite (default) and PostgreSQL backends
+
+**Do**: Use PostgreSQL for multi-process or production deployments; lock down SQLite for single-process use
+```bash
+# PostgreSQL backend — required for concurrent writers and network deployments
+export CHROMA_DB_IMPL=chromadb.db.impl.grpc.client.GrpcClient
+# Or configure via chroma.yaml:
+# database:
+#   provider: chromadb.db.impl.postgres.PostgresDB
+#   settings:
+#     host: "postgres.internal"
+#     port: 5432
+#     database: "chromadb"
+#     user: "chroma_app"          # least-privilege role
+#     password: "${CHROMA_PG_PASS}"  # inject from secrets manager
+#     sslmode: "require"
+```
+
+```python
+# SQLite — only acceptable for local single-process development.
+# Enforce file permissions so other OS users cannot read the DB.
+import os, stat, chromadb
+from chromadb.config import Settings
+
+db_path = "/var/lib/chroma/local.db"
+os.makedirs(os.path.dirname(db_path), mode=0o700, exist_ok=True)
+client = chromadb.PersistentClient(
+    path=os.path.dirname(db_path),
+    settings=Settings(anonymized_telemetry=False)
+)
+# Verify no world-readable bits after creation
+mode = os.stat(db_path).st_mode if os.path.exists(db_path) else 0
+assert not (mode & (stat.S_IRWXG | stat.S_IRWXO)), "SQLite file is world-accessible"
+```
+
+**Don't**: Use SQLite with multiple processes or expose it over a shared filesystem
+```python
+# VULNERABLE: concurrent writes to SQLite corrupt the database
+# VULNERABLE: SQLite file on NFS/EFS readable by other tenants
+client = chromadb.PersistentClient(path="/mnt/shared/chroma")
+```
+
+**Why**: SQLite has no row-level locking; concurrent writers cause corruption. A shared-filesystem path exposes the raw embedding store to any process with mount access.
+
+**Refs**: OWASP A05:2025 Security Misconfiguration, CWE-362 Race Condition, CWE-284 Improper Access Control
+
+---
+
+## Rule: Chroma CORS Configuration
+
+**Level**: `strict`
+
+**When**: Running Chroma server with browser-facing clients
+
+**Do**: Set `CHROMA_SERVER_CORS_ALLOW_ORIGINS` to an explicit allowlist; never use wildcard
+```bash
+# Production: explicit origin allowlist
+export CHROMA_SERVER_CORS_ALLOW_ORIGINS='["https://app.example.com","https://admin.example.com"]'
+
+# Or in chroma.yaml:
+# chroma_server_cors_allow_origins:
+#   - "https://app.example.com"
+#   - "https://admin.example.com"
+```
+
+```python
+# Verify CORS is not open before starting the server (pre-flight check)
+import os, json
+
+cors_env = os.environ.get("CHROMA_SERVER_CORS_ALLOW_ORIGINS", "[]")
+origins = json.loads(cors_env)
+for origin in origins:
+    if origin == "*":
+        raise EnvironmentError(
+            "Wildcard CORS origin is forbidden in production. "
+            "Set CHROMA_SERVER_CORS_ALLOW_ORIGINS to specific origins."
+        )
+if not origins:
+    raise EnvironmentError(
+        "CHROMA_SERVER_CORS_ALLOW_ORIGINS must be set before starting the server."
+    )
+```
+
+**Don't**: Leave CORS unconfigured or use a wildcard
+```bash
+# VULNERABLE: wildcard allows any website to make credentialed requests
+export CHROMA_SERVER_CORS_ALLOW_ORIGINS='["*"]'
+
+# VULNERABLE: unset defaults vary by Chroma version and may open all origins
+```
+
+**Why**: An open CORS policy lets any malicious website make authenticated requests to the Chroma API from a victim's browser, enabling cross-site data exfiltration.
+
+**Refs**: OWASP A05:2025 Security Misconfiguration, CWE-942 Permissive Cross-domain Policy
+
+---
+
+## Rule: Chroma Proxy-Layer Rate Limiting
+
+**Level**: `warning`
+
+**When**: Exposing Chroma server to internal services or the internet
+
+**Do**: Enforce rate limits at the reverse-proxy layer; Chroma itself has no built-in rate limiter
+```nginx
+# nginx — limit_req_zone scoped per client IP
+limit_req_zone $binary_remote_addr zone=chroma_api:10m rate=30r/m;
+
+server {
+    listen 443 ssl;
+    server_name chroma.internal;
+
+    ssl_certificate     /etc/nginx/tls/chroma.crt;
+    ssl_certificate_key /etc/nginx/tls/chroma.key;
+
+    location / {
+        limit_req zone=chroma_api burst=10 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+```yaml
+# Envoy alternative — local rate-limit filter
+http_filters:
+  - name: envoy.filters.http.local_ratelimit
+    typed_config:
+      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+      stat_prefix: chroma_rate_limit
+      token_bucket:
+        max_tokens: 30
+        tokens_per_fill: 30
+        fill_interval: 60s
+      filter_enabled:
+        default_value:
+          numerator: 100
+          denominator: HUNDRED
+      filter_enforced:
+        default_value:
+          numerator: 100
+          denominator: HUNDRED
+```
+
+**Don't**: Expose Chroma directly without a rate-limiting proxy
+```bash
+# VULNERABLE: Chroma bound directly on a public or shared-service port
+chroma run --host 0.0.0.0 --port 8000
+# Any client can flood the API; embedding inference is CPU/GPU intensive.
+```
+
+**Why**: Vector search and embedding inference are computationally expensive. An unauthenticated or authenticated-but-unlimited client can exhaust CPU/GPU, causing denial of service for all other tenants.
+
+**Refs**: OWASP A04:2025 Insecure Design, CWE-400 Uncontrolled Resource Consumption
+
+---
+
+## Rule: Chroma Data Directory Volume Encryption
+
+**Level**: `warning`
+
+**When**: Persisting Chroma data on disk in any environment
+
+**Do**: Encrypt the Chroma data volume at rest using LUKS (Linux) or cloud-provider KMS-backed storage
+```bash
+# LUKS — encrypt a dedicated block device for Chroma data
+cryptsetup luksFormat /dev/sdb --key-file /root/chroma-luks.key
+cryptsetup luksOpen /dev/sdb chroma_data --key-file /root/chroma-luks.key
+mkfs.ext4 /dev/mapper/chroma_data
+mount /dev/mapper/chroma_data /var/lib/chroma
+
+# Verify encryption before starting Chroma
+if ! cryptsetup status chroma_data | grep -q "cipher:"; then
+    echo "ERROR: volume not encrypted — refusing to start Chroma" >&2
+    exit 1
+fi
+```
+
+```bash
+# AWS — EBS volume with KMS-managed key (set at volume creation or via Terraform)
+# aws ec2 create-volume --encrypted --kms-key-id alias/chroma-key ...
+
+# GCP — persistent disk with CMEK
+# gcloud compute disks create chroma-disk --kek-key=... --kek-keyring=...
+
+# Verify encryption tag is present before mounting in automation
+aws ec2 describe-volumes --volume-ids $VOL_ID \
+  --query 'Volumes[0].Encrypted' --output text | grep -q true || \
+  { echo "Volume not encrypted"; exit 1; }
+```
+
+**Don't**: Store Chroma data on an unencrypted volume
+```bash
+# VULNERABLE: plain ext4 mount — raw embeddings readable if disk is stolen or snapshot leaked
+mount /dev/sdb /var/lib/chroma
+```
+
+**Why**: Raw embedding vectors can be used to reconstruct training data or queries (embedding inversion attacks). An unencrypted volume exposed through a cloud snapshot, disk theft, or misconfigured storage policy leaks the entire index.
+
+**Refs**: OWASP A02:2025 Cryptographic Failures, NIST AI RMF MS-2.5 Data Security, CWE-311 Missing Encryption of Sensitive Data
 
 ---
 
