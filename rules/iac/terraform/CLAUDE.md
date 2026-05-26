@@ -23,7 +23,8 @@ terraform {
     dynamodb_table = "terraform-state-lock"
 
     # Additional security settings
-    acl                  = "private"
+    # acl argument removed: ACL-based access control deprecated in TF AWS provider >= 4.x.
+    # Public access is blocked via aws_s3_bucket_public_access_block (see below).
     skip_metadata_api_check = false
   }
 }
@@ -116,27 +117,31 @@ resource "aws_kms_key" "terraform_state" {
 
 ```hcl
 # GCS with Customer-Managed Encryption Key (CMEK)
-terraform {
-  backend "gcs" {
-    bucket      = "company-terraform-state"
-    prefix      = "terraform/state"
-    encryption_key = "projects/my-project/locations/us/keyRings/terraform/cryptoKeys/state-key"
-  }
-}
+#
+# IMPORTANT: The GCS backend block's encryption_key field expects a 32-byte
+# base64-encoded AES-256 Customer-Supplied Encryption Key (CSEK), NOT a
+# Cloud KMS resource path. Placing a KMS path there causes terraform init to
+# silently misconfigure encryption or fail at runtime.
+#
+# The correct approach for KMS-based CMEK is to configure it on the
+# google_storage_bucket resource (default_kms_key_name), not in the backend block.
+# The backend block below has no encryption_key argument; bucket-level CMEK
+# is enforced via the resource definition.
 
-# GCS bucket configuration
 resource "google_storage_bucket" "terraform_state" {
-  name                        = "company-terraform-state"
-  location                    = "US"
+  name          = "terraform-state-${var.project_id}"
+  location      = "US"
+  force_destroy = false
+
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
-  versioning {
-    enabled = true
+  encryption {
+    default_kms_key_name = "projects/${var.project_id}/locations/us/keyRings/terraform/cryptoKeys/state"
   }
 
-  encryption {
-    default_kms_key_name = google_kms_crypto_key.terraform_state.id
+  versioning {
+    enabled = true
   }
 
   lifecycle_rule {
@@ -146,6 +151,16 @@ resource "google_storage_bucket" "terraform_state" {
     action {
       type = "Delete"
     }
+  }
+}
+
+terraform {
+  backend "gcs" {
+    bucket = "terraform-state-PROJECT_ID"  # Set per-project via -backend-config
+    prefix = "infrastructure"
+    # CMEK is enforced at the bucket level (above). The backend block does not
+    # accept a KMS key — the encryption_key field is for CSEK (32-byte base64
+    # AES-256 key) only, not a KMS resource path.
   }
 }
 ```
@@ -413,6 +428,8 @@ terraform {
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
+      # Two-component pessimistic constraint: ~> 2.24 allows MINOR + PATCH updates
+      # (>= 2.24.0, < 3.0.0). For patch-only updates, use ~> 2.24.0 (three components).
       version = "~> 2.24"
     }
     random = {
@@ -1094,7 +1111,10 @@ resource "aws_db_instance" "production" {
 
   deletion_protection = true
   skip_final_snapshot = false
-  final_snapshot_identifier = "production-database-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  # Use a static identifier — timestamp() evaluated at plan time produces a perpetual
+  # diff on every plan. prevent_destroy is the durable protection; the static name
+  # is sufficient to identify the final snapshot.
+  final_snapshot_identifier = "${var.db_name}-final-snapshot"
 
   lifecycle {
     prevent_destroy = true
@@ -1253,15 +1273,29 @@ resource "aws_autoscaling_group" "app" {
 
 ```hcl
 # Alternative: Separate state files per environment
+# IMPORTANT: Terraform backend blocks do NOT support variable references — using
+# ${var.environment} inside a backend block causes "terraform init" to fail with
+# "Variables not allowed." Set the key via the -backend-config CLI flag instead.
 terraform {
   backend "s3" {
-    bucket         = "company-terraform-state"
-    key            = "${var.environment}/infrastructure/terraform.tfstate"
+    bucket         = "my-terraform-state"
+    # key is set via -backend-config flag at init time:
+    #   terraform init -backend-config="key=dev/infrastructure/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
+    dynamodb_table = "terraform-locks"
+    kms_key_id     = "alias/terraform-state"
   }
 }
+```
 
+```bash
+# Per-environment Terraform init pattern
+terraform init -backend-config="key=${ENVIRONMENT}/infrastructure/terraform.tfstate"
+# Where ENVIRONMENT is set in the calling shell or CI/CD pipeline.
+```
+
+```hcl
 # With separate directories
 # environments/
 #   development/
@@ -1443,15 +1477,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
+      - name: Run Trivy (IaC scan)
+        # aquasecurity/tfsec-action archived 2023; Trivy supersedes it.
+        # Pin to a SHA before merge: replace <SHA> with the current commit hash
+        # from https://github.com/aquasecurity/trivy-action/releases
+        uses: aquasecurity/trivy-action@<SHA>  # v0.x - update to current SHA before merge
         with:
-          soft_fail: false
+          scan-type: config
+          hide-progress: false
           format: sarif
-          out: tfsec-results.sarif
+          output: trivy-results.sarif
+          exit-code: "1"
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@master
+        # Pin to a SHA before merge: replace <SHA> with the current commit hash
+        # from https://github.com/bridgecrewio/checkov-action/releases
+        uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
         with:
           directory: .
           framework: terraform
@@ -1540,15 +1581,15 @@ jobs:
       - run: terraform apply -auto-approve
       # No security checks before apply
 
-# VULNERABLE: Soft fail on all checks
+# VULNERABLE: Unpinned branch ref + soft fail on all checks
 - name: Run Checkov
-  uses: bridgecrewio/checkov-action@master
+  uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
   with:
     soft_fail: true  # All failures ignored
 
-# POOR: Skipping checks without documentation
+# POOR: Unpinned branch ref + skipping checks without documentation
 - name: Run Checkov
-  uses: bridgecrewio/checkov-action@master
+  uses: bridgecrewio/checkov-action@<SHA>  # v12.x - update to current SHA before merge
   with:
     skip_check: CKV_AWS_18,CKV_AWS_19,CKV_AWS_21,CKV_AWS_23,CKV_AWS_144
     # No documentation why these are skipped
